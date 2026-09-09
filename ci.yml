@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  SCRIPT: EVE_SLT_Tracker.user.js
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need history so we can diff @version against main.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ------------------------------------------------------------
+      # 1. It has to parse. Catches the class of bug where a script
+      #    ships broken and every user's tracker silently dies.
+      # ------------------------------------------------------------
+      - name: Syntax check
+        run: node --check "$SCRIPT"
+
+      # ------------------------------------------------------------
+      # 2. The userscript header is the install/update contract.
+      #    A missing or placeholder @updateURL means nobody ever gets
+      #    an update and you will not find out for months.
+      # ------------------------------------------------------------
+      - name: Validate userscript header
+        run: node scripts/validate-header.mjs "$SCRIPT"
+
+      # ------------------------------------------------------------
+      # 3. Tampermonkey only offers an update when @version INCREASES.
+      #    Merging a fix without bumping ships nothing.
+      # ------------------------------------------------------------
+      - name: Require a version bump
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-version-bump.mjs "$SCRIPT" "origin/${{ github.base_ref }}"
+
+      # ------------------------------------------------------------
+      # 4. The script is distributed as a single plain-ASCII file.
+      #    Non-ASCII bytes get mangled by clipboard bridges in VDI
+      #    sessions and ANSI-defaulting editors.
+      # ------------------------------------------------------------
+      - name: Assert plain ASCII
+        run: |
+          if LC_ALL=C grep -nP '[^\x00-\x7F]' "$SCRIPT"; then
+            echo "::error::Non-ASCII bytes found. Use \\u{...} escapes instead."
+            exit 1
+          fi
+          echo "File is pure ASCII."

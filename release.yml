@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  SCRIPT: EVE_SLT_Tracker.user.js
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate before publishing
+        run: |
+          node --check "$SCRIPT"
+          node scripts/validate-header.mjs "$SCRIPT"
+
+      # The tag and the header must agree, or the Release page will
+      # advertise a version that is not what users actually receive.
+      - name: Assert tag matches @version
+        run: |
+          HEADER="$(grep -oP '^// @version\s+\K\S+' "$SCRIPT")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$HEADER" != "$TAG" ]; then
+            echo "::error::tag v$TAG does not match @version $HEADER"
+            exit 1
+          fi
+          echo "version $HEADER"
+
+      - name: Extract this version's changelog entry
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          awk -v ver="$TAG" '
+            $0 ~ "^## \\[" ver "\\]" { on = 1; next }
+            on && /^## \[/           { exit }
+            on                       { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "No changelog entry found for $TAG." > release-notes.md
+          fi
+          cat release-notes.md
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: ${{ env.SCRIPT }}
+          generate_release_notes: true
