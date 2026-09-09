@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.1
+// @version      0.9.2
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -1734,8 +1734,11 @@
         '#90ee90': 'lightgreen',
 
         'darkgreen': 'darkgreen',
+        'green': 'darkgreen',
         'rgb(0, 100, 0)': 'darkgreen',
+        'rgb(0, 128, 0)': 'darkgreen',
         '#006400': 'darkgreen',
+        '#008000': 'darkgreen',
 
         'red': 'red',
         'rgb(255, 0, 0)': 'red',
