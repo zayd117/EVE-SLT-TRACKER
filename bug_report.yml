@@ -1,0 +1,78 @@
+name: Bug report
+description: Something the tracker did wrong, missed, or got stuck on.
+labels: [bug]
+body:
+
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: open the browser console (F12 -> Console) on the rack
+        page and filter on `[EVE Tracker]`. Everything the tracker prints is
+        prefixed with that, so it is easy to pull out.
+
+  - type: input
+    id: version
+    attributes:
+      label: Tracker version
+      description: >
+        The `[EVE Tracker] EVE SLT Tracker vX.Y.Z running` banner in the
+        console, or the version shown in the Tampermonkey dashboard.
+      placeholder: "0.9.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Edge
+        - Chrome
+        - Firefox
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: >
+        If an alert was missed, say which slot and what colours it went
+        between. If a false alert fired, paste the alert text.
+    validations:
+      required: true
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: >
+        Any red text, plus the `[EVE Tracker]` lines around the time of the
+        problem.
+      render: text
+
+  - type: textarea
+    id: health
+    attributes:
+      label: Health Check output
+      description: >
+        Enable the small `Dev` checkbox in the tracker panel footer, switch to
+        the Developer page, and click "Health Check". Paste the table here.
+        This is the single most useful thing you can attach.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Sanity checks
+      options:
+        - label: I am on the latest version (Tampermonkey -> Utilities -> Check for userscript updates)
+        - label: I have hard-refreshed the page (Ctrl+Shift+R)
