@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.3
+// @version      0.9.5
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -15,6 +15,141 @@
 // @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // ==/UserScript==
+
+// ================================================================
+// v0.9.5 CHANGE LOG  (status detection - field-reported)
+// ================================================================
+//
+// SYMPTOM
+//   Every card read "phase NOT verified - detail page did not state
+//   a phase", including cards whose detail page states the phase and
+//   the result plainly.
+//
+// ROOT CAUSE 1: the Operation vocabulary was wrong.
+//   normalizePhaseWord() matched /pre-?test/ and /\btest\b/ only. The
+//   regular stage is not called "test" on this page - it is called
+//   SLT. So the regular-stage row matched nothing, phase came back
+//   '', parseDetailDocument() bailed with "did not state a phase",
+//   and confirmation "failed" on pages that were perfectly readable.
+//   Every label then fell back to the colour guess it was supposed to
+//   be correcting.
+//
+// ROOT CAUSE 2: the result was never taken from the detail page.
+//   The page states the result per operation as a boolean in the Pass
+//   column - PRETEST/Pass=1 then SLT/Pass=0 means "cleared pre-test,
+//   failed the regular test on the taskcase that went 0". The old
+//   code read Pass only as a fallback for a missing taskset_status,
+//   and applyPhaseToTransition() could then only swap the PRETEST/
+//   TEST half of a label it had already decided from cell colour. The
+//   result half was owned by colour end to end.
+//
+// FIXED
+//   * Operation is mapped properly: pre-test words -> PRETEST,
+//     everything else -> TEST. The literal Operation string is kept
+//     and shown on the card, so an operation this script has never
+//     seen is displayed rather than discarded.
+//   * Pass is the primary result signal, per row, on the row with the
+//     latest Started. taskset_status corroborates and wins on a
+//     disagreement, which is logged rather than resolved silently.
+//   * A row with no Finished and no status is RUNNING. Its Pass reads
+//     0 because it has not passed yet; that is no longer read as a
+//     failure.
+//   * PRETEST_SUCCESS is a real category now. "Pre-test passed, SLT
+//     has not reported" is no longer mislabelled TEST PASS.
+//   * The detail page can always confirm or upgrade a failure, but a
+//     PASS row can never downgrade a red the rack colour caught - the
+//     Test Status table can lag colour, and dropping a real failure is
+//     the one unacceptable outcome.
+//   * Cards show the evidence: operation, Pass=0/1, taskset and the
+//     failing taskcase. Exports carry Operation and Pass columns.
+//   * Restored cards are re-confirmed on load. Confirmation used to
+//     run once, at the moment of the colour change; a card stored
+//     before it succeeded came back out of sessionStorage with its
+//     stale badge for ever, so a build that fixed confirmation could
+//     not reach the cards raised by the build that broke it.
+//   * The slot-agreement check no longer runs on those retroactive
+//     re-checks - it compares a slot recorded hours ago against where
+//     the server sits now, and a failed server that has since been
+//     pulled and re-racked always "disagrees", correctly and about
+//     nothing.
+//   * Re-confirmation is driven by "is this label finished", not
+//     "did the phase confirm". A card whose phase confirmed but whose
+//     RESULT did not - a half-written Test Status row, or a record
+//     from a build that had no result field - is retried on restore
+//     and every 45s after, up to 8 attempts.
+//   * Confirmation detail on a card is Developer Mode only. It is
+//     still built, still stored, still exported - it is just not what
+//     an operator reads at a glance. The provenance glyph is off the
+//     card title for the same reason.
+//   * The alert container is a viewport-bounded flex column, so its
+//     scrollbar lives inside the panel instead of running off the
+//     bottom of the screen.
+//   * LOG FIRST, THEN NOTIFY. The log entry is written before any card
+//     or toast exists, and confirmation is attached to the EVENT
+//     rather than to the card. Previously the fetch was started inside
+//     surfaceAlert(), so an event in a muted section, or one held back
+//     by the flap guard, was written to the permanent log as a colour
+//     guess and never corrected - the audit trail was only as good as
+//     the notification settings. Events now carry an eventId, the log
+//     entry is corrected whether or not anyone was told, and a
+//     surfaced alert reuses the event's promise instead of fetching
+//     the same detail page twice.
+//   * SYS_DEKIT IS NOT A TEST RESULT. It is a factory diagnostic that
+//     routinely finishes Pass=0, and it was matching the "not a
+//     pre-test word, therefore TEST" fallback - so every SYS_DEKIT row
+//     was being reported as a TEST FAIL. It is now its own phase with
+//     its own two categories, it overrides the colour outright rather
+//     than being merged with it, its cards ride the Show DEBUG switch,
+//     and it never raises a desktop notification. The one exception is
+//     a retraction: if an alert already went out calling it a failure,
+//     a follow-up says otherwise, because leaving that standing sends
+//     someone to a rack for nothing. Diagnostics are excluded from the
+//     denominator in the .txt summary so they cannot dilute the
+//     failure rate, and the .csv marks every row result vs diagnostic.
+//   * PRE-TEST FAILS REACH THE DESKTOP AS PRE-TEST FAILS. Colour
+//     cannot tell a pre-test failure from a test failure, so the toast
+//     waits up to TOAST_CONFIRM_WAIT_MS for the detail page. In a burst
+//     the fetch queue (4 parallel) blows past that, the toast goes out
+//     on the provisional label - TEST FAIL - and the card then quietly
+//     corrects itself to PRE-TEST FAIL where only someone watching the
+//     panel would see it. Records now remember which label the desktop
+//     was actually given, and a later correction sends a CORRECTED
+//     toast. Suppressed for cards older than 30 minutes so a reload
+//     re-checking yesterday's cards cannot start a toast storm.
+//   * The alert panel's height is measured from ITS OWN top, not the
+//     viewport's. The drag handler clamps only the header to the
+//     screen by design, so a panel dragged down the page still claimed
+//     a full viewport of list height and put the bottom of its
+//     scrollbar track below the edge of the screen - the thumb ran out
+//     of screen before it ran out of track. Height is now recomputed on
+//     drag, drop, resize and every list change.
+//   * THE LOG IS DAY-SCOPED. Entries from previous days are dropped
+//     at startup and on a 60s rollover check, and every export and
+//     count is filtered to the current log day regardless. The floor
+//     changes daily - which servers are racked, how many, what type -
+//     so a nine-day-old entry is not context, it is noise that skews
+//     today's counts and eventually evicts real entries against the
+//     2000-entry cap. The boundary is the local calendar date and
+//     nothing else - an entry stamped 09/10 is a 09/10 entry whether it
+//     landed at 00:04 or 23:59.
+//   * Rack serials are compared by PARTS, so EVE5 vs EVE05 is no
+//     longer a fault, and one disagreement no longer declares the
+//     column mapping broken. Mapping faults are per-TABLE and show up
+//     as many disagreements and no agreements; that is now what it
+//     takes to raise DEGRADED.
+//
+// ================================================================
+
+// ================================================================
+// v0.9.10 CHANGE LOG
+// ================================================================
+//
+// TRACKER COLLAPSE WIDTH FIX
+//   * Collapsing the tracker now hides only the contents below the
+//     header. The panel keeps the same width in both open and closed
+//     states instead of shrinking horizontally.
+//
+// ================================================================
 
 // ================================================================
 // DISTRIBUTION NOTES
@@ -89,6 +224,22 @@
     //   localStorage    alertLog        permanent audit log
     //
     // ============================================================
+    // v0.9.6 CHANGE LOG
+    // ============================================================
+    //
+    //   * Replaced the desktop FAIL icon with a freshly encoded PNG.
+    //   * Removed the unused "This session" summary and all session
+    //     counter state/update logic.
+    //   * Manual Health Check UI/control is not present; automatic
+    //     detection-health reporting remains intact.
+    //   * Alert-window drag/snap now uses the HEADER as the only geometry
+    //     reference, so a tall alert list cannot trigger edge snapping.
+    //   * The alert body is allowed to extend below/off-screen while the
+    //     draggable header remains independently positioned.
+    //
+    // ============================================================
+
+    // ============================================================
     // v0.9.4 CHANGE LOG  (phase mislabelling - field-reported)
     // ============================================================
     //
@@ -147,8 +298,6 @@
     // TRANSITIONS WIDENED (previously silently dropped)
     //   * darkgreen -> red      a retest failure after a pass. This was
     //                           a MISSED FAILURE in every prior build.
-    //   * lightblue -> darkgreen  a pre-test pass, never recorded.
-    //   * New PRETEST_SUCCESS category, filter tab and log section.
     //
     // NOTE ON HISTORIC DATA
     //   Entries logged before this version carry phaseSource 'color'.
@@ -342,7 +491,7 @@
             GM_info.script.version
         )
             ? GM_info.script.version
-            : '0.9.1';
+            : '0.9.5';
 
     const LOG_PREFIX = '[EVE Tracker]';
 
@@ -356,15 +505,33 @@
     const ACTIVE_ALERTS_KEY   = 'eveRackTrackerActiveAlerts';
     const RECENT_ALERTS_KEY   = 'eveRackTrackerRecentAlerts';
     const ALERT_LOG_KEY       = 'eveRackTrackerAlertLog';
+    const LOG_DAY_KEY         = 'eveRackTrackerAlertLogDay';
     const ALERTS_COLLAPSED_KEY = 'eveRackTrackerAlertsCollapsed';
     const PANEL_POSITION_KEY  = 'eveRackTrackerPanelPosition';
     const MENU_STATE_KEY      = 'eveRackTrackerMenuState';
     const DEBUG_SNAPSHOT_KEY  = 'eveRackTrackerDebugSnapshot';
+    const ALERT_PANEL_POSITION_KEY = 'eveRackTrackerAlertPanelPosition';
 
 
     // ============================================================
     // TUNABLES
     // ============================================================
+
+    // ------------------------------------------------------------
+    // LOG RETENTION - ONE CALENDAR DAY
+    //
+    // The log is a record of TODAY's floor, not an archive. Which
+    // servers are racked, how many, and what they are changes daily, so
+    // an entry from nine days ago is not context - it is noise that
+    // makes today's counts wrong and eventually pushes real entries out
+    // against the entry cap.
+    //
+    // The boundary is the LOCAL CALENDAR DATE and nothing else. An
+    // entry stamped 09/10 belongs to 09/10 whether it landed at 00:04
+    // or at 23:59, and shifts do not enter into it. There is no offset
+    // to configure, so the date on an entry and the date on the export
+    // can never disagree.
+    // ------------------------------------------------------------
 
     const MAX_LOG_ENTRIES           = 2000;
     const MAX_STORED_ALERTS         = 50;
@@ -468,12 +635,6 @@
     let alertFilter = 'all';
     let alertSearch = '';
 
-    const sessionCounts = {
-        TEST_SUCCESS: 0,
-        PRETEST_SUCCESS: 0,
-        TEST_FAILURE: 0,
-        PRETEST_FAILURE: 0
-    };
 
 
     function log(...args)  { console.log(LOG_PREFIX, ...args); }
@@ -503,8 +664,9 @@
     //             refused, slots threw, or the tab is backgrounded
     //   BLIND     no EVE headers at all - the page structure changed
     //
-    // Surfaced on an always-visible chip in the panel title. NOT inside
-    // a <details>: a collapsed health indicator is no health indicator.
+    // Surfaced on the panel title while Developer Mode is enabled.
+    // The underlying automatic health state remains available to the
+    // tracker, but the visual chip is hidden from normal production use.
     // ============================================================
 
     let healthState       = 'OK';
@@ -1720,7 +1882,7 @@
     // ============================================================
 
     const ICON_FAIL =
-        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAEqElEQVR42u3dXW6TOxhG0S/vpDr/uzKq9A4hhEr/HXuvPQB0Yj/LFIkTbs+X1G0cgQCQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQANB7errfAXBn6fUfeZ7jzvT2d+S88xx3pnf9LnrYeY4703t/hjzpPMed6QMndsx5jjvTx87qjPMcd6YPn9IB5znuTJ85n93Pc9yZPnkyW5/nuDN9/kz2Pc9xZ/qS09j0PMed6avOYcfzHHdm/Q/7qwHgznY6yR3Pc9xZ1sD3feqNznPcWdPAd3/eXc5z3FnQwM980i3Oc9xZzcBPfsbHP89xZykDP//pHvw8x511DKz6XI98nuPOIgbWfqKHPc9xZwUDyz/Lr9sNgP1O7QwD1r/xj0AMWH/9D8EMWH8aAAPWXwfAgPXXATBg/XUADFh/HQAD1l8HwID11wEwYP11AAxYfx0AA9ZfB8CA9dcBlA1YPwBdA9YPQNeA9QPQNWD9AHQNWD8AXQPWD0DXgPUD0DVg/QB0DVg/AF0D1g9A14D1A9A1YP0AdA1YPwBdA9YPQNeA9QPQNWD9AHQNWD8AXQPWD0DXgPUD0DVg/Qu7PV/1yv9SfHz99d8BLCC+fgDSO7B+ALprsH4AupuwfgC6y7B+ALr7sH4AuiuxfgC6W7F+ALqLsX4AuruxfgC667F+ALobsn4AukuyfgC6e7J+ALqrsn4AutuyfgC6C7N+ALo7s34AumuzfgC6m7N+ALrLs34AlvUI3ygR/1YLACyPAQDym2MAgPraGACgvjMGAKgvjAEA6ttiAID6qhgAoL4nBgCoL4kBAOobYgCA+noYAKC+GwYAqC+GAQDqW2EAgPpKGACgvg8GAKgvgwEA6ptgAID6GhgAoL4DBsb61/4HLP9Oh7iBsf7l62cAgPrbzwAA9Z98GACg/nM/AwDU/9TLAADd9TMAQH39DABQXz8DANTXzwAA9fUzAEB9/QwAUF8/AwDU188AAPX1MwBAff0MAFBfPwMA1NfPAAD19TMAQH39DABQXz8DAPhOBwbCAKyfgS4A62egC8D6GegCsH4GugCsn4EuAOtnoAvA+hnoArB+BroArJ+BLgDrZ6ALwPoZ6AKwfgbSAOJ/z4wBPwJ1/6ax1wSAZWd33vq9JhsDuGL/t6HXBIBl53j2+r0mGwO4At844jUBYNmZdtbvNdkYwHXotw56TQBYdr7N9XtNNgZwHfTN414TAJadtfV7TSZ7c9bvNbkO+GKsTf/9Oa8JAMtuzvq9JkcBuLb6N6i9JgAsuznr95ocC+C/92H9XpPDAbxyK9bvNUkA+OfdWL/XJATgrxuyfq9JDsDve7J+r8nr3Z7dsN7Q0/1+5GsCgNKNIxAAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASANKfvQD31x9TuxYslwAAAABJRU5ErkJggg==';
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAE8UlEQVR42u3dUVIUSRhG0ep/g2wVV4hvPhiGCnR1ZdY9dwNDZ34nBydGeLwfUrdxBAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAr+7t4wMA95Fe/w3OfNyHvvPW7H7m4z70zX/Tbn3m4z70/e8z9z3zcR96yp+yNj3zcR961n9j2PHMx33oiSe53ZmP+9Bzz3CvMx/3oaef3kZnPu5DZ5zbLmc+7kMnndgWZz7uQ+ed1fpnPu5Dp57S4mc+7kNnn8/KZz7uQy84mWXPfNyHXnMma575uA+97DQWPPNxH3rlOax25uM+rP/2/8SdAMTvI/LZ1znzcR9ZA9d+6kXOfNxH08AKn3eFr2HcR9DAOp/08q9knELNwGqf8dqvZ9xHysCan+7Cr2rcR8fAsp/rx+MRBXDhJ68ZsP5FvwViwPrrfwhmwPrTABiw/joABqy/DoAB668DYMD66wAYsP46AAasvw6AAeuvA2DA+usAGLD+OgAGrL8OgAHrrwNgwPrrABiw/joABqy/DoAB668DYMD66wDKBqwfgK4B6wega8D6AegasH4AugasH4CuAesHoGvA+gHoGrB+ALoGrB+ArgHrB6BrwPoB6BqwfgC6BqwfgK4B6wega8D6AegasP4Le7wflcq/Ed760/8GSN2oswLAvTolANyu8wHAHTsZANy0MwHAfTsNANy6cwDA3TsBACzA+gGI78D6AeiuwfoB6G7C+gHoLsP6Aejuw/oB6K7E+gHobsX6AeguxvoB6O7G+gHorsf6AehuyPoB6C7J+gHo7sn6AeiuyvoB6G7L+gHoLsz6ATi9lX/CnJ9+B0B9YQwAUN8WAwDUV8UAAPU9MQBAfUkMAFDfEAMA1NfDAAD13TAAQH0xDABQ3woDANRXwgAA9X0wAEB9GQwAUN8EAwDU18AAAPUdMDDW7wQAcPcMAODWGQDAfTMAgJtmAAB3zAAAbpcBANwrAwC40XNa9me5RQyM9V++fgYAqL/9DABQ/86HAQDq3/czAED9T70MANBdPwMA1NfPAAD19TMAQH39DABQXz8DANTXzwAA9fUzAEB9/QwAUF8/AwDU188AAPX1MwBAff0MAODvdjEQBmD9DHQBWD8DXQDWz0AXgPUz0AVg/Qx0AVg/A10A1s9AF4D1M9AFYP0MdAFYPwNdANbPQBeA9TPQBWD9DHQBWD8DXQDWz0AXgPUz0AVg/T7RtRsYt1JYPwPrfgvk/yrz6S78qsatdNbvxVkUwOFvlnhx4gAOf7fQixMHcPjb5V6cOIDDzxfx4sQBHH7ClBcnDuDI/4xBL04dwBH+KbNeHABOPy/r9+JsAOCI/aYJLw4Ap5+d9XtxNgNwBH7bnBcHgNPP0fq9OBsDOG76G6e9OACcfqbW78W5CYAvnKz1e3FuBeBT52v9XpwbAvjPU7Z+L85tAfzzrK3fi3NzAH85cev34iQA/PHcrd+LEwLw2+lbvxcnB+DXHVi/F+ezPd7dp77U28fHDV4cAJRuHIEAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQvtdPemt/a0HAQ/wAAAAASUVORK5CYII=';
 
     const ICON_PASS =
         'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAEZUlEQVR42u3c3ZHTShhFUcyTicPk6Ql08uCVACiq5key+uu9dgAwI53VslXce7s/Hz+kaj9dAgEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAAkAKT/9+ftHQCl17+rAQD00bN/SwO3+/PhNutTn3x+vf32BBAYAKi68m0MAKAv7nsPAwDo68vewAAA+tampxvwFkjHrHnoqyFPAB1zlg99FACgVQgBoPHbHWcAAB282lkGALD+9xF/5kl5C2T9J7b+qyFPAOtPfy0GwPrTBgBQ2gAAFpk2AID1pw14C2T9r26pV0OeANaffhQAYP3pHwYA609/CgJAvgPI8Z9cPwDWXw8A6+8e/wBYf3r9AFh/ev0AWH96/QAovX4AHP/1ALD+7vEPgPWn1w+A9afXD4D1p9cPgPWn1w+A0usHwPFfDwDr7x7/AFh/ev0AWH96/QBYf3r9AFh/ev0AqB4Ajv/u8Q+A9afXD4D1p9cPgPWn1w+A9afXD4D1p9cPgPXXA0Dd4x8Ax396/TsDGP35wfoBOGBAQw1YPwCHDWicAesH4Fvr+XdAgwx47QPAKesZMawFf8jtj/99ADg7rb8L4CPrX1yIj/4AnD6dZQ1YPwAvms6CBqz/2m7356P2oX+de2z9ngAX7GaR2fniDsBlu7l8fF56AnDxbhzA1j8MwOGTvcqAj/4AdA9s61+qAW+Bzl7MKxdg/Z4Ayy3mZaP0rQOA7jS99gFg6cWc+tdZPwADFtP5iGL9SwO4cIhn/NW++K7cWm+BFtnKgROxfk+AeVs56iexfgC6n7+99ARg8OG0xz84dfxP+gi0jQHrB8BzwFUFIGnAF18Admvuf3dv/SMBLHjbJv6fV6x/8BNgnAEvPQHoGvDaB4DuXbR+AEL3cv2POta/FYDFDfjiC0DXgPUD0M1rHwAcb64PAO6xKwOAO+2aAOB+uxoAuOuuAwDuvSsAgAUIAAb84gDI+gGwBr8vADbhNwXAMvyOANiHAGDArwaAoVg/AOZi/QDI+gGwG+sHwHqsHwAbEgBNA+gC0B2T9QPQnZT1A9AdlvUD0J2X9QMgAZA8ZR3/AHSnZv0AdAdn/QB0Z2f9AHTHZ/0AdA1YPwCeAwKAOgGQmqP1A9A1YP0AdA1YPwBdA9YPgOeAAEga4AqArgHrB6BrwPoBoEgA9OZr/QB0DVg/AJ4DAiBpgBkAugasH4CuAesHoGvA+gFgQwAYugBIGaACgK4B6wega8D6p3e7Px+ugjwBJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAEgEsgACQApF5/ASm83YWSRjGVAAAAAElFTkSuQmCC';
@@ -1732,6 +1894,13 @@
             transition === 'TEST_SUCCESS' ||
             transition === 'PRETEST_SUCCESS'
         ) {
+            return ICON_PASS;
+        }
+
+        // A diagnostic is not a failure, so it must not carry the red X
+        // on the one occasion it does reach the desktop (the retraction
+        // of an alert that turned out to be SYS_DEKIT).
+        if (isDiagnosticTransition(transition)) {
             return ICON_PASS;
         }
 
@@ -1763,16 +1932,24 @@
             return 'Testing \u{1f7e2}. . . \u{25ba} Test PASS \u{2705}';
         }
 
-        if (transition === 'PRETEST_SUCCESS') {
-            return 'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test PASS \u{2705}';
-        }
-
         if (transition === 'TEST_FAILURE') {
             return 'Testing \u{1f7e2}. . . \u{25ba} Test FAIL \u{274c}';
         }
 
         if (transition === 'PRETEST_FAILURE') {
             return 'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test FAIL \u{274c}';
+        }
+
+        if (transition === 'PRETEST_SUCCESS') {
+            return 'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test PASS \u{2705}';
+        }
+
+        if (transition === 'DEKIT_FAILURE') {
+            return 'SYS_DEKIT \u{1f527}. . . \u{25ba} diagnostic, Pass=0';
+        }
+
+        if (transition === 'DEKIT_SUCCESS') {
+            return 'SYS_DEKIT \u{1f527}. . . \u{25ba} diagnostic, Pass=1';
         }
 
         return '';
@@ -1786,16 +1963,20 @@
             return 'TEST PASS \u{2705}';
         }
 
-        if (transition === 'PRETEST_SUCCESS') {
-            return 'PRE-TEST PASS \u{2705}';
-        }
-
         if (transition === 'TEST_FAILURE') {
             return 'TEST FAIL \u{274c}';
         }
 
         if (transition === 'PRETEST_FAILURE') {
             return 'PRE-TEST FAIL \u{274c}';
+        }
+
+        if (transition === 'PRETEST_SUCCESS') {
+            return 'PRE-TEST PASS \u{2705}';
+        }
+
+        if (isDiagnosticTransition(transition)) {
+            return 'SYS_DEKIT \u{1f527}';
         }
 
         return '';
@@ -2265,6 +2446,40 @@
     // the wild depending on which column you read.
     // ------------------------------------------------------------
 
+    // ------------------------------------------------------------
+    // OPERATION -> PHASE
+    //
+    // v0.9.5. The old version matched only /pre-?test/ and /\btest\b/.
+    // The Operation column on the real page does NOT contain the word
+    // "test" for the regular stage - it says SLT (System Level Test).
+    // So every regular-stage row fell through to '' and every card
+    // ended up "phase NOT verified - detail page did not state a
+    // phase", which is what the field screenshots show.
+    //
+    // The page's operation vocabulary is a small closed set with
+    // exactly one pre-test value. Anything that is NOT a pre-test
+    // operation is, by definition, a post-pre-test stage, so the
+    // fallback is TEST rather than ''. Whether the word was RECOGNISED
+    // or merely assumed is reported separately (phaseExact) and the
+    // literal operation string is kept and displayed, so an operation
+    // this script has never seen shows up verbatim on the card instead
+    // of being silently discarded.
+    // ------------------------------------------------------------
+
+    const PRETEST_OPERATION_RE = /pre[\s_-]*test|^pt$/;
+
+    const TEST_OPERATION_RE =
+        /\bslt\b|\btest(?:ing)?\b|\bburn[\s_-]*in\b|\brun[\s_-]*in\b|\bft\b/;
+
+    // SYS_DEKIT is neither pre-test nor test. It is a housekeeping /
+    // diagnostic pass the factory runs against a server, it routinely
+    // finishes with Pass=0, and none of that is a hardware result an
+    // operator should be woken up for. Without this it matched the
+    // "not a pre-test word, therefore TEST" fallback below and every
+    // SYS_DEKIT row was being reported as a TEST FAIL.
+    const DEKIT_OPERATION_RE = /\bsys[\s_-]*dekit\b|\bdekit\b/;
+
+
     function normalizePhaseWord(raw) {
 
         const value = String(raw || '').trim().toLowerCase();
@@ -2273,15 +2488,35 @@
             return '';
         }
 
-        if (/pre[\s_-]*test/.test(value)) {
+        if (DEKIT_OPERATION_RE.test(value)) {
+            return 'DEKIT';
+        }
+
+        if (PRETEST_OPERATION_RE.test(value)) {
             return 'PRETEST';
         }
 
-        if (/\btest\b|\btesting\b/.test(value)) {
-            return 'TEST';
+        return 'TEST';
+
+    }
+
+
+    // Did we RECOGNISE the operation word, or just assume TEST because
+    // it was not a pre-test word? Drives phaseExact on the result.
+
+    function isKnownOperationWord(raw) {
+
+        const value = String(raw || '').trim().toLowerCase();
+
+        if (!value) {
+            return false;
         }
 
-        return '';
+        return (
+            PRETEST_OPERATION_RE.test(value) ||
+            TEST_OPERATION_RE.test(value) ||
+            DEKIT_OPERATION_RE.test(value)
+        );
 
     }
 
@@ -2290,7 +2525,11 @@
 
         const value = String(raw || '').trim().toLowerCase();
 
-        if (/fail/.test(value)) {
+        if (!value) {
+            return '';
+        }
+
+        if (/fail|error|abort/.test(value)) {
             return 'FAIL';
         }
 
@@ -2299,6 +2538,33 @@
         }
 
         return '';
+
+    }
+
+
+    // ------------------------------------------------------------
+    // THE Pass COLUMN IS THE RESULT
+    //
+    // Per-row boolean: 1 = that operation passed, 0 = it did not.
+    // taskset_status is empty on PRETEST rows, so it cannot be the
+    // primary signal - the boolean can, and is.
+    //
+    // Returns 1, 0 or null (column absent / not a boolean).
+    // ------------------------------------------------------------
+
+    function normalizePassFlag(raw) {
+
+        const value = String(raw || '').trim().toLowerCase();
+
+        if (value === '1' || value === 'true' || value === 'y') {
+            return 1;
+        }
+
+        if (value === '0' || value === 'false' || value === 'n') {
+            return 0;
+        }
+
+        return null;
 
     }
 
@@ -2327,10 +2593,31 @@
         const result = {
             confirmed: false,
             phase: '',
+
+            // The literal Operation cell ("PRETEST", "SLT", ...) so the
+            // card can show what the page actually said.
+            operation: '',
+
+            // false = phase was ASSUMED from "not a pre-test word".
+            phaseExact: false,
+
             status: '',
+
+            // 1 / 0 / null - the authoritative per-row result.
+            pass: null,
+
+            // true = the chosen row has not finished, so its Pass value
+            // is not a result yet and must not be read as one.
+            running: false,
+
+            // Independent of `confirmed`: the phase can be known while
+            // the result is still pending.
+            resultConfirmed: false,
+
             taskset: '',
             taskcase: '',
             started: '',
+            finished: '',
             serialOnPage: '',
             serialMatches: null,
 
@@ -2510,33 +2797,89 @@
 
         result.taskset  = readColumn('taskset');
         result.taskcase = readColumn('taskcase');
+        result.finished = readColumn('finished');
 
-        // Operation is the explicit phase column; taskset carries the
-        // same word on this page and is the fallback.
+        // ----- phase: Operation, then taskset as a fallback -----
+
+        const operationCell = readColumn('operation');
+
+        result.operation = operationCell || result.taskset || '';
+
         result.phase =
-            normalizePhaseWord(readColumn('operation')) ||
+            normalizePhaseWord(operationCell) ||
             normalizePhaseWord(result.taskset);
 
-        result.status = normalizeStatusWord(readColumn('taskset_status'));
+        result.phaseExact =
+            isKnownOperationWord(operationCell) ||
+            isKnownOperationWord(result.taskset);
 
-        if (!result.status) {
+        // ----- result: the Pass boolean is authoritative -----
+        //
+        // Pass is 1 or 0 on EVERY row. taskset_status is blank on
+        // PRETEST rows, so it corroborates but never leads.
 
-            const passFlag = readColumn('pass');
+        result.pass = normalizePassFlag(readColumn('pass'));
 
-            if (passFlag === '0') {
-                result.status = 'FAIL';
-            } else if (passFlag === '1') {
-                result.status = 'PASS';
-            }
+        const statusWord = normalizeStatusWord(readColumn('taskset_status'));
+
+        // A row with no Finished timestamp and no status word has not
+        // produced a result yet. Its Pass column reads 0 because it has
+        // not passed YET, not because it failed - reading that as a
+        // failure would invent one.
+        result.running = !result.finished && !statusWord;
+
+        if (result.running) {
+
+            result.status = '';
+            result.reason = 'that operation is still running';
+
+        } else if (result.pass === 1) {
+
+            result.status = 'PASS';
+
+        } else if (result.pass === 0) {
+
+            result.status = 'FAIL';
+
+        } else {
+
+            // No usable Pass column - fall back to the words.
+            result.status = statusWord;
 
         }
 
+        // The Pass boolean and taskset_status disagreeing means one of
+        // the two columns is not what this script thinks it is. Say so
+        // rather than picking a winner silently.
+        if (
+            statusWord &&
+            result.status &&
+            statusWord !== result.status
+        ) {
+
+            fail(
+                `${serial}: detail page Pass=${result.pass} disagrees with ` +
+                `taskset_status "${statusWord}". Using taskset_status.`
+            );
+
+            result.status = statusWord;
+
+        }
+
+        result.resultConfirmed = !!result.status;
+
         if (!result.phase) {
-            result.reason = 'detail page did not state a phase';
+            result.reason = 'detail page has no Operation on the latest row';
             return result;
         }
 
+        // Phase is confirmed even when the result is still pending -
+        // knowing the server is in SLT is worth having on the card.
         result.confirmed = true;
+
+        if (!result.reason && !result.resultConfirmed) {
+            result.reason = 'detail page stated no result for that row';
+        }
 
         return result;
 
@@ -2634,17 +2977,43 @@
     // instead of by inspecting markup.
     // ------------------------------------------------------------
 
+    // The rack page header and the detail page's Rack Serial are two
+    // different systems printing the same identifier, and they do not
+    // agree on zero padding (EVE5 vs EVE05) or on what may trail it.
+    // Compare the PARTS, not the strings, or the check reports a
+    // mapping fault every time the two spell the same rack differently.
+
+    function normalizeRackSerial(value) {
+
+        const text = String(value || '').trim().toUpperCase();
+
+        const match = text.match(/^TA\.([^-]+)-EVE0*(\d+)/);
+
+        return match
+            ? `TA.${match[1]}-EVE${parseInt(match[2], 10)}`
+            : text;
+
+    }
+
+
     function checkLocationAgreement(parsed, info) {
 
         if (!parsed.rackSerialOnPage || !info) {
             return null;
         }
 
+        // A restored record with no slot parts cannot be checked. Say
+        // "unknown" rather than comparing against "TA.undefined-
+        // undefined" and raising a slot-mismatch alarm about nothing.
+        if (!info.section || !info.eve || !info.unit) {
+            return null;
+        }
+
         const expectedRack = `TA.${info.section}-${info.eve}`;
 
         const rackOk =
-            parsed.rackSerialOnPage.toUpperCase() ===
-            expectedRack.toUpperCase();
+            normalizeRackSerial(parsed.rackSerialOnPage) ===
+            normalizeRackSerial(expectedRack);
 
         // Position is a bare number; unit is U05 / U15. Compare
         // numerically so zero padding cannot cause a false alarm.
@@ -2673,9 +3042,90 @@
     }
 
 
-    async function confirmPhase(detailUrl, info) {
+    // ------------------------------------------------------------
+    // WHEN IS A SLOT DISAGREEMENT A COLUMN-MAPPING FAULT?
+    //
+    // v0.9.5. It used to be: always, on the first one, straight to a
+    // DEGRADED desktop toast reading "This page may NOT be monitored".
+    //
+    // That is the wrong inference from a sample of one. Column mapping
+    // is a property of a TABLE, not of a server: if th.cellIndex were
+    // being read against the wrong column, essentially every server in
+    // that table would land in the wrong slot, not one. A single
+    // disagreement is far more likely to be a machine that moved, a
+    // detail page that has been updated since the rack page rendered,
+    // or a stale row.
+    //
+    // So: count. Escalate only when the evidence actually looks like a
+    // mapping fault - several disagreements in one table and not one
+    // agreement. A lone disagreement is logged and nothing else.
+    // ------------------------------------------------------------
+
+    const SLOT_DISAGREEMENT_ESCALATION = 3;
+
+    const slotAgreementByTable = new Map();
+
+
+    function slotTallyFor(info) {
+
+        const key = `${info.section}|${info.eve}`;
+
+        if (!slotAgreementByTable.has(key)) {
+            slotAgreementByTable.set(key, { ok: 0, bad: 0 });
+        }
+
+        return slotAgreementByTable.get(key);
+
+    }
+
+
+    function noteSlotAgreement(info) {
+        slotTallyFor(info).ok += 1;
+    }
+
+
+    function noteSlotDisagreement(serial, info, location) {
+
+        const tally = slotTallyFor(info);
+
+        tally.bad += 1;
+
+        warn(
+            `Slot disagreement for ${serial}: the tracker read it as ` +
+            `${location.expected}, its detail page says ` +
+            `${location.actual}. One of: the server moved, the detail ` +
+            'page is newer than the rack render, or the column mapping ' +
+            `is wrong. ${info.section}|${info.eve} so far: ` +
+            `${tally.ok} agree, ${tally.bad} disagree.`
+        );
+
+        if (tally.bad < SLOT_DISAGREEMENT_ESCALATION || tally.ok > 0) {
+            return;
+        }
+
+        fail(
+            `${tally.bad} servers in ${info.section}|${info.eve} disagree ` +
+            'with their detail pages and none agree. That pattern is a ' +
+            'column-mapping fault, not moved hardware - alert LOCATIONS ' +
+            'from this table cannot be trusted.'
+        );
+
+        reportHealth(
+            'DEGRADED',
+            `${tally.bad} servers in ${info.section}\u{2022}${info.eve} ` +
+            'disagree with their detail pages. Column mapping may be wrong.'
+        );
+
+    }
+
+
+    async function confirmPhase(detailUrl, info, options) {
 
         const serial = info ? info.serial : '';
+
+        // live:false = this is a retroactive re-check of a stored card,
+        // not a reading taken just now.
+        const checkLocation = !options || options.live !== false;
 
         const url = safeUrl(detailUrl);
 
@@ -2692,7 +3142,16 @@
 
         const cached = phaseConfirmCache.get(cacheKey);
 
-        if (cached && (Date.now() - cached.at) < PHASE_CONFIRM_CACHE_MS) {
+        // force = a deliberate re-check of a card whose result was
+        // pending. Serving it the same cached "pending" answer it is
+        // retrying BECAUSE of would make the retry a no-op.
+        const force = !!(options && options.force);
+
+        if (
+            !force &&
+            cached &&
+            (Date.now() - cached.at) < PHASE_CONFIRM_CACHE_MS
+        ) {
             return cached.value;
         }
 
@@ -2761,26 +3220,23 @@
         // Independent verification that we read the right CELL. The
         // serial matching only proves the LINK is right; this proves
         // the slot arithmetic is right.
-        const location = checkLocationAgreement(parsed, info);
+        //
+        // Only meaningful for a CONTEMPORANEOUS reading. Re-confirming
+        // a card restored from an earlier session compares a slot
+        // recorded hours ago against where that server sits now, and a
+        // failed server that has since been pulled and re-racked will
+        // always "disagree" - correctly, and about nothing.
+        const location =
+            checkLocation
+                ? checkLocationAgreement(parsed, info)
+                : null;
 
         parsed.locationMatches = location ? location.ok : null;
 
         if (location && !location.ok) {
-
-            fail(
-                `Slot mismatch for ${serial}: the tracker read it as ` +
-                `${location.expected}, but its detail page says ` +
-                `${location.actual}. The rack table's column mapping is ` +
-                'wrong - alert LOCATIONS cannot be trusted until this is ' +
-                'resolved.'
-            );
-
-            reportHealth(
-                'DEGRADED',
-                'A server\'s detail page disagrees with the rack slot it ' +
-                'was read from. Column mapping may be wrong.'
-            );
-
+            noteSlotDisagreement(serial, info, location);
+        } else if (location && location.ok) {
+            noteSlotAgreement(info);
         }
 
         phaseConfirmCache.set(cacheKey, { at: Date.now(), value: parsed });
@@ -2814,14 +3270,9 @@
     // A move from any of these to red is a real result.
     //
     // darkgreen is included deliberately: a server that passed and is
-    // then retested and fails goes darkgreen -> red, which the original
-    // three-pair table dropped on the floor. For a monitoring tool a
-    // missed failure is the worst outcome, so this now alerts.
+    // then retested and fails goes darkgreen -> red. Missing that failure
+    // would be worse than reporting a redundant transition.
     const FAILURE_FROM_COLORS = ['lightblue', 'lightgreen', 'darkgreen'];
-
-    // lightblue -> darkgreen is a PRE-TEST PASS, which the original
-    // table also ignored entirely.
-    const SUCCESS_FROM_COLORS = ['lightblue', 'lightgreen'];
 
 
     // ------------------------------------------------------------
@@ -2845,13 +3296,10 @@
                 : 'TEST_FAILURE';
         }
 
-        if (
-            newColor === 'darkgreen' &&
-            SUCCESS_FROM_COLORS.indexOf(oldColor) !== -1
-        ) {
-            return oldColor === 'lightblue'
-                ? 'PRETEST_SUCCESS'
-                : 'TEST_SUCCESS';
+        // Pre-test success (lightblue -> darkgreen) is intentionally
+        // ignored because it immediately continues into regular test.
+        if (newColor === 'darkgreen' && oldColor === 'lightgreen') {
+            return 'TEST_SUCCESS';
         }
 
         return null;
@@ -2859,26 +3307,98 @@
     }
 
 
-    // Swap the PHASE half of a transition while keeping the RESULT half.
-    // This is the only operation confirmation is allowed to perform: it
-    // can tell you a fail was a pre-test fail, it can never turn a fail
-    // into a pass.
+    // ------------------------------------------------------------
+    // RESOLVE THE FINAL LABEL FROM THE DETAIL PAGE
+    //
+    // v0.9.5. The old applyPhaseToTransition() could only swap the
+    // PHASE half, and only on a card that was already a FAILURE. That
+    // left the RESULT half permanently owned by cell colour, which is
+    // the other half of the same bug: the detail page states the result
+    // explicitly as a per-operation boolean and was being ignored.
+    //
+    // The detail page is authoritative, with ONE deliberate asymmetry:
+    //
+    //   detail says FAIL  -> always applied. A failure is never lost.
+    //   detail says PASS  -> applied only if the colour did not already
+    //                        say FAILURE.
+    //
+    // The asymmetry exists because the Test Status table can lag the
+    // rack colour by a scan or two. If colour has gone red and the
+    // newest row still shows the previous operation passing, that row
+    // is stale; downgrading a red to a PASS on the strength of it would
+    // silently drop a real failure. Upgrading in the other direction
+    // costs nothing worse than one card that says FAIL for a few more
+    // seconds than it had to.
+    // ------------------------------------------------------------
 
-    function applyPhaseToTransition(transition, phase) {
+    const TRANSITION_BY_PHASE_RESULT = {
+        'PRETEST|FAIL': 'PRETEST_FAILURE',
+        'PRETEST|PASS': 'PRETEST_SUCCESS',
+        'TEST|FAIL':    'TEST_FAILURE',
+        'TEST|PASS':    'TEST_SUCCESS',
+        'DEKIT|FAIL':   'DEKIT_FAILURE',
+        'DEKIT|PASS':   'DEKIT_SUCCESS'
+    };
 
-        const isFailure = /FAILURE$/.test(transition);
 
-        if (phase === 'PRETEST') {
-            return isFailure ? 'PRETEST_FAILURE' : 'PRETEST_SUCCESS';
+    // Diagnostic events are recorded and labelled like anything else.
+    // What they never do is interrupt anyone.
+
+    function isDiagnosticTransition(transition) {
+        return /^DEKIT_/.test(String(transition || ''));
+    }
+
+
+    function resolveTransitionFromDetail(transition, parsed) {
+
+        if (!parsed || !parsed.phase) {
+            return transition;
         }
 
-        if (phase === 'TEST') {
-            return isFailure ? 'TEST_FAILURE' : 'TEST_SUCCESS';
+        const provisionalIsFailure = /FAILURE$/.test(transition);
+
+        // A diagnostic pass is not a hardware result in either
+        // direction, so it overrides the colour outright rather than
+        // being merged with it. Colour saw the cell go red; the page
+        // says that red is SYS_DEKIT, and SYS_DEKIT going red is not a
+        // failure of anything.
+        if (parsed.phase === 'DEKIT') {
+            return parsed.status === 'PASS'
+                ? 'DEKIT_SUCCESS'
+                : 'DEKIT_FAILURE';
         }
 
-        return transition;
+        // No result on the page yet: keep the colour's result half and
+        // correct the phase half only.
+        if (!parsed.status) {
+
+            if (!provisionalIsFailure) {
+                return transition;
+            }
+
+            return parsed.phase === 'PRETEST'
+                ? 'PRETEST_FAILURE'
+                : 'TEST_FAILURE';
+
+        }
+
+        // Never let a stale PASS row erase a failure the colour caught.
+        if (parsed.status === 'PASS' && provisionalIsFailure) {
+
+            return parsed.phase === 'PRETEST'
+                ? 'PRETEST_FAILURE'
+                : 'TEST_FAILURE';
+
+        }
+
+        return (
+            TRANSITION_BY_PHASE_RESULT[`${parsed.phase}|${parsed.status}`] ||
+            transition
+        );
 
     }
+
+
 
 
     // ============================================================
@@ -3256,7 +3776,6 @@
                 `(${headerCount} headers, ${previousStates.size} states)`;
         }
 
-        updateSessionSummary();
 
         // Coalesce this cycle's toasts. Must run after the WHOLE pass,
         // so a batch completing produces one summary, not a storm.
@@ -3363,18 +3882,26 @@
             isDuplicateAlert(key, info.serial, transition);
 
         // ----------------------------------------------------
-        // RECORD, THEN SURFACE
+        // LOG, CONFIRM, THEN SURFACE - IN THAT ORDER
         // ----------------------------------------------------
         //
-        // Recording is unconditional. The per-section "Notifs" flag
-        // suppresses the card and the desktop toast ONLY.
+        // The log entry is written first and unconditionally. The
+        // per-section "Notifs" flag and the flap guard suppress the
+        // CARD and the TOAST, never the record.
         //
-        // Previously logRealAlert() lived inside notify(), which sat
-        // behind this same watch check - so muting a noisy section
-        // silently stopped it being recorded and the exported log
-        // developed invisible holes.
+        // Confirmation is attached to the EVENT, not to the card. It
+        // used to be started inside surfaceAlert(), which meant a
+        // transition in a muted section, or one suppressed as a flap
+        // repeat, was written to the permanent log with
+        // phaseSource 'color' and then never corrected - the audit
+        // trail was only as good as the notification settings. Now the
+        // fetch runs for every recorded event, the entry is updated
+        // when it answers, and the card (if there is one) is reconciled
+        // from that same promise rather than fetching the page twice.
 
-        recordTransition(info, transition, suppressed);
+        const eventId = recordTransition(info, transition, suppressed);
+
+        const confirmation = confirmEvent(info, transition, eventId);
 
         if (suppressed) {
             return;
@@ -3394,7 +3921,7 @@
 
         }
 
-        surfaceAlert(info, transition);
+        surfaceAlert(info, transition, confirmation, eventId);
 
     }
 
@@ -3405,14 +3932,42 @@
 
     function recordTransition(info, transition, suppressed) {
 
-        logRealAlert(info, transition, !!suppressed);
+        return logRealAlert(info, transition, !!suppressed);
 
-        // Session counters track DISTINCT events, not flap repeats.
-        if (!suppressed && sessionCounts[transition] !== undefined) {
-            sessionCounts[transition] += 1;
+    }
+
+
+    // ------------------------------------------------------------
+    // Confirm a recorded EVENT. Independent of whether that event is
+    // ever shown to anyone.
+    //
+    // Returns the promise so surfaceAlert() can reuse it: one fetch per
+    // event, log updated first, card reconciled after.
+    // ------------------------------------------------------------
+
+    function confirmEvent(info, transition, eventId) {
+
+        if (!eventId || !info || !info.detailUrl || isDebugData(info)) {
+            return null;
         }
 
-        updateSessionSummary();
+        // A flap repeat re-points at an entry that is already fully
+        // resolved. Re-fetching its detail page every 4s would add
+        // nothing and cost a request each time.
+        if (isLogEntryResolved(eventId)) {
+            return null;
+        }
+
+        return confirmPhase(info.detailUrl, info)
+            .then(result => {
+                applyConfirmationToLogEntry(eventId, transition, result);
+                return result;
+            })
+            .catch(error => {
+                fail('Event confirmation threw:', error);
+                applyConfirmationToLogEntry(eventId, transition, null);
+                return null;
+            });
 
     }
 
@@ -3433,7 +3988,102 @@
     let pendingToasts = [];
 
 
-    function surfaceAlert(info, transition) {
+    // A card whose label is corrected AFTER its toast has gone out is a
+    // silent miss on the desktop: the confirmation fetch is bounded at
+    // TOAST_CONFIRM_WAIT_MS and the queue is capped at four parallel
+    // requests, so in a burst the toast fires on the colour's
+    // provisional label - which for a pre-test failure reads TEST FAIL,
+    // because colour cannot tell the two apart. The card then quietly
+    // becomes PRE-TEST FAIL and the operator, who is watching the
+    // desktop rather than the panel, never sees the distinction.
+    //
+    // So: when the label changes after the fact, say so.
+    const CORRECTION_TOAST_MAX_AGE_MS = 1800000;
+
+
+    // Records what the DESKTOP was told, which is not necessarily what
+    // the card says a few seconds later.
+
+    function markToastSent(record, transition) {
+
+        if (!record) {
+            return;
+        }
+
+        record.notifiedTransition = transition || record.transition || '';
+
+        updateStoredAlert(record);
+
+    }
+
+
+    function notifyLabelCorrection(record, previousTransition) {
+
+        if (!record || !previousTransition) {
+            return;
+        }
+
+        // Only the desktop needs telling. The card has already updated
+        // itself in place.
+        if (previousTransition === record.transition) {
+            return;
+        }
+
+        // A reload can re-check cards from hours ago. Correcting the
+        // label on those is right; interrupting someone about them is
+        // not.
+        if (
+            !record.ts ||
+            (Date.now() - Number(record.ts)) > CORRECTION_TOAST_MAX_AGE_MS
+        ) {
+            return;
+        }
+
+        if (isDebugData(record) && !settings.showDebug) {
+            return;
+        }
+
+        const becameDiagnostic =
+            isDiagnosticTransition(record.transition) &&
+            !isDiagnosticTransition(previousTransition);
+
+        // Turning out to be a SYS_DEKIT is the one correction worth
+        // sending about a diagnostic: an alert already went out calling
+        // it a failure, and leaving that standing sends someone to a
+        // rack for nothing. Every other diagnostic transition stays
+        // silent.
+        if (isDiagnosticTransition(record.transition) && !becameDiagnostic) {
+            return;
+        }
+
+        const title =
+            becameDiagnostic
+                ? 'SYS_DEKIT \u{1f527} \u{2014} NOT A FAILURE'
+                : `${getTransitionTitle(record.transition)} \u{2014} CORRECTED`;
+
+        const tail =
+            becameDiagnostic
+                ? `(earlier alert said ${getTransitionTitle(previousTransition)} \u{2014} disregard)`
+                : `(earlier alert said ${getTransitionTitle(previousTransition)})`;
+
+        sendDesktopNotification(
+            title,
+            [
+                `Serial #: ${record.serial}`,
+                `\u{1f4cd} ${record.location || ''}`,
+                record.statusLine || '',
+                tail
+            ].join('\n'),
+            getTransitionIcon(record.transition),
+            record.detailUrl
+                ? () => openFromNotification(record.detailUrl)
+                : null
+        );
+
+    }
+
+
+    function surfaceAlert(info, transition, eventConfirmation, eventId) {
 
         const record =
             createPersistentAlert(
@@ -3442,14 +4092,21 @@
                 transition
             );
 
-        // Tie the log entry to this card so the confirmed phase can be
-        // written back to BOTH later.
-        linkLastLogEntry(record.id);
+        // Both directions of the link. eventId is the stable one;
+        // alertId lets the log entry be found from the card.
+        record.eventId = eventId || '';
 
-        // Confirmation is asynchronous and must never block the card.
+        linkLogEntryToAlert(eventId, record.id);
+
+        updateStoredAlert(record);
+
+        // Reuse the EVENT's confirmation rather than starting a second
+        // fetch for the same server. The log is updated inside that
+        // promise, so by the time the card reconciles the audit entry
+        // is already correct.
         const confirmation =
-            (info && info.detailUrl && !isDebugData(info))
-                ? confirmPhase(info.detailUrl, info)
+            eventConfirmation
+                ? eventConfirmation
                     .then(result => {
                         reconcileAlertPhase(record, result);
                         return result;
@@ -3475,7 +4132,7 @@
 
     async function flushPendingToasts() {
 
-        const batch = pendingToasts;
+        let batch = pendingToasts;
 
         pendingToasts = [];
 
@@ -3510,12 +4167,39 @@
                 : item.transition;
         });
 
+        // SYS_DEKIT is a factory diagnostic, not a hardware result. The
+        // card and the log entry both exist; the desktop is left alone.
+        // Stamped as already-announced so the correction path below
+        // does not later decide the desktop is owed an update about it.
+        const diagnostics =
+            batch.filter(item => isDiagnosticTransition(item.transition));
+
+        diagnostics.forEach(item => {
+            markToastSent(item.record, item.transition);
+        });
+
+        if (diagnostics.length) {
+            devLog(
+                `${diagnostics.length} SYS_DEKIT event(s) recorded ` +
+                'without a desktop notification.'
+            );
+        }
+
+        batch =
+            batch.filter(item => !isDiagnosticTransition(item.transition));
+
+        if (!batch.length) {
+            return;
+        }
+
         if (batch.length <= TOAST_INDIVIDUAL_LIMIT) {
 
             batch.forEach(item => {
 
                 const unverified =
-                    item.record && item.record.phaseSource === 'unverified';
+                    settings.developerMode &&
+                    item.record &&
+                    item.record.phaseSource === 'unverified';
 
                 sendDesktopNotification(
                     getTransitionTitle(item.transition) +
@@ -3531,6 +4215,8 @@
                         ? () => openFromNotification(item.info.detailUrl)
                         : null
                 );
+
+                markToastSent(item.record, item.transition);
 
             });
 
@@ -3568,6 +4254,8 @@
             null
         );
 
+        batch.forEach(item => markToastSent(item.record, item.transition));
+
         log(
             `${batch.length} events this cycle \u{2014} sent one summary ` +
             'toast instead of one per event. All cards are in the panel.'
@@ -3575,35 +4263,6 @@
 
     }
 
-
-    // ============================================================
-    // SESSION SUMMARY
-    // ============================================================
-
-    function updateSessionSummary() {
-
-        const el = document.getElementById('eve-session-summary');
-
-        if (!el) {
-            return;
-        }
-
-        const total =
-            sessionCounts.TEST_SUCCESS +
-            sessionCounts.PRETEST_SUCCESS +
-            sessionCounts.TEST_FAILURE +
-            sessionCounts.PRETEST_FAILURE;
-
-        el.textContent =
-            total
-                ? 'This session: ' +
-                  `${sessionCounts.TEST_FAILURE} fail \u{b7} ` +
-                  `${sessionCounts.PRETEST_FAILURE} pre-test fail \u{b7} ` +
-                  `${sessionCounts.TEST_SUCCESS} pass \u{b7} ` +
-                  `${sessionCounts.PRETEST_SUCCESS} pre-test pass`
-                : 'This session: no alerts yet';
-
-    }
 
 
     // ============================================================
@@ -3772,8 +4431,7 @@
 
         const transitionByType = {
             success: 'TEST_SUCCESS',
-            failure: 'TEST_FAILURE',
-            pretest: 'PRETEST_FAILURE'
+            failure: 'TEST_FAILURE'
         };
 
         const transition = transitionByType[type];
@@ -3830,6 +4488,135 @@
     let alertLogCache = null;
     let logWriteTimer = null;
     let logWritePending = false;
+
+
+    // ------------------------------------------------------------
+    // WHICH LOG DAY DOES A MOMENT BELONG TO?
+    //
+    // Local, not UTC, and derived from the entry's ISO timestamp rather
+    // than its rendered `date` string - that one is locale-formatted
+    // and cannot be compared reliably.
+    // ------------------------------------------------------------
+
+    function logDayKeyFor(value) {
+
+        const parsed = new Date(value);
+
+        if (Number.isNaN(parsed.getTime())) {
+            return '';
+        }
+
+        // Calendar date only. The time of day is deliberately not read.
+        const month = String(parsed.getMonth() + 1).padStart(2, '0');
+        const day   = String(parsed.getDate()).padStart(2, '0');
+
+        return `${parsed.getFullYear()}-${month}-${day}`;
+
+    }
+
+
+    function currentLogDay() {
+        return logDayKeyFor(new Date());
+    }
+
+
+    function entryLogDay(entry) {
+        return entry && entry.iso ? logDayKeyFor(entry.iso) : '';
+    }
+
+
+    // The day the in-memory log belongs to. Empty until the first
+    // rollover check, which happens at startup.
+    let activeLogDay = '';
+
+
+    function pruneLogToDay(day) {
+
+        const entries = getAlertLog();
+
+        const kept = entries.filter(entry => entryLogDay(entry) === day);
+
+        const removed = entries.length - kept.length;
+
+        if (!removed) {
+            return 0;
+        }
+
+        alertLogCache = kept;
+
+        // Written immediately rather than through the debounce. A
+        // destructive change that is still sitting in a timer when the
+        // page reloads leaves storage and memory disagreeing about what
+        // the log contains.
+        logWritePending = true;
+
+        flushAlertLog();
+
+        return removed;
+
+    }
+
+
+    // ------------------------------------------------------------
+    // Called at startup and on the master tick. Cheap when nothing has
+    // changed: one date comparison.
+    // ------------------------------------------------------------
+
+    function checkLogDayRollover() {
+
+        const today = currentLogDay();
+
+        if (activeLogDay === today) {
+            return;
+        }
+
+        const previous = activeLogDay;
+
+        activeLogDay = today;
+
+        try {
+            localStorage.setItem(LOG_DAY_KEY, today);
+        } catch (error) {
+            warn('Could not record the log day:', error);
+        }
+
+        const removed = pruneLogToDay(today);
+
+        if (!removed) {
+            return;
+        }
+
+        // previous === '' means this ran at startup against a log left
+        // over from an earlier session - expected, and not worth
+        // interrupting anyone for. A rollover DURING a session is
+        // different: entries the operator could see a minute ago are
+        // gone, and they get told so while an export could still have
+        // mattered.
+        if (!previous) {
+
+            log(
+                `Alert log: discarded ${removed} entr(y/ies) from a ` +
+                `previous day. The log tracks ${today} only.`
+            );
+
+            return;
+
+        }
+
+        log(
+            `Alert log rolled over ${previous} \u{2192} ${today}. ` +
+            `${removed} entr(y/ies) from ${previous} were discarded.`
+        );
+
+        sendDesktopNotification(
+            'EVE TRACKER \u{2014} LOG ROLLED OVER',
+            `${removed} entr(y/ies) from ${previous} were cleared.\n` +
+            'The log now tracks ' + today + ' only.',
+            ICON_FAIL,
+            null
+        );
+
+    }
 
 
     function loadAlertLogFromStorage() {
@@ -3991,7 +4778,7 @@
                 'Debug/test transition \u{2014} not written to the alert ' +
                 'log (real servers only).'
             );
-            return;
+            return '';
         }
 
         const now = new Date();
@@ -4023,29 +4810,48 @@
 
                     scheduleLogWrite();
 
-                    return;
+                    // The repeat belongs to the ORIGINAL entry, so the
+                    // caller confirms against that one.
+                    return candidate.eventId || '';
 
                 }
 
             }
 
-            return;
+            return '';
 
         }
 
+        // Stable identity for this event, independent of any card. The
+        // old scheme stamped the LAST log entry with the card's id
+        // immediately after appending, which only worked because the
+        // two calls happened to be adjacent and only for events that
+        // produced a card at all.
+        const eventId =
+            `evt-${now.getTime()}-` +
+            Math.random().toString(36).slice(2, 8);
+
         appendAlertLog({
+            eventId: eventId,
             iso: now.toISOString(),
             date: now.toLocaleDateString(),
             time: now.toLocaleTimeString(),
             result: getTransitionTitle(transition),
             transition: transition,
 
+            // Set on confirmation. Colour alone can never tell that a
+            // red cell is a SYS_DEKIT run.
+            diagnostic: false,
+
             // Overwritten by updateLogEntryForAlert() once the detail
             // page answers. 'color' means the phase half of this
             // category is a GUESS and should not be trusted.
             phaseSource: 'color',
+            resultConfirmed: false,
             taskset: '',
             taskcase: '',
+            operation: '',
+            pass: '',
 
             serial: info.serial,
             section: info.section,
@@ -4054,6 +4860,101 @@
             serverType: info.serverType || ''
         });
 
+        return eventId;
+
+    }
+
+
+    // ------------------------------------------------------------
+    // LOG ENTRY <-> EVENT
+    // ------------------------------------------------------------
+
+    function findLogEntry(eventId) {
+
+        if (!eventId) {
+            return null;
+        }
+
+        const entries = getAlertLog();
+
+        for (let i = entries.length - 1; i >= 0; i -= 1) {
+            if (entries[i].eventId === eventId) {
+                return entries[i];
+            }
+        }
+
+        return null;
+
+    }
+
+
+    function isLogEntryResolved(eventId) {
+
+        const entry = findLogEntry(eventId);
+
+        return !!(
+            entry &&
+            entry.phaseSource === 'confirmed' &&
+            entry.resultConfirmed === true
+        );
+
+    }
+
+
+    function linkLogEntryToAlert(eventId, alertId) {
+
+        const entry = findLogEntry(eventId);
+
+        if (!entry) {
+            return;
+        }
+
+        entry.alertId = alertId;
+
+        scheduleLogWrite();
+
+    }
+
+
+    // The audit entry is corrected the moment the detail page answers,
+    // whether or not this event was ever surfaced as a card.
+
+    function applyConfirmationToLogEntry(eventId, transition, confirmation) {
+
+        const entry = findLogEntry(eventId);
+
+        if (!entry) {
+            return;
+        }
+
+        if (confirmation && confirmation.confirmed) {
+
+            entry.transition =
+                resolveTransitionFromDetail(transition, confirmation);
+
+            entry.result          = getTransitionTitle(entry.transition);
+            entry.diagnostic      = isDiagnosticTransition(entry.transition);
+            entry.phaseSource     = 'confirmed';
+            entry.resultConfirmed = !!confirmation.resultConfirmed;
+            entry.operation       = confirmation.operation || '';
+            entry.taskset         = confirmation.taskset || '';
+            entry.taskcase        = confirmation.taskcase || '';
+            entry.pass =
+                (confirmation.pass === 0 || confirmation.pass === 1)
+                    ? String(confirmation.pass)
+                    : '';
+
+        } else {
+
+            entry.phaseSource      = 'unverified';
+            entry.resultConfirmed  = false;
+            entry.unverifiedReason =
+                (confirmation && confirmation.reason) || 'unknown';
+
+        }
+
+        scheduleLogWrite();
+
     }
 
 
@@ -4061,28 +4962,18 @@
     // path AND the clear-log confirmation use this, so the counts the
     // user sees always agree with the file they get.
 
-    // Stamp the most recent log entry with the alert card's id, so the
-    // confirmed phase can later be written back to the exact entry.
-    // recordTransition() always runs immediately before surfaceAlert(),
-    // so the last entry is this event's.
-
-    function linkLastLogEntry(alertId) {
-
-        const entries = getAlertLog();
-
-        if (!entries.length) {
-            return;
-        }
-
-        entries[entries.length - 1].alertId = alertId;
-
-        scheduleLogWrite();
-
-    }
-
-
     function loadRealAlertLog() {
-        return getAlertLog().filter(entry => !isDebugData(entry));
+
+        // Day-scoped as well as debug-filtered, so an export taken
+        // between the rollover moment and the next tick still contains
+        // exactly one day.
+        const today = currentLogDay();
+
+        return getAlertLog().filter(entry =>
+            !isDebugData(entry) &&
+            entryLogDay(entry) === today
+        );
+
     }
 
 
@@ -4169,7 +5060,19 @@
         { transition: 'PRETEST_FAILURE', heading: 'PRE-TEST FAILS' },
         { transition: 'TEST_FAILURE',    heading: 'TEST FAILS' },
         { transition: 'PRETEST_SUCCESS', heading: 'PRE-TEST PASSES' },
-        { transition: 'TEST_SUCCESS',    heading: 'TEST PASSES' }
+        { transition: 'TEST_SUCCESS',    heading: 'TEST PASSES' },
+
+        // Last, and named for what it is. SYS_DEKIT is a factory
+        // diagnostic - it belongs in the record, but not among the
+        // hardware results anyone is counting.
+        {
+            transition: 'DEKIT_FAILURE',
+            heading: 'SYS_DEKIT \u{2014} DIAGNOSTIC, NOT A RESULT (Pass=0)'
+        },
+        {
+            transition: 'DEKIT_SUCCESS',
+            heading: 'SYS_DEKIT \u{2014} DIAGNOSTIC, NOT A RESULT (Pass=1)'
+        }
     ];
 
     // Column widths drive the rule width, instead of a magic number
@@ -4237,6 +5140,7 @@
         lines.push('');
 
         lines.push(`Exported:      ${new Date().toLocaleString()}`);
+        lines.push(`Log day:       ${currentLogDay()}`);
 
         if (logEntries.length) {
 
@@ -4250,6 +5154,17 @@
         }
 
         lines.push(`Total alerts:  ${logEntries.length}`);
+        lines.push('');
+        lines.push(
+            'This log covers ONE CALENDAR DAY. Every entry stamped'
+        );
+        lines.push(
+            `${currentLogDay()} is here regardless of the time of day it`
+        );
+        lines.push(
+            'was recorded. Entries from any other date are discarded'
+        );
+        lines.push('automatically.');
         lines.push('');
         const unverified =
             logEntries.filter(
@@ -4315,23 +5230,48 @@
         lines.push('SUMMARY');
         lines.push(LOG_RULE);
 
+        // Diagnostics are excluded from the denominator. A floor that
+        // ran 40 SYS_DEKIT passes would otherwise report a halved
+        // failure rate without anything having changed on the hardware.
+        const resultEntries =
+            logEntries.filter(entry => !entry.diagnostic);
+
         LOG_CATEGORIES.forEach(category => {
 
             const count = grouped[category.transition].length;
 
+            const diagnosticCategory =
+                isDiagnosticTransition(category.transition);
+
+            const denominator =
+                diagnosticCategory
+                    ? logEntries.length
+                    : resultEntries.length;
+
             const share =
-                logEntries.length
-                    ? Math.round((count / logEntries.length) * 100)
+                denominator
+                    ? Math.round((count / denominator) * 100)
                     : 0;
 
             lines.push(
                 '  ' +
-                padOrTrim(category.heading, 20) +
+                padOrTrim(category.heading, 46) +
                 padOrTrim(count, 8) +
                 `${share}%`
             );
 
         });
+
+        lines.push('');
+        lines.push(
+            `  Hardware results: ${resultEntries.length}` +
+            `  \u{2022}  SYS_DEKIT diagnostics: ` +
+            `${logEntries.length - resultEntries.length}`
+        );
+        lines.push(
+            '  Percentages above are of hardware results only, except'
+        );
+        lines.push('  the SYS_DEKIT rows, which are of all entries.');
 
         if (other.length) {
             lines.push(
@@ -4489,16 +5429,23 @@
             'Unit',
             'Server Type',
             'Repeats',
+            'Category Kind',
             'Phase Source',
+            'Result Verified',
+            'Operation',
+            'Pass',
             'Taskset',
-            'Taskcase'
+            'Taskcase',
+            'Notified'
         ].join(','));
 
         const categoryNames = {
             PRETEST_FAILURE: 'PRE-TEST FAIL',
             TEST_FAILURE: 'TEST FAIL',
+            TEST_SUCCESS: 'TEST PASS',
             PRETEST_SUCCESS: 'PRE-TEST PASS',
-            TEST_SUCCESS: 'TEST PASS'
+            DEKIT_FAILURE: 'SYS_DEKIT (Pass=0)',
+            DEKIT_SUCCESS: 'SYS_DEKIT (Pass=1)'
         };
 
         logEntries.forEach(entry => {
@@ -4525,9 +5472,19 @@
 
                 // 'confirmed' = phase read off the detail page.
                 // 'color'/'unverified' = the phase half is a guess.
+                // 'diagnostic' entries are SYS_DEKIT: recorded for the
+                // audit trail, never a hardware pass or fail.
+                entry.diagnostic ? 'diagnostic' : 'result',
                 entry.phaseSource || 'color',
+                entry.resultConfirmed === true ? 'yes' : 'no',
+                entry.operation || '',
+                entry.pass === undefined ? '' : entry.pass,
                 entry.taskset || '',
-                entry.taskcase || ''
+                entry.taskcase || '',
+
+                // Whether this event ever produced a card/toast. It is
+                // recorded either way; this column says which.
+                entry.alertId ? 'yes' : 'no'
             ].map(csvEscape).join(','));
 
         });
@@ -4549,16 +5506,21 @@
 
             const url = URL.createObjectURL(blob);
 
-            const stamp =
-                new Date()
-                    .toISOString()
-                    .replace(/[:.]/g, '-')
-                    .slice(0, 19);
+            // Local log day + local wall time. The old UTC ISO stamp
+            // put a 3am export under the previous calendar date, which
+            // is exactly the confusion a day-scoped log cannot afford.
+            const now = new Date();
+
+            const time =
+                [now.getHours(), now.getMinutes(), now.getSeconds()]
+                    .map(part => String(part).padStart(2, '0'))
+                    .join('-');
 
             const link = document.createElement('a');
 
             link.href = url;
-            link.download = `eve-slt-tracker-log-${stamp}.${extension}`;
+            link.download =
+                `eve-slt-tracker-log-${currentLogDay()}-${time}.${extension}`;
 
             // Wrapped: appending to body is a childList mutation on
             // document.body, which the observer used to treat as a real
@@ -4643,7 +5605,8 @@
                 : '';
 
         const confirmed = window.confirm(
-            `Permanently delete all ${count} logged alert(s)?${extra}\n\n` +
+            `Permanently delete all ${count} alert(s) logged on ` +
+            `${currentLogDay()}?${extra}\n\n` +
             'This cannot be undone. Export the log first if you need to ' +
             'keep a record.'
         );
@@ -4933,6 +5896,132 @@
     }
 
 
+    // Rebuild the object confirmPhase() expects from a stored record.
+    // Older records predate the section/eve/unit fields, so fall back
+    // to splitting the display location rather than passing undefined
+    // into the slot check and tripping a false slot-mismatch alarm.
+
+    function infoFromRecord(record) {
+
+        const parts =
+            String(record.location || '')
+                .split('\u{2022}')
+                .map(part => part.trim());
+
+        return {
+            serial:    record.serial || '',
+            detailUrl: record.detailUrl || '',
+            section:   record.section || parts[0] || '',
+            eve:       record.eve || parts[1] || '',
+            unit:      record.unit || parts[2] || ''
+        };
+
+    }
+
+
+    // ------------------------------------------------------------
+    // WHICH CARDS STILL NEED AN ANSWER?
+    //
+    // Two populations, and the second is the one that got missed:
+    //
+    //   phaseSource !== 'confirmed'
+    //       confirmation never succeeded.
+    //
+    //   resultConfirmed !== true
+    //       the phase was confirmed but the RESULT was not. Either the
+    //       row was still being written when we read it - the collector
+    //       writes taskset first and fills in Finished / taskset_status
+    //       / Pass a moment later, so a fetch fired seconds after the
+    //       colour flipped sees a half-written row - or the record
+    //       predates this build entirely and has no resultConfirmed
+    //       field, because the build that wrote it had no concept of
+    //       one.
+    //
+    // The first version of this restore filter tested phaseSource
+    // alone, so a card that 0.9.4 had confirmed the PHASE of was
+    // treated as finished and skipped for ever, and kept displaying a
+    // note assembled from fields that build never wrote.
+    // ------------------------------------------------------------
+
+    function needsReconfirmation(record) {
+
+        if (!record || !record.detailUrl || isDebugData(record)) {
+            return false;
+        }
+
+        return (
+            record.phaseSource !== 'confirmed' ||
+            record.resultConfirmed !== true
+        );
+
+    }
+
+
+    // A pending result is worth chasing for a few minutes and then
+    // letting go. The row either gets written or it does not, and
+    // re-fetching a detail page for ever is how a monitor becomes the
+    // load problem.
+
+    const RESULT_RETRY_MAX_ATTEMPTS = 8;
+
+
+    function reconfirmRecord(record) {
+
+        const attempts = Number(record.resultAttempts) || 0;
+
+        if (attempts >= RESULT_RETRY_MAX_ATTEMPTS) {
+            return false;
+        }
+
+        record.resultAttempts = attempts + 1;
+
+        updateStoredAlert(record);
+
+        confirmPhase(
+            safeUrl(record.detailUrl),
+            infoFromRecord(record),
+            { live: false, force: true }
+        )
+            .then(result => reconcileAlertPhase(record, result))
+            .catch(error => {
+                fail('Re-confirmation threw:', error);
+                reconcileAlertPhase(record, null);
+            });
+
+        return true;
+
+    }
+
+
+    // Called on the master tick. Picks up rows that finished writing
+    // after we read them, without waiting for a page reload.
+
+    function retryPendingConfirmations() {
+
+        const stale = loadActiveAlerts().filter(needsReconfirmation);
+
+        if (!stale.length) {
+            return;
+        }
+
+        let started = 0;
+
+        stale.forEach(record => {
+            if (reconfirmRecord(record)) {
+                started += 1;
+            }
+        });
+
+        if (started) {
+            devLog(
+                `Re-checking ${started} alert(s) whose result is still ` +
+                'pending.'
+            );
+        }
+
+    }
+
+
     function restorePersistedAlerts() {
 
         const alerts = loadActiveAlerts();
@@ -4948,6 +6037,36 @@
         log(
             `Restored ${alerts.length} alert(s) that survived the page refresh.`
         );
+
+        // ----------------------------------------------------
+        // RE-CONFIRM WHAT WAS NEVER CONFIRMED
+        // ----------------------------------------------------
+        //
+        // v0.9.5. Confirmation used to happen exactly once, in
+        // surfaceAlert(), at the moment the colour changed. A card
+        // stored before that succeeded came back out of sessionStorage
+        // with its stale phaseSource and its stale reason text and was
+        // rendered as-is, for ever. Cards raised by an older build
+        // therefore kept saying "phase NOT verified" after an update
+        // that fixed the confirmation - the update could not reach
+        // them, because nothing ever asked again.
+        //
+        // A confirmation is also worth retrying on its own merits: the
+        // usual reason it failed is a detail page that was slow or
+        // briefly unreachable, and a reload is a free second attempt.
+
+        const stale = alerts.filter(needsReconfirmation);
+
+        if (!stale.length) {
+            return;
+        }
+
+        log(
+            `Re-confirming ${stale.length} restored alert(s) with an ` +
+            'unverified phase or an unresolved result.'
+        );
+
+        stale.forEach(record => reconfirmRecord(record));
 
     }
 
@@ -4985,7 +6104,21 @@
                     ? `${info.section} \u{2022} ${info.eve} \u{2022} ${info.unit}`
                     : '',
 
+            // Slot parts kept separately, not just baked into the
+            // display string, so a card restored from sessionStorage
+            // can be re-confirmed against its detail page.
+            section: info ? info.section : '',
+            eve:     info ? info.eve : '',
+            unit:    info ? info.unit : '',
+
             statusLine: getStatusLine(transition),
+
+            // Links this card to its permanent log entry.
+            eventId: '',
+
+            // The label the desktop toast actually carried. Empty until
+            // one has been sent.
+            notifiedTransition: '',
 
             // 'color'     label is a GUESS derived from the cell color
             // 'confirmed' label was verified on the detail page
@@ -4993,9 +6126,18 @@
             phaseSource: 'color',
 
             // Evidence from the detail page, kept so the card and the
-            // exported log can show WHY a phase was assigned.
+            // exported log can show WHY a label was assigned.
             taskset: '',
             taskcase: '',
+
+            // Operation cell verbatim ("PRETEST" / "SLT"), the Pass
+            // boolean off that same row, and whether that row had
+            // produced a result yet.
+            operation: '',
+            passFlag: null,
+            resultConfirmed: false,
+            phaseExact: false,
+            pendingReason: '',
 
             ts: Date.now()
 
@@ -5019,6 +6161,74 @@
     // disagree about what happened.
     // ============================================================
 
+    // ONE note builder, shared by the freshly rendered card and the
+    // repainted one, so a card cannot say different things depending on
+    // which code path last touched it.
+
+    function buildPhaseNote(record) {
+
+        if (!record) {
+            return '';
+        }
+
+        if (record.phaseSource === 'unverified') {
+            return (
+                `\u{26a0} phase NOT verified \u{2014} ` +
+                `${record.unverifiedReason || 'unknown'}`
+            );
+        }
+
+        if (record.phaseSource !== 'confirmed') {
+            return '';
+        }
+
+        // Operation, then the phase word it was derived from. Older
+        // records have neither, and 'detail page' is the honest label
+        // for "this came from there but the field was not recorded".
+        const parts = [
+            record.operation || record.phase || 'detail page'
+        ];
+
+        if (record.passFlag === 0 || record.passFlag === 1) {
+            parts.push(`Pass=${record.passFlag}`);
+        }
+
+        if (record.taskset) {
+            parts.push(record.taskset);
+        }
+
+        // The failing taskcase is the whole point of a fail alert -
+        // it is the thing that went 0.
+        if (record.passFlag === 0 && record.taskcase) {
+            parts.push(
+                record.taskcase.length > 48
+                    ? `${record.taskcase.slice(0, 48)}\u{2026}`
+                    : record.taskcase
+            );
+        }
+
+        // undefined = written by a build that had no result field at
+        // all, and not yet re-checked. That is not the same claim as
+        // "the page gave no result", so do not make it.
+        const head =
+            record.resultConfirmed === undefined
+                ? '\u{2713} phase confirmed'
+                : (
+                    record.resultConfirmed
+                        ? '\u{2713} confirmed'
+                        : '\u{23f3} result pending'
+                );
+
+        const tail =
+            (!record.resultConfirmed && record.pendingReason)
+                ? ` \u{2014} ${record.pendingReason}`
+                : '';
+
+        return `${head}\u{a0}\u{b7}\u{a0}${parts.join(' \u{b7} ')}${tail}`;
+
+    }
+
+
     function reconcileAlertPhase(record, confirmation) {
 
         if (!record) {
@@ -5030,11 +6240,30 @@
         if (confirmation && confirmation.confirmed) {
 
             record.transition =
-                applyPhaseToTransition(before, confirmation.phase);
+                resolveTransitionFromDetail(before, confirmation);
 
             record.phaseSource = 'confirmed';
             record.taskset     = confirmation.taskset || '';
             record.taskcase    = confirmation.taskcase || '';
+
+            // Evidence, so the card and the export can show WHY this
+            // label was applied instead of asking anyone to take it on
+            // trust.
+            record.operation  = confirmation.operation || '';
+            record.phase      = confirmation.phase || '';
+            record.passFlag   =
+                (confirmation.pass === 0 || confirmation.pass === 1)
+                    ? confirmation.pass
+                    : null;
+            record.resultConfirmed = !!confirmation.resultConfirmed;
+            record.phaseExact      = !!confirmation.phaseExact;
+
+            // Phase is known, result is not - that is not "unverified",
+            // but it is not the whole story either.
+            record.pendingReason =
+                confirmation.resultConfirmed
+                    ? ''
+                    : (confirmation.reason || '');
 
         } else {
 
@@ -5055,17 +6284,23 @@
                 `(taskset: ${record.taskset || 'n/a'}).`
             );
 
-            // Move the session counter to the bucket it belongs in.
-            if (sessionCounts[before] !== undefined) {
-                sessionCounts[before] =
-                    Math.max(0, sessionCounts[before] - 1);
-            }
+            // If the desktop was already told the OLD label, correct it
+            // there too. notifiedTransition is empty until a toast has
+            // actually gone out, so a card relabelled before its toast
+            // fires - the common case - produces one toast with the
+            // right label, not two.
+            if (
+                record.notifiedTransition &&
+                record.notifiedTransition !== record.transition
+            ) {
 
-            if (sessionCounts[record.transition] !== undefined) {
-                sessionCounts[record.transition] += 1;
-            }
+                const announced = record.notifiedTransition;
 
-            updateSessionSummary();
+                record.notifiedTransition = record.transition;
+
+                notifyLabelCorrection(record, announced);
+
+            }
 
         }
 
@@ -5102,12 +6337,20 @@
 
         card.dataset.transition = record.transition || '';
 
+        // A card that only became a SYS_DEKIT on confirmation has to
+        // pick up the flag now, or it stays visible as whatever colour
+        // first called it.
+        card.dataset.diagnostic =
+            isDiagnosticTransition(record.transition) ? '1' : '0';
+
         const titleEl = card.querySelector('.eve-alert-header span');
 
         if (titleEl) {
-            titleEl.textContent =
-                record.title +
-                (record.phaseSource === 'unverified' ? ' \u{26a0}' : '');
+            // No provenance glyph on the title. It said the same thing
+            // as the note directly below it, could not be hidden with
+            // it, and put diagnostic state in the one line an operator
+            // reads at a glance.
+            titleEl.textContent = record.title;
         }
 
         const statusEl = card.querySelector('.eve-alert-status');
@@ -5118,14 +6361,7 @@
 
         let noteEl = card.querySelector('.eve-alert-phase-note');
 
-        const noteText =
-            record.phaseSource === 'confirmed'
-                ? `\u{2713} phase confirmed\u{a0}\u{b7}\u{a0}${record.taskset || 'detail page'}`
-                : (
-                    record.phaseSource === 'unverified'
-                        ? `\u{26a0} phase NOT verified \u{2014} ${record.unverifiedReason}`
-                        : ''
-                );
+        const noteText = buildPhaseNote(record);
 
         if (!noteText) {
             return;
@@ -5179,15 +6415,30 @@
 
         for (let i = entries.length - 1; i >= 0; i -= 1) {
 
-            if (entries[i].alertId !== record.id) {
+            const entry = entries[i];
+
+            // eventId is the stable link. alertId is the fallback for
+            // entries written before events had ids.
+            const matches =
+                (record.eventId && entry.eventId === record.eventId) ||
+                (entry.alertId && entry.alertId === record.id);
+
+            if (!matches) {
                 continue;
             }
 
-            entries[i].transition  = record.transition;
-            entries[i].result      = record.title;
-            entries[i].phaseSource = record.phaseSource;
-            entries[i].taskset     = record.taskset || '';
-            entries[i].taskcase    = record.taskcase || '';
+            entry.transition      = record.transition;
+            entry.diagnostic      = isDiagnosticTransition(record.transition);
+            entry.result          = record.title;
+            entry.phaseSource     = record.phaseSource;
+            entry.resultConfirmed = record.resultConfirmed === true;
+            entry.taskset         = record.taskset || '';
+            entry.taskcase        = record.taskcase || '';
+            entry.operation       = record.operation || '';
+            entry.pass            =
+                (record.passFlag === 0 || record.passFlag === 1)
+                    ? String(record.passFlag)
+                    : '';
 
             scheduleLogWrite();
 
@@ -5208,9 +6459,11 @@
 
     const ALERT_CLASS_BY_TRANSITION = {
         TEST_SUCCESS: 'eve-success',
-        PRETEST_SUCCESS: 'eve-pretest-pass',
         TEST_FAILURE: 'eve-failure',
-        PRETEST_FAILURE: 'eve-pretest'
+        PRETEST_FAILURE: 'eve-pretest',
+        PRETEST_SUCCESS: 'eve-pretest-pass',
+        DEKIT_FAILURE: 'eve-dekit',
+        DEKIT_SUCCESS: 'eve-dekit'
     };
 
 
@@ -5242,6 +6495,11 @@
         alert.dataset.transition = record.transition || '';
 
         alert.dataset.debug = isDebugData(record) ? '1' : '0';
+
+        // Diagnostics ride the same visibility switch as DEBUG data:
+        // present, recorded, exported - just not in the operator's way.
+        alert.dataset.diagnostic =
+            isDiagnosticTransition(record.transition) ? '1' : '0';
 
         // Provenance survives a refresh: a restored card that was never
         // verified must still look unverified.
@@ -5301,13 +6559,9 @@
             </div>
 
             ${
-                record.phaseSource === 'confirmed'
-                    ? `<div class="eve-alert-phase-note">\u{2713} phase confirmed\u{a0}\u{b7}\u{a0}${escapeHtml(record.taskset || 'detail page')}</div>`
-                    : (
-                        record.phaseSource === 'unverified'
-                            ? `<div class="eve-alert-phase-note">\u{26a0} phase NOT verified \u{2014} ${escapeHtml(record.unverifiedReason || 'unknown')}</div>`
-                            : ''
-                    )
+                buildPhaseNote(record)
+                    ? `<div class="eve-alert-phase-note">${escapeHtml(buildPhaseNote(record))}</div>`
+                    : ''
             }
 
             <div
@@ -5449,9 +6703,6 @@
                     <button class="eve-filter-btn eve-filter-category"
                             data-filter="TEST_SUCCESS">Passes</button>
 
-                    <button class="eve-filter-btn eve-filter-category"
-                            data-filter="PRETEST_SUCCESS">Pre-test pass</button>
-
                     <button class="eve-filter-btn eve-debug-visibility-toggle"
                             id="eve-alert-visibility-toggle"
                             type="button"
@@ -5477,6 +6728,8 @@
         // target is document.body, not our own UI - so without this
         // wrapper it read as a real page change and triggered a scan.
         withoutObserver(() => document.body.appendChild(container));
+
+        setupAlertWindowUX(container);
 
         const body = document.getElementById('eve-alert-body');
 
@@ -5654,12 +6907,331 @@
 
 
     // ============================================================
+    // ALERT WINDOW UX  (drag / snap / persistent position)
+    // ============================================================
+
+    // ------------------------------------------------------------
+    // FIT THE PANEL TO THE SPACE BELOW IT
+    //
+    // The drag handler deliberately clamps only the HEADER to the
+    // viewport, so a long alert list never forces a bottom snap. The
+    // cost of that choice is that the LIST is unconstrained: drag the
+    // panel two thirds of the way down and its body still claims up to
+    // a full viewport of height, so the bottom of the list - and the
+    // bottom of its scrollbar track - sit below the edge of the screen.
+    // Dragging the thumb then runs out of screen before it runs out of
+    // track, which is unusable.
+    //
+    // Fix the height to what is actually below the panel's own top edge
+    // and the scrollbar is always reachable, wherever the panel sits.
+    // ------------------------------------------------------------
+
+    const MIN_ALERT_PANEL_HEIGHT = 120;
+
+
+    function syncAlertPanelHeight(container) {
+
+        const panel =
+            container ||
+            document.getElementById('eve-alert-container');
+
+        if (!panel) {
+            return;
+        }
+
+        const top = panel.getBoundingClientRect().top;
+
+        const available = window.innerHeight - top - 10;
+
+        panel.style.maxHeight =
+            `${Math.max(MIN_ALERT_PANEL_HEIGHT, available)}px`;
+
+    }
+
+
+    function saveAlertPanelPosition(container) {
+
+        try {
+            if (!container) return;
+
+            localStorage.setItem(
+                ALERT_PANEL_POSITION_KEY,
+                JSON.stringify({
+                    left: container.style.left,
+                    top: container.style.top
+                })
+            );
+        } catch (error) {
+            // Non-fatal.
+        }
+
+    }
+
+
+    function clampAlertPanelToViewport(container, left, top) {
+
+        const margin = 10;
+
+        const maxLeft = Math.max(
+            margin,
+            window.innerWidth - container.offsetWidth - margin
+        );
+
+        const maxTop = Math.max(
+            margin,
+            window.innerHeight - container.offsetHeight - margin
+        );
+
+        return {
+            left: Math.max(margin, Math.min(left, maxLeft)),
+            top: Math.max(margin, Math.min(top, maxTop))
+        };
+
+    }
+
+
+    function restoreAlertPanelPosition(container) {
+
+        try {
+            const saved = localStorage.getItem(ALERT_PANEL_POSITION_KEY);
+
+            if (!saved) return;
+
+            const pos = JSON.parse(saved);
+            const clamped = clampAlertPanelToViewport(
+                container,
+                Number.parseInt(pos.left, 10) || 10,
+                Number.parseInt(pos.top, 10) || 10
+            );
+
+            container.style.left = `${clamped.left}px`;
+            container.style.top = `${clamped.top}px`;
+            container.style.right = 'auto';
+
+            syncAlertPanelHeight(container);
+
+        } catch (error) {
+            // Non-fatal.
+        }
+
+    }
+
+
+    function setupAlertWindowUX(container) {
+
+        if (!container) return;
+
+        const header = container.querySelector('#eve-alert-header');
+        if (!header) return;
+
+        header.style.cursor = 'move';
+        header.style.userSelect = 'none';
+        header.style.touchAction = 'none';
+
+        restoreAlertPanelPosition(container);
+
+        let dragState = null;
+        let draggedEnough = false;
+
+        // Dragging starts on the header only. Snapping and viewport limits
+        // are based ONLY on the header rectangle, never on the full alert
+        // container. The alert cards below may therefore extend below the
+        // viewport without forcing the header to snap to the bottom edge.
+        header.addEventListener('click', event => {
+            if (!draggedEnough) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            draggedEnough = false;
+        }, true);
+
+        function getHeaderViewportBounds() {
+            const rect = header.getBoundingClientRect();
+            const margin = 10;
+
+            return {
+                margin,
+                width: rect.width,
+                height: rect.height,
+                maxLeft: Math.max(margin, window.innerWidth - rect.width - margin),
+                maxTop: Math.max(margin, window.innerHeight - rect.height - margin)
+            };
+        }
+
+        function positionHeaderFromPointer(event) {
+            const bounds = getHeaderViewportBounds();
+
+            const left = Math.min(
+                Math.max(bounds.margin, event.clientX - dragState.offsetX),
+                bounds.maxLeft
+            );
+
+            const top = Math.min(
+                Math.max(bounds.margin, event.clientY - dragState.offsetY),
+                bounds.maxTop
+            );
+
+            container.style.left = `${left}px`;
+            container.style.top = `${top}px`;
+            container.style.right = 'auto';
+
+            // Live, not on drop: the list has to stay inside the screen
+            // while the panel is still moving.
+            syncAlertPanelHeight(container);
+        }
+
+        function onPointerMove(event) {
+            if (!dragState) return;
+
+            if (
+                Math.abs(event.clientX - dragState.startX) > 4 ||
+                Math.abs(event.clientY - dragState.startY) > 4
+            ) {
+                draggedEnough = true;
+            }
+
+            positionHeaderFromPointer(event);
+        }
+
+        function onPointerUp() {
+            if (!dragState) return;
+
+            document.removeEventListener('pointermove', onPointerMove);
+            document.removeEventListener('pointerup', onPointerUp);
+            document.removeEventListener('pointercancel', onPointerUp);
+
+            // A normal click on the header (including collapse/expand) must
+            // NEVER rewrite the saved position or trigger snapping. Only a
+            // real drag is allowed to change the panel coordinates.
+            const wasDragged = draggedEnough;
+            dragState = null;
+
+            if (!wasDragged) {
+                return;
+            }
+
+            // IMPORTANT: snap ONLY from the header rectangle. The body/cards
+            // are intentionally ignored, so a long alert list cannot cause
+            // a false bottom/right snap.
+            const rect = header.getBoundingClientRect();
+            const bounds = getHeaderViewportBounds();
+            const snapDistance = 35;
+
+            let left = rect.left;
+            let top = rect.top;
+
+            const nearLeft = rect.left <= bounds.margin + snapDistance;
+            const nearRight =
+                window.innerWidth - rect.right <= bounds.margin + snapDistance;
+            const nearTop = rect.top <= bounds.margin + snapDistance;
+            const nearBottom =
+                window.innerHeight - rect.bottom <= bounds.margin + snapDistance;
+
+            if (nearLeft && nearTop) {
+                left = bounds.margin;
+                top = bounds.margin;
+            } else if (nearRight && nearTop) {
+                left = bounds.maxLeft;
+                top = bounds.margin;
+            } else if (nearLeft && nearBottom) {
+                left = bounds.margin;
+                top = bounds.maxTop;
+            } else if (nearRight && nearBottom) {
+                left = bounds.maxLeft;
+                top = bounds.maxTop;
+            } else {
+                if (nearLeft) left = bounds.margin;
+                if (nearRight) left = bounds.maxLeft;
+                if (nearTop) top = bounds.margin;
+                if (nearBottom) top = bounds.maxTop;
+            }
+
+            container.style.left = `${left}px`;
+            container.style.top = `${top}px`;
+            container.style.right = 'auto';
+
+            syncAlertPanelHeight(container);
+
+            saveAlertPanelPosition(container);
+            draggedEnough = false;
+        }
+
+        header.addEventListener('pointerdown', event => {
+            // Only the empty/label portion of the header starts a drag.
+            // Interactive controls (including the Alerts collapse toggle)
+            // must never initiate a drag or rewrite the panel coordinates.
+            if (
+                event.target.closest('button') ||
+                event.target.closest('input') ||
+                event.target.closest('a') ||
+                event.target.closest('#eve-alert-toggle')
+            ) {
+                return;
+            }
+
+            const rect = header.getBoundingClientRect();
+
+            dragState = {
+                offsetX: event.clientX - rect.left,
+                offsetY: event.clientY - rect.top,
+                startX: event.clientX,
+                startY: event.clientY
+            };
+
+            draggedEnough = false;
+
+            // Do NOT rewrite left/top on pointerdown. Doing so converts a
+            // simple click into a coordinate update based on the current
+            // rendered rectangle. When the panel changes size (for example
+            // collapse/expand), that can introduce small cumulative position
+            // shifts even though the user never dragged it. Coordinates are
+            // changed only after an actual drag movement.
+
+            document.addEventListener('pointermove', onPointerMove);
+            document.addEventListener('pointerup', onPointerUp);
+            document.addEventListener('pointercancel', onPointerUp);
+
+            event.preventDefault();
+        });
+
+        window.addEventListener('resize', () => {
+            const rect = header.getBoundingClientRect();
+            const bounds = getHeaderViewportBounds();
+
+            const left = Math.max(
+                bounds.margin,
+                Math.min(rect.left, bounds.maxLeft)
+            );
+
+            const top = Math.max(
+                bounds.margin,
+                Math.min(rect.top, bounds.maxTop)
+            );
+
+            container.style.left = `${left}px`;
+            container.style.top = `${top}px`;
+            container.style.right = 'auto';
+
+            syncAlertPanelHeight(container);
+
+            saveAlertPanelPosition(container);
+        });
+
+    }
+
+
+    // ============================================================
     // ALERT FILTER + SEARCH
     // ============================================================
     //
     // Hides cards that do not match, rather than removing them, so
     // filtering never destroys an alert or its stored copy.
     // ============================================================
+
+    const FILTER_TRANSITION_GROUPS = {
+        TEST_SUCCESS: ['TEST_SUCCESS', 'PRETEST_SUCCESS'],
+        PRETEST_FAILURE: ['PRETEST_FAILURE']
+    };
+
 
     function applyAlertFilter() {
 
@@ -5675,9 +7247,14 @@
 
         cards.forEach(card => {
 
+            // "Passes" covers pre-test passes too, so a confirmed
+            // PRE-TEST PASS card cannot vanish from every filter.
+            const allowedTransitions =
+                FILTER_TRANSITION_GROUPS[alertFilter] || [alertFilter];
+
             const matchesType =
                 alertFilter === 'all' ||
-                card.dataset.transition === alertFilter;
+                allowedTransitions.indexOf(card.dataset.transition) !== -1;
 
             const matchesSearch =
                 !alertSearch ||
@@ -5686,7 +7263,11 @@
                     .indexOf(alertSearch) !== -1;
 
             const matchesDebugVisibility =
-                settings.showDebug || card.dataset.debug !== '1';
+                settings.showDebug ||
+                (
+                    card.dataset.debug !== '1' &&
+                    card.dataset.diagnostic !== '1'
+                );
 
             const show =
                 matchesType && matchesSearch && matchesDebugVisibility;
@@ -5736,7 +7317,13 @@
 
         // Hide the whole menu when there is nothing to show, so it
         // takes no screen space until an alert actually fires.
-        container.style.display = count > 0 ? 'block' : 'none';
+        // flex, not block: the container is a flex column so the list
+        // can be sized against the space below the panel.
+        container.style.display = count > 0 ? 'flex' : 'none';
+
+        if (count > 0) {
+            syncAlertPanelHeight(container);
+        }
 
         const dismissAll =
             document.getElementById('eve-alert-dismiss-all');
@@ -6157,17 +7744,16 @@
 
             <div class="eve-panel-title">
 
-                EVE SLT Tracker
+                <div class="eve-title-info">
+                    <div class="eve-title-name">EVE SLT Tracker</div>
+                    <div class="eve-title-meta">
+                        by Zay Davidson <span class="eve-version">v${SCRIPT_VERSION}</span>
+                    </div>
+                </div>
 
                 <span id="eve-health-chip"
                       class="eve-health-chip eve-health-ok"
                       title="Detection is healthy.">OK</span>
-
-            </div>
-
-            <div class="eve-byline">
-
-                by Zay Davidson
 
             </div>
 
@@ -6191,25 +7777,17 @@
                     </button>
 
                     <button id="eve-watch-all">
-                        Notifs All
+                        All Notifs
                     </button>
 
                     <button id="eve-watch-none">
-                        Notifs None
+                        No Notifs
                     </button>
 
                 </div>
 
                 <div id="eve-section-list"></div>
 
-                <div class="eve-session-row">
-
-                    <span
-                        class="eve-refresh-status"
-                        id="eve-session-summary"
-                    >This session: no alerts yet</span>
-
-                </div>
 
                 <details class="eve-collapse eve-collapse-outer">
 
@@ -6338,20 +7916,12 @@
                                         \u{274c} Test Failure
                                     </button>
 
-                                    <button id="eve-debug-pretest">
-                                        \u{1f537} Test Pre-Test Failure
-                                    </button>
-
                                     <button id="eve-debug-persistence">
                                         \u{1f4be} Refresh &amp; Compare (Persistence Test)
                                     </button>
 
                                     <button id="eve-debug-notify-diagnostic">
                                         \u{1f6a8} Diagnose Desktop Toasts (5 tests)
-                                    </button>
-
-                                    <button id="eve-debug-health">
-                                        \u{1fa7a} Health Check
                                     </button>
 
                                     <button id="eve-clear-log">
@@ -6652,6 +8222,22 @@
 
             const enabled = !!settings.developerMode;
 
+            const trackerPanel = document.getElementById('eve-tracker-panel');
+            if (trackerPanel) {
+                trackerPanel.classList.toggle(
+                    'eve-developer-enabled',
+                    enabled
+                );
+            }
+
+            // The alert container is a SEPARATE fixed element, not a
+            // child of the tracker panel, so the panel class cannot
+            // reach it. Body class does, and toggling it re-hides the
+            // confirmation notes instantly with no re-render.
+            if (document.body) {
+                document.body.classList.toggle('eve-dev-mode', enabled);
+            }
+
             if (developerModeCheckbox) {
                 developerModeCheckbox.checked = enabled;
             }
@@ -6740,7 +8326,6 @@
 
         wireButton('eve-debug-success', () => sendTestNotification('success'));
         wireButton('eve-debug-failure', () => sendTestNotification('failure'));
-        wireButton('eve-debug-pretest', () => sendTestNotification('pretest'));
 
         wireButton('eve-debug-notify-diagnostic', () => {
 
@@ -6764,76 +8349,8 @@
 
         });
 
-        wireButton('eve-debug-health', () => logHealthReport());
-
         wireButton('eve-clear-log', () => clearAlertLog());
 
-        updateSessionSummary();
-
-    }
-
-
-    // ============================================================
-    // HEALTH REPORT
-    // ============================================================
-    //
-    // Everything that used to be scattered across the console (or
-    // invisible entirely) in one place, so "is the tracker actually
-    // working?" has a single answer.
-    // ============================================================
-
-    function logHealthReport() {
-
-        const overdueMs =
-            autoRefreshDueAt ? Date.now() - autoRefreshDueAt : null;
-
-        let storageBytes = 0;
-
-        try {
-            storageBytes =
-                (localStorage.getItem(ALERT_LOG_KEY) || '').length;
-        } catch (error) {
-            storageBytes = -1;
-        }
-
-        console.log(
-            '%c' + LOG_PREFIX + ' HEALTH REPORT',
-            'font-weight:bold;font-size:14px;'
-        );
-
-        console.table({
-            version:            SCRIPT_VERSION,
-            autoRefresh:        settings.autoRefresh ? 'ON' : 'OFF',
-            intervalSeconds:    settings.refreshIntervalSeconds,
-            nextRefreshInSec:
-                autoRefreshDueAt
-                    ? Math.round((autoRefreshDueAt - Date.now()) / 1000)
-                    : 'n/a',
-            overdueSeconds:
-                overdueMs === null ? 'n/a' : Math.round(overdueMs / 1000),
-            softRefreshSetting: settings.softRefresh ? 'ON' : 'OFF',
-            softRefreshActive:  softRefreshEnabled() ? 'YES' : 'NO (session lockout)',
-            softRefreshInFlight: softRefreshInFlight,
-            softRefreshFailures: softRefreshFailures,
-            detectionHealth:    healthState,
-            phaseConfirmFailures: phaseConfirmFailures,
-            phaseConfirmCached: phaseConfirmCache.size,
-            phaseConfirmInFlight: phaseConfirmActive,
-            healthDetail:       healthDetail || 'n/a',
-            tabHidden:          document.hidden,
-            blindScanStreak:    blindScans,
-            pendingToasts:      pendingToasts.length,
-            trackedSlots:       previousStates.size,
-            eveTables:          getEveTableGroups().length,
-            eveHeaders:         getEveHeaders().length,
-            activeAlertCards:   loadActiveAlerts().length,
-            auditLogEntries:    loadRealAlertLog().length,
-            auditLogBytes:      storageBytes,
-            logWritePending:    logWritePending,
-            cooldownsHeld:      recentAlerts.size,
-            GM_notification:    typeof GM_notification,
-            GM_openInTab:       typeof GM_openInTab
-        });
 
     }
 
@@ -6874,7 +8391,7 @@
         if (signature === renderedSectionSignature) {
 
             // Same sections - just make sure the checkboxes agree with
-            // the settings (e.g. after Show All / Notifs None).
+            // the settings (e.g. after Show All / No Notifs).
             sections.forEach(section => {
 
                 const row =
@@ -7113,8 +8630,7 @@
             }
 
             #eve-tracker-panel.eve-tracker-collapsed {
-                min-width: 220px;
-                width: auto;
+                width: 340px;
             }
 
             #eve-tracker-panel {
@@ -7137,9 +8653,37 @@
             }
 
             .eve-panel-title {
+                display: flex;
+                align-items: center;
+                gap: 8px;
                 font-size: 19px;
                 font-weight: bold;
                 margin-bottom: 7px;
+            }
+
+            .eve-title-info {
+                display: flex;
+                flex-direction: column;
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+
+            .eve-title-name {
+                line-height: 1.05;
+            }
+
+            .eve-title-meta {
+                margin-top: 3px;
+                font-size: 11px;
+                font-weight: normal;
+                opacity: .72;
+                white-space: nowrap;
+            }
+
+            .eve-version {
+                margin-left: 6px;
+                font-weight: bold;
+                opacity: 1;
             }
 
             /* Status badge shown on a collapsed summary line, so
@@ -7175,13 +8719,12 @@
             /* =====================================================
                DETECTION HEALTH CHIP
                =====================================================
-               Always visible, never inside a <details>. A collapsed
-               health indicator is no health indicator: the whole point
-               is that a blind tracker must not look like a healthy one.
-               Sits between the title text and the collapse button in
-               the existing space-between flex row. */
+               Visible only while Developer Mode is enabled. It remains
+               in the title row so the developer page and collapsed state
+               use the same header treatment. */
 
             .eve-health-chip {
+                display: none;
                 flex: 0 0 auto;
                 margin-left: auto;
                 margin-right: 8px;
@@ -7191,6 +8734,10 @@
                 padding: 2px 7px;
                 border-radius: 3px;
                 cursor: help;
+            }
+
+            #eve-tracker-panel.eve-developer-enabled .eve-health-chip {
+                display: inline-block;
             }
 
             .eve-health-ok {
@@ -7288,9 +8835,6 @@
                SESSION SUMMARY
                ===================================================== */
 
-            .eve-session-row {
-                margin: 8px 0 4px;
-            }
 
             /* Small byline directly under the panel title. */
 
@@ -7588,18 +9132,48 @@
                PERSISTENT ALERT CONTAINER
                ===================================================== */
 
+            /* The container is a viewport-bounded flex column: header
+               and toolbar take their natural height, the alert list
+               takes what is left. The list used to carry a hard
+               max-height of calc(100vh - 90px) instead, which assumed
+               the chrome above it was always 90px tall. It is not - the
+               filter row wraps onto a second line on a narrow window -
+               so the list ran past the bottom of the screen and took
+               its scrollbar with it. Dragging the thumb then ran out of
+               screen before it ran out of track. */
+
             #eve-alert-container {
                 position: fixed;
                 top: 10px;
                 left: 10px;
                 width: 430px;
                 max-width: calc(100vw - 20px);
+
+                /* Starting value only. syncAlertPanelHeight() overwrites
+                   this with the space actually below the panel, because
+                   the panel is draggable: a viewport-relative cap is
+                   measured from the top of the SCREEN, while the list
+                   starts at the top of the PANEL. Drag the panel down
+                   and the two diverge by exactly the amount that ran
+                   off the bottom of the screen. */
+                max-height: calc(100vh - 20px);
+
+                /* Nothing escapes the box even when the panel is
+                   dragged somewhere with no room left below it. */
+                overflow: hidden;
+
                 z-index: 2147483647;
                 display: none;
+                flex-direction: column;
                 background: #1b1b1b;
                 border: 2px solid #555;
                 border-radius: 8px;
                 font-family: Arial, Helvetica, sans-serif;
+            }
+
+            #eve-alert-header,
+            #eve-alert-toolbar {
+                flex: 0 0 auto;
             }
 
             #eve-alert-header {
@@ -7652,8 +9226,15 @@
             }
 
             #eve-alert-body {
-                max-height: calc(100vh - 90px);
+                flex: 1 1 auto;
+
+                /* Without this a flex item refuses to shrink below its
+                   content height, overflow-y never engages, and the
+                   list pushes the container past the viewport again. */
+                min-height: 0;
+
                 overflow-y: auto;
+                overscroll-behavior: contain;
                 padding: 10px;
                 display: flex;
                 flex-direction: column;
@@ -7717,10 +9298,25 @@
 
             /* =====================================================
                PRE-TEST PASS
-               ===================================================== */
+               =====================================================
+               Green, because it is a pass - but a distinctly darker
+               green than a full TEST PASS, because the server has only
+               cleared pre-test and its real test has not reported. */
 
             .eve-pretest-pass {
-                background: #05606a;
+                background: #055c19;
+            }
+
+            /* =====================================================
+               SYS_DEKIT  (diagnostic, not a result)
+               =====================================================
+               Deliberately neither red nor green. A SYS_DEKIT card is
+               only visible with DEBUG shown, and when it is, it must
+               not read as pass or fail at a glance. */
+
+            .eve-dekit {
+                background: #33383f;
+                border: 1px solid #5a626c;
             }
 
             /* =====================================================
@@ -7735,10 +9331,21 @@
                 border-color: rgba(255, 255, 255, .9);
             }
 
+            /* Confirmation provenance is diagnostic detail, not
+               operator-facing. It is always BUILT (and always written
+               to the log and both exports) but only rendered while
+               Developer Mode is on. */
+
             .eve-alert-phase-note {
+                display: none;
                 font-size: 11px;
                 opacity: .9;
                 margin-bottom: 4px;
+                word-break: break-word;
+            }
+
+            body.eve-dev-mode .eve-alert-phase-note {
+                display: block;
             }
 
             /* =====================================================
@@ -7896,7 +9503,19 @@
 
             checkNotificationPermission();
 
+            // Before anything reads the log: drop whatever is left
+            // from an earlier day so counts, exports and the panel all
+            // start the session agreeing.
+            checkLogDayRollover();
+
             injectCSS();
+
+            if (document.body) {
+                document.body.classList.toggle(
+                    'eve-dev-mode',
+                    !!settings.developerMode
+                );
+            }
 
             createUI();
 
@@ -8058,6 +9677,8 @@
         const SCAN_TICKS     = 4;   // scan() every 4s
         const RELATIVE_TICKS = 15;  // relative labels every 15s
         const WATCHDOG_TICKS = 10;  // refresh watchdog every 10s
+        const RECONFIRM_TICKS = 45; // chase pending results every 45s
+        const LOG_DAY_TICKS   = 60; // log-day rollover check every 60s
 
         let tick = 0;
 
@@ -8077,6 +9698,14 @@
 
             if (tick % WATCHDOG_TICKS === 0) {
                 autoRefreshWatchdog();
+            }
+
+            if (tick % RECONFIRM_TICKS === 0) {
+                retryPendingConfirmations();
+            }
+
+            if (tick % LOG_DAY_TICKS === 0) {
+                checkLogDayRollover();
             }
 
         }, 1000);
