@@ -62,9 +62,13 @@
     // real test result. Only these three transitions are tracked;
     // everything else is deliberately ignored:
     //
-    // \u{1f537} Light Blue  -> \u{1f534} Red          PRE-TEST FAIL \u{274c}
-    // \u{1f7e2} Light Green -> \u{1f534} Red          TEST FAIL \u{274c}
-    // \u{1f7e2} Light Green -> \u{1f7e2} Dark Green   TEST PASS \u{2705}
+    // Colour detects that a RESULT happened. It does NOT tell you
+    // which PHASE produced it - a server in pre-test renders light
+    // green while it runs. The phase half of every label is read from
+    // the server's own detail page. See v0.9.4 notes below.
+    //
+    //   any active colour -> \u{1f534} Red         FAIL   (phase confirmed)
+    //   light/blue        -> \u{1f7e2} Dark Green  PASS   (phase confirmed)
     //
     // Each alert appears in two places:
     //   1. An in-page card in the Alerts menu (click the serial to
@@ -83,6 +87,73 @@
     //   sessionStorage  activeAlerts    undismissed alert cards
     //   sessionStorage  recentAlerts    flap-protection cooldowns
     //   localStorage    alertLog        permanent audit log
+    //
+    // ============================================================
+    // v0.9.4 CHANGE LOG  (phase mislabelling - field-reported)
+    // ============================================================
+    //
+    // THE BUG
+    //
+    // Two servers observed going lightgreen -> red were alerted and
+    // LOGGED as "TEST FAIL". Both detail pages said otherwise:
+    //
+    //   2637YW10AE   TA.B2-EVE08 pos 6    taskset PRETEST, status FAIL
+    //   2637YW109Q   TA.B5-EVE11 pos 15   taskset PRETEST, status FAIL
+    //
+    // Both were PRE-TEST fails. The audit log - the one artifact that
+    // has to be right - had the wrong category on both.
+    //
+    // ROOT CAUSE 1: colour does not encode phase.
+    //   The original spec assumed lightblue = pre-test and lightgreen =
+    //   test. It does not. A machine in PRE-TEST renders LIGHT GREEN
+    //   while it runs. Colour is a STATUS channel (queued / running /
+    //   failed / passed), not a PHASE channel, and the two were
+    //   conflated. Any pre-test that reached green before failing -
+    //   i.e. most of them, since 5_POWER_ON takes time - was filed as
+    //   a test fail. lightblue -> red only ever caught a pre-test that
+    //   died before it went green.
+    //
+    // ROOT CAUSE 2: the phase hint was dead code.
+    //   getTestPhaseHint() reads only data- attributes. This page emits
+    //   legacy bgcolor markup and no data- attributes at all, so
+    //   info.phase was ALWAYS '' and the re-label branch in
+    //   getTransitionType() never executed once in production.
+    //
+    // THE FIX
+    //   * Colour still DETECTS the event - it is the only cheap
+    //     per-scan signal. The LABEL now comes from the server's own
+    //     detail page (taskset / taskset_status / Operation). One fetch
+    //     per detected event, capped at 4 concurrent, short-TTL cached.
+    //   * The card appears instantly on the colour guess and is
+    //     RE-LABELLED in place when the detail page answers. Card,
+    //     stored copy and log entry are corrected together so the three
+    //     can never disagree.
+    //   * Toasts wait up to TOAST_CONFIRM_WAIT_MS for confirmation. A
+    //     fail toast a few seconds late is fine; a fail toast with the
+    //     wrong phase on it is the bug being fixed.
+    //   * Unconfirmed phases are marked as such (dashed card border,
+    //     warning glyph on the toast, phaseSource in the log) instead
+    //     of asserting a phase nothing verified.
+    //   * Retested servers have SEVERAL Test Status rows for one SN -
+    //     the real page shows two PRETEST FAILs 45 minutes apart. The
+    //     row with the latest Started is used, not the last row in
+    //     document order.
+    //   * SLOT VERIFICATION. The detail page states Rack Serial and
+    //     Position independently of our column arithmetic, so every
+    //     confirmation now cross-checks the slot the tracker THINKS it
+    //     read. This catches column misalignment at runtime, against
+    //     live data.
+    //
+    // TRANSITIONS WIDENED (previously silently dropped)
+    //   * darkgreen -> red      a retest failure after a pass. This was
+    //                           a MISSED FAILURE in every prior build.
+    //   * lightblue -> darkgreen  a pre-test pass, never recorded.
+    //   * New PRETEST_SUCCESS category, filter tab and log section.
+    //
+    // NOTE ON HISTORIC DATA
+    //   Entries logged before this version carry phaseSource 'color'.
+    //   Their PASS/FAIL half is reliable; their PRE-TEST vs TEST half
+    //   is not. The .txt export now warns about this explicitly.
     //
     // ============================================================
     // v0.9.3 CHANGE LOG  (senior review remediation - P0/P1)
@@ -399,6 +470,7 @@
 
     const sessionCounts = {
         TEST_SUCCESS: 0,
+        PRETEST_SUCCESS: 0,
         TEST_FAILURE: 0,
         PRETEST_FAILURE: 0
     };
@@ -1656,7 +1728,10 @@
 
     function getTransitionIcon(transition) {
 
-        if (transition === 'TEST_SUCCESS') {
+        if (
+            transition === 'TEST_SUCCESS' ||
+            transition === 'PRETEST_SUCCESS'
+        ) {
             return ICON_PASS;
         }
 
@@ -1688,6 +1763,10 @@
             return 'Testing \u{1f7e2}. . . \u{25ba} Test PASS \u{2705}';
         }
 
+        if (transition === 'PRETEST_SUCCESS') {
+            return 'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test PASS \u{2705}';
+        }
+
         if (transition === 'TEST_FAILURE') {
             return 'Testing \u{1f7e2}. . . \u{25ba} Test FAIL \u{274c}';
         }
@@ -1705,6 +1784,10 @@
 
         if (transition === 'TEST_SUCCESS') {
             return 'TEST PASS \u{2705}';
+        }
+
+        if (transition === 'PRETEST_SUCCESS') {
+            return 'PRE-TEST PASS \u{2705}';
         }
 
         if (transition === 'TEST_FAILURE') {
@@ -2115,6 +2198,599 @@
 
 
     // ============================================================
+    // PHASE CONFIRMATION  (authoritative, from the detail page)
+    // ============================================================
+    //
+    // WHY THIS EXISTS
+    //
+    // The original design inferred the TEST PHASE from the cell COLOR:
+    //
+    //     lightblue  -> red        assumed PRE-TEST FAIL
+    //     lightgreen -> red        assumed TEST FAIL
+    //
+    // That premise is false. A server observed going lightgreen -> red
+    // on the rack page had, on its own detail page:
+    //
+    //     taskset:        PRETEST
+    //     taskset_status: FAIL
+    //     Operation:      PRETEST
+    //
+    // So a machine in PRE-TEST renders LIGHT GREEN while it is running.
+    // Color is a STATUS channel (queued / running / failed / passed),
+    // not a PHASE channel. The two were conflated, which means:
+    //
+    //   * Any pre-test that renders green before failing - i.e. most of
+    //     them, since 5_POWER_ON takes time - was logged as TEST FAIL.
+    //   * lightblue -> red only ever caught a pre-test that died before
+    //     it went green.
+    //   * The permanent audit log has been recording the wrong CATEGORY,
+    //     which is the failure that actually matters here.
+    //
+    // Compounding it, getTestPhaseHint() reads only data- attributes.
+    // This page emits legacy bgcolor markup and no data- attributes at
+    // all, so info.phase was ALWAYS '' and the re-label branch in
+    // getTransitionType() never executed once in production.
+    //
+    // THE FIX
+    //
+    // Color still DETECTS the event - it is the only per-scan signal
+    // available, and it is cheap. But the LABEL now comes from the
+    // server's own detail page, which states the phase explicitly.
+    // One fetch per detected event, never per scan.
+    //
+    // Failing to confirm must not silently produce a confident wrong
+    // label, so an unconfirmed alert is marked as such in the card, the
+    // toast and the log rather than asserting a phase it did not verify.
+    // ============================================================
+
+    const PHASE_CONFIRM_TIMEOUT_MS    = 10000;
+    const PHASE_CONFIRM_MAX_PARALLEL  = 4;
+    const PHASE_CONFIRM_CACHE_MS      = 120000;
+
+    // How long flushPendingToasts() will wait for confirmations before
+    // sending anyway. A fail toast three seconds late is fine; a fail
+    // toast with the wrong phase on it is not.
+    const TOAST_CONFIRM_WAIT_MS       = 8000;
+
+    const phaseConfirmCache = new Map();
+
+    let phaseConfirmActive  = 0;
+    let phaseConfirmQueue   = [];
+    let phaseConfirmFailures = 0;
+
+
+    // ------------------------------------------------------------
+    // Normalize whatever the page calls the phase into PRETEST / TEST.
+    // "PRETEST", "Pre-Test", "pre_test" and "PRE TEST" all appear in
+    // the wild depending on which column you read.
+    // ------------------------------------------------------------
+
+    function normalizePhaseWord(raw) {
+
+        const value = String(raw || '').trim().toLowerCase();
+
+        if (!value) {
+            return '';
+        }
+
+        if (/pre[\s_-]*test/.test(value)) {
+            return 'PRETEST';
+        }
+
+        if (/\btest\b|\btesting\b/.test(value)) {
+            return 'TEST';
+        }
+
+        return '';
+
+    }
+
+
+    function normalizeStatusWord(raw) {
+
+        const value = String(raw || '').trim().toLowerCase();
+
+        if (/fail/.test(value)) {
+            return 'FAIL';
+        }
+
+        if (/pass|success|complete/.test(value)) {
+            return 'PASS';
+        }
+
+        return '';
+
+    }
+
+
+    // ------------------------------------------------------------
+    // Read the two things the detail page states explicitly:
+    //
+    //   Server Information -> Server Serial   (identity check)
+    //   Test Status        -> Operation / taskset / taskset_status
+    //
+    // Columns are located BY HEADER NAME, never by fixed index - the
+    // detail page is not ours and column order can move.
+    // ------------------------------------------------------------
+
+    // Cell text arrives with newlines and stacked values (the taskcase
+    // column holds several task names in one cell), so collapse
+    // whitespace rather than comparing raw textContent.
+
+    function cellText(cell) {
+        return cell ? cell.textContent.replace(/\s+/g, ' ').trim() : '';
+    }
+
+
+    function parseDetailDocument(doc, serial) {
+
+        const result = {
+            confirmed: false,
+            phase: '',
+            status: '',
+            taskset: '',
+            taskcase: '',
+            started: '',
+            serialOnPage: '',
+            serialMatches: null,
+
+            // Rack Serial / Position from the detail page, used to
+            // verify that the slot the tracker READ is the slot this
+            // server actually occupies.
+            rackSerialOnPage: '',
+            positionOnPage: '',
+            locationMatches: null,
+
+            reason: ''
+        };
+
+        if (!doc || !doc.body) {
+            result.reason = 'empty document';
+            return result;
+        }
+
+        // ----- identity: Server Serial from the property table -----
+
+        doc.querySelectorAll('tr').forEach(row => {
+
+            const cells = row.children;
+
+            if (cells.length < 2) {
+                return;
+            }
+
+            const label = cellText(cells[0]).toLowerCase();
+
+            if (
+                !result.serialOnPage &&
+                (label === 'server serial' || label === 'server asset')
+            ) {
+                result.serialOnPage = cellText(cells[1]);
+            }
+
+            if (!result.rackSerialOnPage && label === 'rack serial') {
+                result.rackSerialOnPage = cellText(cells[1]);
+            }
+
+            if (!result.positionOnPage && label === 'position') {
+                result.positionOnPage = cellText(cells[1]);
+            }
+
+        });
+
+        if (result.serialOnPage && serial) {
+            result.serialMatches =
+                result.serialOnPage.toUpperCase() ===
+                String(serial).toUpperCase();
+        }
+
+        // ----- the Test Status table -----
+
+        let statusTable = null;
+        let columnIndex = null;
+
+        const tables = [...doc.querySelectorAll('table')];
+
+        for (const table of tables) {
+
+            const headerCells =
+                [...table.querySelectorAll('th')]
+                    .map(th => th.textContent.trim().toLowerCase());
+
+            if (!headerCells.length) {
+                continue;
+            }
+
+            const hasPhase =
+                headerCells.includes('operation') ||
+                headerCells.includes('taskset');
+
+            const hasStatus =
+                headerCells.includes('taskset_status') ||
+                headerCells.includes('pass');
+
+            if (!hasPhase || !hasStatus) {
+                continue;
+            }
+
+            statusTable = table;
+
+            columnIndex = {};
+
+            headerCells.forEach((name, index) => {
+                if (columnIndex[name] === undefined) {
+                    columnIndex[name] = index;
+                }
+            });
+
+            break;
+
+        }
+
+        if (!statusTable) {
+            result.reason = 'no Test Status table on the detail page';
+            return result;
+        }
+
+        // ----- pick the row -----
+        //
+        // Prefer the row whose SN matches the serial we are confirming.
+        // Otherwise take the LAST row, which is the most recent attempt.
+
+        const bodyRows =
+            [...statusTable.querySelectorAll('tr')]
+                .filter(row => row.querySelector('td'));
+
+        if (!bodyRows.length) {
+            result.reason = 'Test Status table has no data rows';
+            return result;
+        }
+
+        // A server that has been retested has SEVERAL rows for the same
+        // SN - the real page shows two PRETEST FAILs 45 minutes apart.
+        // Take the row with the LATEST Started, not the last row in
+        // document order: nothing guarantees the page sorts ascending,
+        // and picking the wrong row means reporting a stale result.
+
+        const snIndex      = columnIndex.sn;
+        const startedIndex = columnIndex.started;
+
+        const wanted = serial ? String(serial).toUpperCase() : '';
+
+        const candidates =
+            (snIndex !== undefined && wanted)
+                ? bodyRows.filter(row =>
+                    cellText(row.children[snIndex]).toUpperCase() === wanted)
+                : [];
+
+        const pool = candidates.length ? candidates : bodyRows;
+
+        let chosen = pool[pool.length - 1];
+
+        if (startedIndex !== undefined && pool.length > 1) {
+
+            let best = '';
+
+            pool.forEach(row => {
+
+                // "2026-09-09 21:51:10" sorts correctly as a string.
+                const started = cellText(row.children[startedIndex]);
+
+                if (started && started >= best) {
+                    best = started;
+                    chosen = row;
+                }
+
+            });
+
+        }
+
+        if (startedIndex !== undefined) {
+            result.started = cellText(chosen.children[startedIndex]);
+        }
+
+        if (candidates.length > 1) {
+            devLog(
+                `${serial} has ${candidates.length} Test Status rows; ` +
+                `using the one started ${result.started || 'n/a'}.`
+            );
+        }
+
+        const readColumn = name => {
+
+            const index = columnIndex[name];
+
+            if (index === undefined) {
+                return '';
+            }
+
+            return cellText(chosen.children[index]);
+
+        };
+
+        result.taskset  = readColumn('taskset');
+        result.taskcase = readColumn('taskcase');
+
+        // Operation is the explicit phase column; taskset carries the
+        // same word on this page and is the fallback.
+        result.phase =
+            normalizePhaseWord(readColumn('operation')) ||
+            normalizePhaseWord(result.taskset);
+
+        result.status = normalizeStatusWord(readColumn('taskset_status'));
+
+        if (!result.status) {
+
+            const passFlag = readColumn('pass');
+
+            if (passFlag === '0') {
+                result.status = 'FAIL';
+            } else if (passFlag === '1') {
+                result.status = 'PASS';
+            }
+
+        }
+
+        if (!result.phase) {
+            result.reason = 'detail page did not state a phase';
+            return result;
+        }
+
+        result.confirmed = true;
+
+        return result;
+
+    }
+
+
+    // ------------------------------------------------------------
+    // Fetch + parse one detail page, with a concurrency cap so that a
+    // burst of 50 simultaneous failures does not open 50 sockets.
+    // ------------------------------------------------------------
+
+    function fetchDetailDocument(url) {
+
+        return new Promise(resolve => {
+
+            const run = async () => {
+
+                phaseConfirmActive += 1;
+
+                const controller = new AbortController();
+
+                const abortTimer =
+                    setTimeout(
+                        () => controller.abort(),
+                        PHASE_CONFIRM_TIMEOUT_MS
+                    );
+
+                try {
+
+                    const response =
+                        await fetch(url, {
+                            credentials: 'same-origin',
+                            cache: 'no-store',
+                            redirect: 'follow',
+                            signal: controller.signal
+                        });
+
+                    if (!response.ok) {
+                        throw new Error(
+                            `HTTP ${response.status} ${response.statusText}`
+                        );
+                    }
+
+                    const html = await response.text();
+
+                    resolve(
+                        new DOMParser()
+                            .parseFromString(html, 'text/html')
+                    );
+
+                } catch (error) {
+
+                    devLog(
+                        'Phase confirmation fetch failed:',
+                        (error && error.message) ? error.message : error
+                    );
+
+                    resolve(null);
+
+                } finally {
+
+                    clearTimeout(abortTimer);
+
+                    phaseConfirmActive -= 1;
+
+                    const next = phaseConfirmQueue.shift();
+
+                    if (next) {
+                        next();
+                    }
+
+                }
+
+            };
+
+            if (phaseConfirmActive < PHASE_CONFIRM_MAX_PARALLEL) {
+                run();
+            } else {
+                phaseConfirmQueue.push(run);
+            }
+
+        });
+
+    }
+
+
+    // ------------------------------------------------------------
+    // Does the detail page agree about WHERE this server is?
+    //
+    // The rack page gives us section/eve/unit purely from column
+    // arithmetic (th.cellIndex -> row.children[column]). The detail
+    // page states Rack Serial and Position independently. If those
+    // disagree, the tracker read the WRONG CELL - which is the colspan
+    // /column-misalignment failure, caught at runtime against live data
+    // instead of by inspecting markup.
+    // ------------------------------------------------------------
+
+    function checkLocationAgreement(parsed, info) {
+
+        if (!parsed.rackSerialOnPage || !info) {
+            return null;
+        }
+
+        const expectedRack = `TA.${info.section}-${info.eve}`;
+
+        const rackOk =
+            parsed.rackSerialOnPage.toUpperCase() ===
+            expectedRack.toUpperCase();
+
+        // Position is a bare number; unit is U05 / U15. Compare
+        // numerically so zero padding cannot cause a false alarm.
+        let positionOk = true;
+
+        if (parsed.positionOnPage) {
+
+            const pagePosition = parseInt(parsed.positionOnPage, 10);
+            const unitNumber = parseInt(String(info.unit).replace(/\D/g, ''), 10);
+
+            if (
+                !Number.isNaN(pagePosition) &&
+                !Number.isNaN(unitNumber)
+            ) {
+                positionOk = pagePosition === unitNumber;
+            }
+
+        }
+
+        return {
+            ok: rackOk && positionOk,
+            expected: `${expectedRack} / U${String(info.unit).replace(/\D/g, '')}`,
+            actual: `${parsed.rackSerialOnPage} / position ${parsed.positionOnPage || '?'}`
+        };
+
+    }
+
+
+    async function confirmPhase(detailUrl, info) {
+
+        const serial = info ? info.serial : '';
+
+        const url = safeUrl(detailUrl);
+
+        if (!url) {
+            return {
+                confirmed: false,
+                reason: 'no detail URL on this cell'
+            };
+        }
+
+        // Started is not known yet, so cache on identity only and keep
+        // the TTL short - a retest must not read a stale confirmation.
+        const cacheKey = `${url}|${serial}`;
+
+        const cached = phaseConfirmCache.get(cacheKey);
+
+        if (cached && (Date.now() - cached.at) < PHASE_CONFIRM_CACHE_MS) {
+            return cached.value;
+        }
+
+        const doc = await fetchDetailDocument(url);
+
+        if (!doc) {
+
+            phaseConfirmFailures += 1;
+
+            const value = {
+                confirmed: false,
+                reason: 'detail page unreachable'
+            };
+
+            phaseConfirmCache.set(cacheKey, { at: Date.now(), value: value });
+
+            return value;
+
+        }
+
+        const parsed = parseDetailDocument(doc, serial);
+
+        if (parsed.confirmed) {
+            phaseConfirmFailures = 0;
+        } else {
+            phaseConfirmFailures += 1;
+        }
+
+        // Labels silently reverting to colour guesses is exactly the
+        // condition that produced the original mislabelling, so it must
+        // be visible rather than inferred from the console.
+        if (phaseConfirmFailures >= 3) {
+            reportHealth(
+                'DEGRADED',
+                'Phase confirmation is failing. PRE-TEST vs TEST labels ' +
+                'are falling back to colour guesses and may be wrong.'
+            );
+        }
+
+        // A detail page for a DIFFERENT server means the cell's link is
+        // wrong, and every label derived from it would be about the
+        // wrong machine. Never silently accept that.
+        if (parsed.serialMatches === false) {
+
+            fail(
+                `Detail page for "${serial}" reports Server Serial ` +
+                `"${parsed.serialOnPage}". The cell's link points at a ` +
+                'DIFFERENT server - phase not applied. Check the rack ' +
+                'page markup for that cell.'
+            );
+
+            const mismatch = {
+                confirmed: false,
+                reason: `serial mismatch (page says ${parsed.serialOnPage})`
+            };
+
+            phaseConfirmCache.set(
+                cacheKey,
+                { at: Date.now(), value: mismatch }
+            );
+
+            return mismatch;
+
+        }
+
+        // Independent verification that we read the right CELL. The
+        // serial matching only proves the LINK is right; this proves
+        // the slot arithmetic is right.
+        const location = checkLocationAgreement(parsed, info);
+
+        parsed.locationMatches = location ? location.ok : null;
+
+        if (location && !location.ok) {
+
+            fail(
+                `Slot mismatch for ${serial}: the tracker read it as ` +
+                `${location.expected}, but its detail page says ` +
+                `${location.actual}. The rack table's column mapping is ` +
+                'wrong - alert LOCATIONS cannot be trusted until this is ' +
+                'resolved.'
+            );
+
+            reportHealth(
+                'DEGRADED',
+                'A server\'s detail page disagrees with the rack slot it ' +
+                'was read from. Column mapping may be wrong.'
+            );
+
+        }
+
+        phaseConfirmCache.set(cacheKey, { at: Date.now(), value: parsed });
+
+        return parsed;
+
+    }
+
+
+    // ============================================================
     // VALID TRANSITIONS
     // ============================================================
     //
@@ -2134,27 +2810,70 @@
     // and blank -> red, which the spec deliberately ignores.
     // ============================================================
 
-    function getTransitionType(oldColor, newColor, oldPhase, newPhase) {
+    // Colors that mean "this slot was in an active, pre-result state".
+    // A move from any of these to red is a real result.
+    //
+    // darkgreen is included deliberately: a server that passed and is
+    // then retested and fails goes darkgreen -> red, which the original
+    // three-pair table dropped on the floor. For a monitoring tool a
+    // missed failure is the worst outcome, so this now alerts.
+    const FAILURE_FROM_COLORS = ['lightblue', 'lightgreen', 'darkgreen'];
 
-        let transition = null;
+    // lightblue -> darkgreen is a PRE-TEST PASS, which the original
+    // table also ignored entirely.
+    const SUCCESS_FROM_COLORS = ['lightblue', 'lightgreen'];
 
-        if (oldColor === 'lightblue' && newColor === 'red') {
-            transition = 'PRETEST_FAILURE';
-        } else if (oldColor === 'lightgreen' && newColor === 'red') {
-            transition = 'TEST_FAILURE';
-        } else if (oldColor === 'lightgreen' && newColor === 'darkgreen') {
-            transition = 'TEST_SUCCESS';
-        }
 
-        if (!transition) {
-            return null;
+    // ------------------------------------------------------------
+    // Color DETECTS the event and supplies a PROVISIONAL label. The
+    // phase in that label is a guess and is overwritten by
+    // confirmPhase() as soon as the detail page answers.
+    //
+    // Provisional phase is the old color's best guess only so that a
+    // card can appear instantly; nothing downstream may treat it as
+    // authoritative. phaseSource on the record says which it is.
+    // ------------------------------------------------------------
+
+    function getTransitionType(oldColor, newColor) {
+
+        if (
+            newColor === 'red' &&
+            FAILURE_FROM_COLORS.indexOf(oldColor) !== -1
+        ) {
+            return oldColor === 'lightblue'
+                ? 'PRETEST_FAILURE'
+                : 'TEST_FAILURE';
         }
 
         if (
-            transition === 'TEST_FAILURE' &&
-            (oldPhase === 'pretest' || newPhase === 'pretest')
+            newColor === 'darkgreen' &&
+            SUCCESS_FROM_COLORS.indexOf(oldColor) !== -1
         ) {
-            return 'PRETEST_FAILURE';
+            return oldColor === 'lightblue'
+                ? 'PRETEST_SUCCESS'
+                : 'TEST_SUCCESS';
+        }
+
+        return null;
+
+    }
+
+
+    // Swap the PHASE half of a transition while keeping the RESULT half.
+    // This is the only operation confirmation is allowed to perform: it
+    // can tell you a fail was a pre-test fail, it can never turn a fail
+    // into a pass.
+
+    function applyPhaseToTransition(transition, phase) {
+
+        const isFailure = /FAILURE$/.test(transition);
+
+        if (phase === 'PRETEST') {
+            return isFailure ? 'PRETEST_FAILURE' : 'PRETEST_SUCCESS';
+        }
+
+        if (phase === 'TEST') {
+            return isFailure ? 'TEST_FAILURE' : 'TEST_SUCCESS';
         }
 
         return transition;
@@ -2628,12 +3347,7 @@
         }
 
         const transition =
-            getTransitionType(
-                oldState.color,
-                info.color,
-                oldState.phase || '',
-                info.phase || ''
-            );
+            getTransitionType(oldState.color, info.color);
 
         if (!transition) {
             return;
@@ -2721,13 +3435,37 @@
 
     function surfaceAlert(info, transition) {
 
-        createPersistentAlert(
-            getTransitionTitle(transition),
-            info,
-            transition
-        );
+        const record =
+            createPersistentAlert(
+                getTransitionTitle(transition),
+                info,
+                transition
+            );
 
-        pendingToasts.push({ info: info, transition: transition });
+        // Tie the log entry to this card so the confirmed phase can be
+        // written back to BOTH later.
+        linkLastLogEntry(record.id);
+
+        // Confirmation is asynchronous and must never block the card.
+        const confirmation =
+            (info && info.detailUrl && !isDebugData(info))
+                ? confirmPhase(info.detailUrl, info)
+                    .then(result => {
+                        reconcileAlertPhase(record, result);
+                        return result;
+                    })
+                    .catch(error => {
+                        fail('Phase confirmation threw:', error);
+                        reconcileAlertPhase(record, null);
+                        return null;
+                    })
+                : null;
+
+        pendingToasts.push({
+            info: info,
+            record: record,
+            confirmation: confirmation
+        });
 
     }
 
@@ -2735,7 +3473,7 @@
     // Called once at the END of scan(), so a whole refresh cycle's
     // events are weighed together rather than one at a time.
 
-    function flushPendingToasts() {
+    async function flushPendingToasts() {
 
         const batch = pendingToasts;
 
@@ -2745,13 +3483,49 @@
             return;
         }
 
+        // Wait for the detail pages to answer before the toast fires.
+        // A fail toast a few seconds late is fine; a fail toast with
+        // the WRONG PHASE printed on it is the bug we are fixing.
+        // Bounded, so an unreachable detail page cannot hold the toast
+        // for ever - it goes out marked unverified instead.
+        const confirmations =
+            batch
+                .map(item => item.confirmation)
+                .filter(Boolean);
+
+        if (confirmations.length) {
+
+            await Promise.race([
+                Promise.allSettled(confirmations),
+                new Promise(r => setTimeout(r, TOAST_CONFIRM_WAIT_MS))
+            ]);
+
+        }
+
+        // Read the FINAL label off the record, not the provisional one
+        // captured when the event was queued.
+        batch.forEach(item => {
+            item.transition = item.record
+                ? item.record.transition
+                : item.transition;
+        });
+
         if (batch.length <= TOAST_INDIVIDUAL_LIMIT) {
 
             batch.forEach(item => {
 
+                const unverified =
+                    item.record && item.record.phaseSource === 'unverified';
+
                 sendDesktopNotification(
-                    getTransitionTitle(item.transition),
-                    buildNotificationBody(item.info, item.transition),
+                    getTransitionTitle(item.transition) +
+                        (unverified ? ' \u{26a0}' : ''),
+                    buildNotificationBody(item.info, item.transition) +
+                        (
+                            unverified
+                                ? '\n\u{26a0} phase not verified'
+                                : ''
+                        ),
                     getTransitionIcon(item.transition),
                     (item.info && item.info.detailUrl)
                         ? () => openFromNotification(item.info.detailUrl)
@@ -2767,7 +3541,8 @@
         const counts = {
             TEST_FAILURE: 0,
             PRETEST_FAILURE: 0,
-            TEST_SUCCESS: 0
+            TEST_SUCCESS: 0,
+            PRETEST_SUCCESS: 0
         };
 
         batch.forEach(item => {
@@ -2778,13 +3553,16 @@
 
         const failures = counts.TEST_FAILURE + counts.PRETEST_FAILURE;
 
+        const passes = counts.TEST_SUCCESS + counts.PRETEST_SUCCESS;
+
         sendDesktopNotification(
             failures
-                ? `${failures} FAIL \u{274c} (+${counts.TEST_SUCCESS} pass)`
-                : `${counts.TEST_SUCCESS} TEST PASS \u{2705}`,
+                ? `${failures} FAIL \u{274c} (+${passes} pass)`
+                : `${passes} PASS \u{2705}`,
             `${counts.TEST_FAILURE} test fail \u{2022} ` +
             `${counts.PRETEST_FAILURE} pre-test fail \u{2022} ` +
-            `${counts.TEST_SUCCESS} pass\n` +
+            `${counts.TEST_SUCCESS} test pass \u{2022} ` +
+            `${counts.PRETEST_SUCCESS} pre-test pass\n` +
             'Open the Alerts panel for details.',
             failures ? ICON_FAIL : ICON_PASS,
             null
@@ -2812,6 +3590,7 @@
 
         const total =
             sessionCounts.TEST_SUCCESS +
+            sessionCounts.PRETEST_SUCCESS +
             sessionCounts.TEST_FAILURE +
             sessionCounts.PRETEST_FAILURE;
 
@@ -2820,7 +3599,8 @@
                 ? 'This session: ' +
                   `${sessionCounts.TEST_FAILURE} fail \u{b7} ` +
                   `${sessionCounts.PRETEST_FAILURE} pre-test fail \u{b7} ` +
-                  `${sessionCounts.TEST_SUCCESS} pass`
+                  `${sessionCounts.TEST_SUCCESS} pass \u{b7} ` +
+                  `${sessionCounts.PRETEST_SUCCESS} pre-test pass`
                 : 'This session: no alerts yet';
 
     }
@@ -3259,6 +4039,14 @@
             time: now.toLocaleTimeString(),
             result: getTransitionTitle(transition),
             transition: transition,
+
+            // Overwritten by updateLogEntryForAlert() once the detail
+            // page answers. 'color' means the phase half of this
+            // category is a GUESS and should not be trusted.
+            phaseSource: 'color',
+            taskset: '',
+            taskcase: '',
+
             serial: info.serial,
             section: info.section,
             eve: info.eve,
@@ -3272,6 +4060,26 @@
     // Log entries with all debug/test activity removed. Every export
     // path AND the clear-log confirmation use this, so the counts the
     // user sees always agree with the file they get.
+
+    // Stamp the most recent log entry with the alert card's id, so the
+    // confirmed phase can later be written back to the exact entry.
+    // recordTransition() always runs immediately before surfaceAlert(),
+    // so the last entry is this event's.
+
+    function linkLastLogEntry(alertId) {
+
+        const entries = getAlertLog();
+
+        if (!entries.length) {
+            return;
+        }
+
+        entries[entries.length - 1].alertId = alertId;
+
+        scheduleLogWrite();
+
+    }
+
 
     function loadRealAlertLog() {
         return getAlertLog().filter(entry => !isDebugData(entry));
@@ -3360,6 +4168,7 @@
     const LOG_CATEGORIES = [
         { transition: 'PRETEST_FAILURE', heading: 'PRE-TEST FAILS' },
         { transition: 'TEST_FAILURE',    heading: 'TEST FAILS' },
+        { transition: 'PRETEST_SUCCESS', heading: 'PRE-TEST PASSES' },
         { transition: 'TEST_SUCCESS',    heading: 'TEST PASSES' }
     ];
 
@@ -3441,6 +4250,29 @@
         }
 
         lines.push(`Total alerts:  ${logEntries.length}`);
+        lines.push('');
+        const unverified =
+            logEntries.filter(
+                e => (e.phaseSource || 'color') !== 'confirmed'
+            ).length;
+
+        if (unverified) {
+            lines.push('');
+            lines.push(
+                `WARNING: ${unverified} of ${logEntries.length} entries ` +
+                'have an UNCONFIRMED phase.'
+            );
+            lines.push(
+                '      The PRE-TEST vs TEST half of those categories was'
+            );
+            lines.push(
+                '      inferred from cell colour, which does not reliably'
+            );
+            lines.push(
+                '      encode phase. Treat them as "fail"/"pass" only.'
+            );
+        }
+
         lines.push('');
         lines.push('Note: debug/test notifications are NOT recorded here.');
         lines.push('      Every entry is a real detected transition.');
@@ -3656,12 +4488,16 @@
             'EVE',
             'Unit',
             'Server Type',
-            'Repeats'
+            'Repeats',
+            'Phase Source',
+            'Taskset',
+            'Taskcase'
         ].join(','));
 
         const categoryNames = {
             PRETEST_FAILURE: 'PRE-TEST FAIL',
             TEST_FAILURE: 'TEST FAIL',
+            PRETEST_SUCCESS: 'PRE-TEST PASS',
             TEST_SUCCESS: 'TEST PASS'
         };
 
@@ -3685,7 +4521,13 @@
 
                 // Flap repeats suppressed from the UI but still counted,
                 // so the log reflects what actually happened.
-                entry.repeats || 0
+                entry.repeats || 0,
+
+                // 'confirmed' = phase read off the detail page.
+                // 'color'/'unverified' = the phase half is a guess.
+                entry.phaseSource || 'color',
+                entry.taskset || '',
+                entry.taskcase || ''
             ].map(csvEscape).join(','));
 
         });
@@ -4145,11 +4987,213 @@
 
             statusLine: getStatusLine(transition),
 
+            // 'color'     label is a GUESS derived from the cell color
+            // 'confirmed' label was verified on the detail page
+            // 'unverified' confirmation was attempted and failed
+            phaseSource: 'color',
+
+            // Evidence from the detail page, kept so the card and the
+            // exported log can show WHY a phase was assigned.
+            taskset: '',
+            taskcase: '',
+
             ts: Date.now()
 
         };
 
         renderAlertElement(record, true);
+
+        return record;
+
+    }
+
+
+    // ============================================================
+    // RECONCILE A CARD WITH THE CONFIRMED PHASE
+    // ============================================================
+    //
+    // The card is created immediately from the color guess so the
+    // operator sees something instantly. When the detail page answers,
+    // the label is corrected in place - card, stored copy and the
+    // permanent log entry all move together, so the three can never
+    // disagree about what happened.
+    // ============================================================
+
+    function reconcileAlertPhase(record, confirmation) {
+
+        if (!record) {
+            return;
+        }
+
+        const before = record.transition;
+
+        if (confirmation && confirmation.confirmed) {
+
+            record.transition =
+                applyPhaseToTransition(before, confirmation.phase);
+
+            record.phaseSource = 'confirmed';
+            record.taskset     = confirmation.taskset || '';
+            record.taskcase    = confirmation.taskcase || '';
+
+        } else {
+
+            record.phaseSource = 'unverified';
+            record.unverifiedReason =
+                (confirmation && confirmation.reason) || 'unknown';
+
+        }
+
+        record.title      = getTransitionTitle(record.transition);
+        record.statusLine = getStatusLine(record.transition);
+
+        if (before !== record.transition) {
+
+            log(
+                `${record.serial} re-labelled ${before} \u{2192} ` +
+                `${record.transition} from the detail page ` +
+                `(taskset: ${record.taskset || 'n/a'}).`
+            );
+
+            // Move the session counter to the bucket it belongs in.
+            if (sessionCounts[before] !== undefined) {
+                sessionCounts[before] =
+                    Math.max(0, sessionCounts[before] - 1);
+            }
+
+            if (sessionCounts[record.transition] !== undefined) {
+                sessionCounts[record.transition] += 1;
+            }
+
+            updateSessionSummary();
+
+        }
+
+        updateAlertCard(record);
+
+        updateStoredAlert(record);
+
+        updateLogEntryForAlert(record);
+
+    }
+
+
+    // Repaint an existing card in place rather than tearing it down -
+    // a card the user is mid-click on must not vanish.
+
+    function updateAlertCard(record) {
+
+        const card =
+            document.querySelector(
+                `.eve-alert[data-alert-id="${CSS.escape(record.id)}"]`
+            );
+
+        if (!card) {
+            return;
+        }
+
+        const alertClass =
+            ALERT_CLASS_BY_TRANSITION[record.transition] || 'eve-failure';
+
+        card.className =
+            `eve-alert ${alertClass}` +
+            (record.detailUrl ? ' eve-alert-clickable' : '') +
+            (record.phaseSource === 'unverified' ? ' eve-alert-unverified' : '');
+
+        card.dataset.transition = record.transition || '';
+
+        const titleEl = card.querySelector('.eve-alert-header span');
+
+        if (titleEl) {
+            titleEl.textContent =
+                record.title +
+                (record.phaseSource === 'unverified' ? ' \u{26a0}' : '');
+        }
+
+        const statusEl = card.querySelector('.eve-alert-status');
+
+        if (statusEl) {
+            statusEl.textContent = record.statusLine || '';
+        }
+
+        let noteEl = card.querySelector('.eve-alert-phase-note');
+
+        const noteText =
+            record.phaseSource === 'confirmed'
+                ? `\u{2713} phase confirmed\u{a0}\u{b7}\u{a0}${record.taskset || 'detail page'}`
+                : (
+                    record.phaseSource === 'unverified'
+                        ? `\u{26a0} phase NOT verified \u{2014} ${record.unverifiedReason}`
+                        : ''
+                );
+
+        if (!noteText) {
+            return;
+        }
+
+        if (!noteEl) {
+
+            noteEl = document.createElement('div');
+            noteEl.className = 'eve-alert-phase-note';
+
+            const timeEl = card.querySelector('.eve-alert-time');
+
+            if (timeEl) {
+                card.insertBefore(noteEl, timeEl);
+            } else {
+                card.appendChild(noteEl);
+            }
+
+        }
+
+        noteEl.textContent = noteText;
+
+        applyAlertFilter();
+
+    }
+
+
+    function updateStoredAlert(record) {
+
+        const alerts = loadActiveAlerts();
+
+        const index = alerts.findIndex(a => a.id === record.id);
+
+        if (index === -1) {
+            return;
+        }
+
+        alerts[index] = { ...alerts[index], ...record };
+
+        saveActiveAlerts(alerts);
+
+    }
+
+
+    // The audit log is the artifact that has to be right. Find this
+    // alert's entry by id and correct its category in place.
+
+    function updateLogEntryForAlert(record) {
+
+        const entries = getAlertLog();
+
+        for (let i = entries.length - 1; i >= 0; i -= 1) {
+
+            if (entries[i].alertId !== record.id) {
+                continue;
+            }
+
+            entries[i].transition  = record.transition;
+            entries[i].result      = record.title;
+            entries[i].phaseSource = record.phaseSource;
+            entries[i].taskset     = record.taskset || '';
+            entries[i].taskcase    = record.taskcase || '';
+
+            scheduleLogWrite();
+
+            return;
+
+        }
 
     }
 
@@ -4164,6 +5208,7 @@
 
     const ALERT_CLASS_BY_TRANSITION = {
         TEST_SUCCESS: 'eve-success',
+        PRETEST_SUCCESS: 'eve-pretest-pass',
         TEST_FAILURE: 'eve-failure',
         PRETEST_FAILURE: 'eve-pretest'
     };
@@ -4197,6 +5242,12 @@
         alert.dataset.transition = record.transition || '';
 
         alert.dataset.debug = isDebugData(record) ? '1' : '0';
+
+        // Provenance survives a refresh: a restored card that was never
+        // verified must still look unverified.
+        if (record.phaseSource === 'unverified') {
+            alert.classList.add('eve-alert-unverified');
+        }
 
         alert.dataset.search =
             `${record.serial || ''} ${record.location || ''}`;
@@ -4248,6 +5299,16 @@
             <div class="eve-alert-status">
                 ${escapeHtml(record.statusLine || '')}
             </div>
+
+            ${
+                record.phaseSource === 'confirmed'
+                    ? `<div class="eve-alert-phase-note">\u{2713} phase confirmed\u{a0}\u{b7}\u{a0}${escapeHtml(record.taskset || 'detail page')}</div>`
+                    : (
+                        record.phaseSource === 'unverified'
+                            ? `<div class="eve-alert-phase-note">\u{26a0} phase NOT verified \u{2014} ${escapeHtml(record.unverifiedReason || 'unknown')}</div>`
+                            : ''
+                    )
+            }
 
             <div
                 class="eve-alert-time"
@@ -4387,6 +5448,9 @@
 
                     <button class="eve-filter-btn eve-filter-category"
                             data-filter="TEST_SUCCESS">Passes</button>
+
+                    <button class="eve-filter-btn eve-filter-category"
+                            data-filter="PRETEST_SUCCESS">Pre-test pass</button>
 
                     <button class="eve-filter-btn eve-debug-visibility-toggle"
                             id="eve-alert-visibility-toggle"
@@ -5752,6 +6816,9 @@
             softRefreshInFlight: softRefreshInFlight,
             softRefreshFailures: softRefreshFailures,
             detectionHealth:    healthState,
+            phaseConfirmFailures: phaseConfirmFailures,
+            phaseConfirmCached: phaseConfirmCache.size,
+            phaseConfirmInFlight: phaseConfirmActive,
             healthDetail:       healthDetail || 'n/a',
             tabHidden:          document.hidden,
             blindScanStreak:    blindScans,
@@ -6646,6 +7713,32 @@
 
             .eve-pretest {
                 background: #8b0000;
+            }
+
+            /* =====================================================
+               PRE-TEST PASS
+               ===================================================== */
+
+            .eve-pretest-pass {
+                background: #05606a;
+            }
+
+            /* =====================================================
+               PHASE PROVENANCE
+               =====================================================
+               An alert whose PRE-TEST vs TEST label could not be
+               verified against the detail page must not look identical
+               to one that was. The dashed edge is the tell. */
+
+            .eve-alert-unverified {
+                border-style: dashed;
+                border-color: rgba(255, 255, 255, .9);
+            }
+
+            .eve-alert-phase-note {
+                font-size: 11px;
+                opacity: .9;
+                margin-bottom: 4px;
             }
 
             /* =====================================================
