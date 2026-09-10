@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.2
+// @version      0.9.3
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -83,6 +83,81 @@
     //   sessionStorage  activeAlerts    undismissed alert cards
     //   sessionStorage  recentAlerts    flap-protection cooldowns
     //   localStorage    alertLog        permanent audit log
+    //
+    // ============================================================
+    // v0.9.3 CHANGE LOG  (senior review remediation - P0/P1)
+    // ============================================================
+    //
+    // P0 - SILENT BLINDNESS
+    //   * scan() could WIPE EVERY BASELINE. The prune guard checked
+    //     that HEADERS were found, which is not the same as slots
+    //     being READABLE - getServerInfo() returns null for any cell
+    //     with no <a>, so a maintenance banner, a partial render or a
+    //     detached header cache produced headerCount > 0 with an empty
+    //     seenKeys and every tracked state was deleted. The next scan
+    //     re-baselined the whole rack, discarding every transition in
+    //     that window, while the panel reported a healthy scan.
+    //     Pruning now requires a plausible read (PRUNE_MIN_RATIO);
+    //     anything less preserves state and goes DEGRADED.
+    //   * DETECTION HEALTH. New always-visible OK/DEGRADED/BLIND chip
+    //     in the panel title, plus a rate-limited toast on the
+    //     transition edge. A tracker that cannot report its own
+    //     blindness is not a monitoring tool.
+    //   * TOAST COALESCING. One toast per transition was fine at 10
+    //     servers and catastrophic at 500: a batch completing produced
+    //     hundreds of simultaneous toasts, and the operator's rational
+    //     response is to mute notifications - at which point
+    //     monitoring has effectively stopped. Cards stay 1:1; above
+    //     TOAST_INDIVIDUAL_LIMIT events per cycle the toasts become
+    //     one summary. Passes are now silent, failures audible.
+    //   * COLSPAN REFUSAL. th.cellIndex is matched against
+    //     row.children[column]; any colspan/rowspan breaks that
+    //     mapping and the result is not a MISSED alert but a FALSE one
+    //     attributed to a real serial and written to the permanent
+    //     log. Affected tables are now refused, loudly.
+    //
+    // P1 - CORRECTNESS AND RELIABILITY
+    //   * Dedup no longer suppresses AUDIT LOG writes, only surfacing.
+    //     The "the log can never develop silent holes" claim was false
+    //     for a genuine repeat inside the cooldown. Repeats now bump a
+    //     counter on the existing entry (bounded search), so the log
+    //     is truthful without growing once per 4s scan tick. New
+    //     "Repeats" column in the .csv export.
+    //   * Stale header cache could hand scan() DETACHED nodes - empty
+    //     row walks with a non-zero headerCount, i.e. the exact input
+    //     that triggered the baseline wipe. isConnected check added.
+    //   * A throw inside processSlot() aborted the remaining slots,
+    //     skipped savePreviousStates() and left state half-mutated
+    //     with no UI signal. Per-slot error boundary, counted into
+    //     the health chip.
+    //   * The early meta-refresh observer ran querySelectorAll over
+    //     the WHOLE document for every parse mutation - O(mutations x
+    //     nodes) during initial render on a page of hundreds of cells.
+    //     Now filters addedNodes for META/HEAD and scans head only.
+    //   * BACKGROUND TAB THROTTLING is surfaced. Chromium clamps
+    //     hidden-tab timers to ~1/min, so the master tick, the refresh
+    //     and the watchdog all degrade together - silently. Returning
+    //     to the foreground force-restarts refresh and rescans.
+    //   * pagehide added alongside beforeunload, which is unreliable
+    //     on tab discard and crash.
+    //   * The watchdog can now ABORT the in-flight soft refresh
+    //     instead of only clearing the flag and leaving the fetch
+    //     running underneath a second call.
+    //   * MAX_RECENT_ALERT_KEYS is actually enforced - the expiry
+    //     sweep alone did nothing when every key was still live,
+    //     which is exactly the burst case the cap exists for.
+    //   * Audit-log eviction at MAX_LOG_ENTRIES warns once instead of
+    //     silently discarding the oldest records.
+    //   * The unsafeWindow diagnostic is gated on Developer Mode at
+    //     call time - page JS could otherwise fire toasts through the
+    //     extension.
+    //
+    // STILL OPEN (tracked, not fixed here):
+    //   * @match is host-agnostic; narrow it before publication.
+    //   * @updateURL points at mutable main; pin to a tag and enable
+    //     branch protection before a second person installs this.
+    //   * randomTestServerInfo() still contains internal-looking
+    //     identifiers - sanitize before publishing.
     //
     // ============================================================
     // v0.9.1 CHANGE LOG
@@ -234,6 +309,24 @@
     // its category table and printing it twice doubles the file.
     const MAX_CHRONOLOGICAL_ENTRIES = 500;
 
+    // Fraction of tracked slots that must be readable before a scan is
+    // trusted enough to PRUNE the ones it did not see. Loosening this
+    // constant is what re-opens the baseline-wipe bug - measure before
+    // you change it.
+    const PRUNE_MIN_RATIO = 0.5;
+
+    // Events per scan cycle above which desktop toasts collapse into a
+    // single summary. In-page cards stay 1:1 regardless.
+    const TOAST_INDIVIDUAL_LIMIT = 3;
+
+    // Health toasts are edge-triggered AND rate limited, so a flapping
+    // page cannot spam the desktop.
+    const HEALTH_TOAST_MIN_INTERVAL_MS = 300000;
+
+    // Consecutive zero-header scans before declaring BLIND (~12s at the
+    // 4s scan cadence). Tolerates a single mid-swap scan.
+    const BLIND_SCAN_THRESHOLD = 3;
+
     const EVE_HEADER_PATTERN = /^TA\.([^-]+)-EVE(\d+)/i;
 
 
@@ -288,6 +381,11 @@
     let softRefreshInFlight = false;
     let softRefreshFailures = 0;
 
+    // Hoisted so autoRefreshWatchdog() can ABORT a hung fetch, not
+    // merely clear the flag and leave the request running underneath
+    // a second call that could swap tables concurrently.
+    let softRefreshController = null;
+
     // Session-only. Repeated failures must NOT write a permanent
     // disable into localStorage - the user would never get soft
     // refresh back without knowing to re-tick the box.
@@ -315,6 +413,81 @@
         if (settings && settings.developerMode) {
             console.log(LOG_PREFIX + '[DEV]', ...args);
         }
+    }
+
+
+    // ============================================================
+    // DETECTION HEALTH
+    // ============================================================
+    //
+    // The failure mode that matters for a monitoring tool is not a
+    // crash - it is continuing to LOOK healthy while seeing nothing.
+    // A DOM change, a partial render or a detached header cache all
+    // produce a tracker that counts down to its next refresh, reports
+    // no alerts, and is indistinguishable from "everything is passing".
+    //
+    //   OK        headers found and a plausible number of slots read
+    //   DEGRADED  read far fewer slots than tracked, a table was
+    //             refused, slots threw, or the tab is backgrounded
+    //   BLIND     no EVE headers at all - the page structure changed
+    //
+    // Surfaced on an always-visible chip in the panel title. NOT inside
+    // a <details>: a collapsed health indicator is no health indicator.
+    // ============================================================
+
+    let healthState       = 'OK';
+    let healthDetail      = '';
+    let lastHealthToastAt = 0;
+    let blindScans        = 0;
+
+
+    function reportHealth(state, detail, quiet) {
+
+        const changed = state !== healthState;
+
+        healthState  = state;
+        healthDetail = detail || '';
+
+        const chip = document.getElementById('eve-health-chip');
+
+        if (chip) {
+            chip.textContent = state;
+            chip.className   = 'eve-health-chip eve-health-' + state.toLowerCase();
+            chip.title       = healthDetail || 'Detection is healthy.';
+        }
+
+        if (!changed) {
+            return;
+        }
+
+        if (state === 'OK') {
+            log('Health: OK \u{2014} detection restored.');
+            return;
+        }
+
+        fail(`Health: ${state} \u{2014} ${healthDetail}`);
+
+        // quiet = chip only. For states the user caused and can see for
+        // themselves (backgrounded tab), where a toast is noise.
+        if (quiet) {
+            return;
+        }
+
+        const now = Date.now();
+
+        if (now - lastHealthToastAt < HEALTH_TOAST_MIN_INTERVAL_MS) {
+            return;
+        }
+
+        lastHealthToastAt = now;
+
+        sendDesktopNotification(
+            `EVE TRACKER ${state}`,
+            `${healthDetail}\nThis page may NOT be monitored.`,
+            ICON_FAIL,
+            null
+        );
+
     }
 
 
@@ -593,8 +766,22 @@
 
         const scanRoot = root || document;
 
+        // The cache holds live <th>/<table> references. withoutObserver()
+        // discards every queued mutation record, including unrelated page
+        // changes that detached them - at which point querySelectorAll(
+        // 'tbody tr') returns empty while headerCount stays non-zero,
+        // which is precisely the input that used to wipe every baseline.
+        // Cheap identity check beats rebuilding on every call.
         if (!root && cachedGroups) {
-            return cachedGroups;
+
+            const first = cachedGroups[0];
+
+            if (!first || first.table.isConnected) {
+                return cachedGroups;
+            }
+
+            cachedGroups = null;
+
         }
 
         const byTable = new Map();
@@ -627,7 +814,38 @@
 
         });
 
-        const groups = [...byTable.values()];
+        // th.cellIndex is matched against row.children[column]. Any
+        // colspan/rowspan breaks that mapping, and the result is not a
+        // MISSED alert but a FALSE one - attributed to a real serial and
+        // written to the permanent audit log. Refuse the table rather
+        // than guess. This is the one place failing CLOSED is right:
+        // wrong data is worse than no data.
+        const groups = [];
+
+        byTable.forEach(group => {
+
+            const spanned =
+                group.table.querySelector(
+                    'td[colspan], th[colspan], td[rowspan], th[rowspan]'
+                );
+
+            if (spanned) {
+
+                if (!root) {
+                    reportHealth(
+                        'DEGRADED',
+                        'An EVE table uses colspan/rowspan, so column ' +
+                        'mapping is unreliable. That table is NOT scanned.'
+                    );
+                }
+
+                return;
+
+            }
+
+            groups.push(group);
+
+        });
 
         if (!root) {
             cachedGroups = groups;
@@ -791,9 +1009,23 @@
 
         warn(
             `WATCHDOG: auto refresh is ${Math.round(overdueMs / 1000)}s ` +
-            'overdue. Clearing the in-flight flag and rescheduling. If ' +
+            'overdue. Aborting any in-flight fetch and rescheduling. If ' +
             'this repeats, the network path to the page is the problem.'
         );
+
+        // Clearing the flag without aborting left the fetch running, so
+        // a second performSoftRefresh() could swap tables concurrently.
+        if (softRefreshController) {
+
+            try {
+                softRefreshController.abort();
+            } catch (error) {
+                warn('Could not abort the in-flight soft refresh:', error);
+            }
+
+            softRefreshController = null;
+
+        }
 
         softRefreshInFlight = false;
 
@@ -930,6 +1162,8 @@
 
         const controller = new AbortController();
 
+        softRefreshController = controller;
+
         // Without this a hung socket (VPN drop, stalled proxy) pins
         // softRefreshInFlight for the life of the tab.
         const abortTimer =
@@ -1042,6 +1276,7 @@
 
             clearTimeout(abortTimer);
 
+            softRefreshController = null;
             softRefreshInFlight = false;
 
         }
@@ -1307,7 +1542,11 @@
             title: title,
             text: text,
             tag: tag,
-            silent: false
+
+            // Passes are the common case, failures are the actionable
+            // one. Making both audible inverts the signal-to-noise
+            // ratio and trains the operator to ignore the sound.
+            silent: /PASS/.test(String(title))
         };
 
         if (imageUrl) {
@@ -1710,7 +1949,24 @@
                 ? unsafeWindow
                 : window;
 
-        consoleTarget.eveNotifyDiagnostic = runNotificationDiagnostic;
+        // Gated on Developer Mode at CALL time: page JavaScript can
+        // reach anything on unsafeWindow, and this fires five toasts
+        // through the extension. Low impact, but no reason to leave
+        // it armed on a page the tracker does not control.
+        consoleTarget.eveNotifyDiagnostic = function () {
+
+            if (!settings || !settings.developerMode) {
+                console.warn(
+                    LOG_PREFIX +
+                    ' Diagnostic is available in Developer Mode only. ' +
+                    'Tick "Dev" at the bottom of the tracker panel.'
+                );
+                return;
+            }
+
+            runNotificationDiagnostic();
+
+        };
 
     } catch (error) {
         warn('Could not expose the diagnostic on window:', error);
@@ -2042,6 +2298,24 @@
                 }
             });
 
+            // The expiry sweep alone does NOTHING when every key is
+            // still live - which is exactly the burst case this cap
+            // exists for. Evict oldest-first until it actually holds.
+            if (recentAlerts.size > MAX_RECENT_ALERT_KEYS) {
+
+                const ordered =
+                    [...recentAlerts.entries()]
+                        .sort((a, b) => a[1] - b[1]);
+
+                const excess =
+                    recentAlerts.size - MAX_RECENT_ALERT_KEYS;
+
+                for (let i = 0; i < excess; i += 1) {
+                    recentAlerts.delete(ordered[i][0]);
+                }
+
+            }
+
         }
 
         saveRecentAlerts();
@@ -2079,6 +2353,10 @@
         const seenKeys = new Set();
 
         let headerCount = 0;
+
+        // Slots that threw. Fed into the health chip, because a scan
+        // that partially failed must not look like a clean one.
+        let slotErrors = 0;
 
         groups.forEach(group => {
 
@@ -2121,9 +2399,27 @@
                         return;
                     }
 
-                    processSlot(header, unit, info, seenKeys, () => {
-                        statesDirty = true;
-                    });
+                    // One malformed cell must not abort the remaining
+                    // slots. The old shape terminated the whole scan,
+                    // skipped savePreviousStates(), and left in-memory
+                    // state half-mutated with no UI signal at all.
+                    try {
+
+                        processSlot(header, unit, info, seenKeys, () => {
+                            statesDirty = true;
+                        });
+
+                    } catch (error) {
+
+                        slotErrors += 1;
+
+                        fail(
+                            'processSlot threw for ' +
+                            `${header.section}|${header.eve}|${unit}:`,
+                            error
+                        );
+
+                    }
 
                 });
 
@@ -2135,27 +2431,96 @@
         // PRUNE VANISHED SLOTS
         // ----------------------------------------------------
         //
-        // Only prune when headers were actually found. If the page is
-        // mid-swap or failed to load, headerCount is 0 and wiping every
-        // baseline would cause a storm of false "baseline" entries on
-        // the next good scan.
+        // The old guard checked that HEADERS were found. That is NOT
+        // the same as slots being READABLE: getServerInfo() returns
+        // null for any cell with no <a>, so a maintenance banner, a
+        // partial render, a markup tweak or a detached header cache all
+        // produced headerCount > 0 with an EMPTY seenKeys - and every
+        // tracked baseline was deleted. The next scan then re-baselined
+        // the whole rack, discarding every transition in that window,
+        // while the panel reported a perfectly healthy scan.
+        //
+        // Preserve state and go DEGRADED instead. Never prune on a scan
+        // that read implausibly few slots.
 
         if (headerCount && previousStates.size) {
 
-            let pruned = 0;
-
-            previousStates.forEach((value, key) => {
-                if (!seenKeys.has(key)) {
-                    previousStates.delete(key);
-                    pruned += 1;
-                }
-            });
-
-            if (pruned) {
-                statesDirty = true;
-                devLog(
-                    `Pruned ${pruned} slot(s) no longer present on the page.`
+            const floor =
+                Math.max(
+                    1,
+                    Math.floor(previousStates.size * PRUNE_MIN_RATIO)
                 );
+
+            if (seenKeys.size >= floor) {
+
+                let pruned = 0;
+
+                previousStates.forEach((value, key) => {
+                    if (!seenKeys.has(key)) {
+                        previousStates.delete(key);
+                        pruned += 1;
+                    }
+                });
+
+                if (pruned) {
+                    statesDirty = true;
+                    devLog(
+                        `Pruned ${pruned} slot(s) no longer present on the page.`
+                    );
+                }
+
+            } else {
+
+                reportHealth(
+                    'DEGRADED',
+                    `Scan read only ${seenKeys.size} of ` +
+                    `${previousStates.size} tracked slots. Baselines ` +
+                    'PRESERVED rather than pruned.'
+                );
+
+            }
+
+        }
+
+        // ----------------------------------------------------
+        // BLIND DETECTION
+        // ----------------------------------------------------
+        //
+        // Zero headers means the page structure changed, the page
+        // failed to load, or the table is rendered by page JavaScript.
+        // Whatever the cause, nothing is being monitored - and that
+        // must not look identical to "no alerts because all is well".
+
+        if (!headerCount) {
+
+            blindScans += 1;
+
+            if (blindScans >= BLIND_SCAN_THRESHOLD) {
+                reportHealth(
+                    'BLIND',
+                    'No EVE table headers found. The page structure has ' +
+                    'probably changed, or the page failed to load.'
+                );
+            }
+
+        } else {
+
+            blindScans = 0;
+
+            if (slotErrors) {
+
+                reportHealth(
+                    'DEGRADED',
+                    `${slotErrors} slot(s) threw during this scan. See ` +
+                    'the console for the failing keys.'
+                );
+
+            } else if (
+                healthState !== 'OK' &&
+                seenKeys.size &&
+                !document.hidden
+            ) {
+                reportHealth('OK', '');
             }
 
         }
@@ -2173,6 +2538,10 @@
         }
 
         updateSessionSummary();
+
+        // Coalesce this cycle's toasts. Must run after the WHOLE pass,
+        // so a batch completing produces one summary, not a storm.
+        flushPendingToasts();
 
     }
 
@@ -2270,9 +2639,14 @@
             return;
         }
 
-        if (isDuplicateAlert(key, info.serial, transition)) {
-            return;
-        }
+        // Dedup gates SURFACING only. It used to return above
+        // recordTransition(), which made the "the log can never develop
+        // silent holes" claim above FALSE: a genuine second failure of
+        // the same slot+serial inside the cooldown was never recorded
+        // at all. Repeats now bump a counter on the existing entry, so
+        // the log stays truthful without growing once per 4s scan tick.
+        const suppressed =
+            isDuplicateAlert(key, info.serial, transition);
 
         // ----------------------------------------------------
         // RECORD, THEN SURFACE
@@ -2286,7 +2660,11 @@
         // silently stopped it being recorded and the exported log
         // developed invisible holes.
 
-        recordTransition(info, transition);
+        recordTransition(info, transition, suppressed);
+
+        if (suppressed) {
+            return;
+        }
 
         const sectionSettings = getSectionSettings(header.section);
 
@@ -2311,11 +2689,12 @@
     // RECORD A TRANSITION (log + session counters)
     // ============================================================
 
-    function recordTransition(info, transition) {
+    function recordTransition(info, transition, suppressed) {
 
-        logRealAlert(info, transition);
+        logRealAlert(info, transition, !!suppressed);
 
-        if (sessionCounts[transition] !== undefined) {
+        // Session counters track DISTINCT events, not flap repeats.
+        if (!suppressed && sessionCounts[transition] !== undefined) {
             sessionCounts[transition] += 1;
         }
 
@@ -2328,19 +2707,92 @@
     // SURFACE AN ALERT (in-page card + desktop toast)
     // ============================================================
 
+    // Cards stay strictly 1:1 with transitions - the panel is the
+    // complete record. Only the OS-level interrupt is rate limited.
+    //
+    // One toast per transition with a unique tag was correct at 10
+    // servers and catastrophic at 500: a batch completing produces
+    // hundreds of simultaneous toasts, and the operator's rational
+    // response is to mute notifications - at which point monitoring
+    // has effectively stopped.
+
+    let pendingToasts = [];
+
+
     function surfaceAlert(info, transition) {
 
-        const title = getTransitionTitle(transition);
+        createPersistentAlert(
+            getTransitionTitle(transition),
+            info,
+            transition
+        );
 
-        createPersistentAlert(title, info, transition);
+        pendingToasts.push({ info: info, transition: transition });
+
+    }
+
+
+    // Called once at the END of scan(), so a whole refresh cycle's
+    // events are weighed together rather than one at a time.
+
+    function flushPendingToasts() {
+
+        const batch = pendingToasts;
+
+        pendingToasts = [];
+
+        if (!batch.length) {
+            return;
+        }
+
+        if (batch.length <= TOAST_INDIVIDUAL_LIMIT) {
+
+            batch.forEach(item => {
+
+                sendDesktopNotification(
+                    getTransitionTitle(item.transition),
+                    buildNotificationBody(item.info, item.transition),
+                    getTransitionIcon(item.transition),
+                    (item.info && item.info.detailUrl)
+                        ? () => openFromNotification(item.info.detailUrl)
+                        : null
+                );
+
+            });
+
+            return;
+
+        }
+
+        const counts = {
+            TEST_FAILURE: 0,
+            PRETEST_FAILURE: 0,
+            TEST_SUCCESS: 0
+        };
+
+        batch.forEach(item => {
+            if (counts[item.transition] !== undefined) {
+                counts[item.transition] += 1;
+            }
+        });
+
+        const failures = counts.TEST_FAILURE + counts.PRETEST_FAILURE;
 
         sendDesktopNotification(
-            title,
-            buildNotificationBody(info, transition),
-            getTransitionIcon(transition),
-            info && info.detailUrl
-                ? () => openFromNotification(info.detailUrl)
-                : null
+            failures
+                ? `${failures} FAIL \u{274c} (+${counts.TEST_SUCCESS} pass)`
+                : `${counts.TEST_SUCCESS} TEST PASS \u{2705}`,
+            `${counts.TEST_FAILURE} test fail \u{2022} ` +
+            `${counts.PRETEST_FAILURE} pre-test fail \u{2022} ` +
+            `${counts.TEST_SUCCESS} pass\n` +
+            'Open the Alerts panel for details.',
+            failures ? ICON_FAIL : ICON_PASS,
+            null
+        );
+
+        log(
+            `${batch.length} events this cycle \u{2014} sent one summary ` +
+            'toast instead of one per event. All cards are in the panel.'
         );
 
     }
@@ -2694,8 +3146,26 @@
 
         logEntries.push(entry);
 
+        // Silent truncation of something explicitly framed as a
+        // PERMANENT audit log is the wrong default. Warn once per
+        // session so the user can export before more is lost.
+        let evicted = 0;
+
         while (logEntries.length > MAX_LOG_ENTRIES) {
             logEntries.shift();
+            evicted += 1;
+        }
+
+        if (evicted && !appendAlertLog.warnedEviction) {
+
+            appendAlertLog.warnedEviction = true;
+
+            fail(
+                `Alert log hit the ${MAX_LOG_ENTRIES}-entry cap and is ` +
+                'now discarding the OLDEST entries. Export and clear the ' +
+                'log to keep a complete record.'
+            );
+
         }
 
         scheduleLogWrite();
@@ -2734,7 +3204,7 @@
     }
 
 
-    function logRealAlert(info, transition) {
+    function logRealAlert(info, transition, suppressed) {
 
         if (isDebugData(info)) {
             devLog(
@@ -2745,6 +3215,43 @@
         }
 
         const now = new Date();
+
+        // A flapping cell inside the cooldown must not append an entry
+        // per scan tick - that is unbounded at 4s intervals. Bump the
+        // existing record instead. Bounded backward search: a match
+        // older than the last 200 entries is not the same flap episode.
+        if (suppressed) {
+
+            const entries = getAlertLog();
+
+            const limit = Math.max(0, entries.length - 200);
+
+            for (let i = entries.length - 1; i >= limit; i -= 1) {
+
+                const candidate = entries[i];
+
+                if (
+                    candidate.transition === transition &&
+                    candidate.serial === info.serial &&
+                    candidate.section === info.section &&
+                    candidate.eve === info.eve &&
+                    candidate.unit === info.unit
+                ) {
+
+                    candidate.repeats = (candidate.repeats || 0) + 1;
+                    candidate.lastRepeatIso = now.toISOString();
+
+                    scheduleLogWrite();
+
+                    return;
+
+                }
+
+            }
+
+            return;
+
+        }
 
         appendAlertLog({
             iso: now.toISOString(),
@@ -3148,7 +3655,8 @@
             'Section',
             'EVE',
             'Unit',
-            'Server Type'
+            'Server Type',
+            'Repeats'
         ].join(','));
 
         const categoryNames = {
@@ -3173,7 +3681,11 @@
                 entry.section,
                 entry.eve,
                 entry.unit,
-                entry.serverType || ''
+                entry.serverType || '',
+
+                // Flap repeats suppressed from the UI but still counted,
+                // so the log reflects what actually happened.
+                entry.repeats || 0
             ].map(csvEscape).join(','));
 
         });
@@ -4583,6 +5095,10 @@
 
                 EVE SLT Tracker
 
+                <span id="eve-health-chip"
+                      class="eve-health-chip eve-health-ok"
+                      title="Detection is healthy.">OK</span>
+
             </div>
 
             <div class="eve-byline">
@@ -5235,6 +5751,11 @@
             softRefreshActive:  softRefreshEnabled() ? 'YES' : 'NO (session lockout)',
             softRefreshInFlight: softRefreshInFlight,
             softRefreshFailures: softRefreshFailures,
+            detectionHealth:    healthState,
+            healthDetail:       healthDetail || 'n/a',
+            tabHidden:          document.hidden,
+            blindScanStreak:    blindScans,
+            pendingToasts:      pendingToasts.length,
             trackedSlots:       previousStates.size,
             eveTables:          getEveTableGroups().length,
             eveHeaders:         getEveHeaders().length,
@@ -5582,6 +6103,51 @@
             .eve-badge-soon {
                 background: #b06a00;
                 color: #fff;
+            }
+
+            /* =====================================================
+               DETECTION HEALTH CHIP
+               =====================================================
+               Always visible, never inside a <details>. A collapsed
+               health indicator is no health indicator: the whole point
+               is that a blind tracker must not look like a healthy one.
+               Sits between the title text and the collapse button in
+               the existing space-between flex row. */
+
+            .eve-health-chip {
+                flex: 0 0 auto;
+                margin-left: auto;
+                margin-right: 8px;
+                font-size: 10px;
+                font-weight: bold;
+                letter-spacing: .4px;
+                padding: 2px 7px;
+                border-radius: 3px;
+                cursor: help;
+            }
+
+            .eve-health-ok {
+                background: #087f23;
+                color: #fff;
+            }
+
+            .eve-health-degraded {
+                background: #b06a00;
+                color: #fff;
+            }
+
+            /* Deliberately the same red as a failure card. If this is
+               showing, nothing is being monitored. */
+
+            .eve-health-blind {
+                background: #b00000;
+                color: #fff;
+                animation: eve-health-pulse 1.6s ease-in-out infinite;
+            }
+
+            @keyframes eve-health-pulse {
+                0%, 100% { opacity: 1; }
+                50%      { opacity: .45; }
             }
 
             /* =====================================================
@@ -6271,6 +6837,59 @@
 
             });
 
+            // ------------------------------------------------
+            // BACKGROUND TAB THROTTLING
+            // ------------------------------------------------
+            //
+            // Chromium clamps hidden-tab timers to ~1/min and applies
+            // intensive throttling after ~5 minutes. The 1s master
+            // tick, the 60s refresh and the watchdog therefore all
+            // degrade together - silently. Detection latency collapses
+            // from 60s to something unpredictable with no UI signal.
+            //
+            // The real fix is "keep the tab visible", which is a
+            // documentation problem. The fix for it being INVISIBLE is
+            // this.
+
+            document.addEventListener('visibilitychange', () => {
+
+                if (document.hidden) {
+
+                    reportHealth(
+                        'DEGRADED',
+                        'Tab is in the background. Browser timer ' +
+                        'throttling means detection is delayed. Keep ' +
+                        'this tab visible.',
+                        true   // quiet: chip only, no toast
+                    );
+
+                    flushAlertLog();
+
+                    return;
+
+                }
+
+                // Back in the foreground: assume everything is stale.
+                blindScans = 0;
+
+                restartAutoRefresh();
+
+                scan();
+
+            });
+
+            // beforeunload is unreliable on tab discard, mobile and
+            // crash. pagehide is the dependable half of the pair.
+            window.addEventListener('pagehide', () => {
+
+                savePreviousStates();
+
+                saveRecentAlerts();
+
+                flushAlertLog();
+
+            });
+
             log(
                 `EVE SLT Tracker v${SCRIPT_VERSION} running\n` +
                 '  by Zay Davidson\n' +
@@ -6401,9 +7020,44 @@
 
                 stripMetaRefresh(document);
 
-                earlyObserver = new MutationObserver(() => {
+                earlyObserver = new MutationObserver(records => {
 
-                    if (stripMetaRefresh(document)) {
+                    // stripMetaRefresh() runs querySelectorAll over the
+                    // WHOLE document. Unfiltered, this fired for every
+                    // parse mutation on a page of hundreds of table
+                    // cells - O(mutations x nodes) at exactly the moment
+                    // the browser is trying to render. <meta> only ever
+                    // appears in <head>.
+                    let sawMeta = false;
+
+                    for (const record of records) {
+
+                        for (const node of record.addedNodes) {
+
+                            if (
+                                node.nodeType === 1 &&
+                                (
+                                    node.tagName === 'META' ||
+                                    node.tagName === 'HEAD'
+                                )
+                            ) {
+                                sawMeta = true;
+                                break;
+                            }
+
+                        }
+
+                        if (sawMeta) {
+                            break;
+                        }
+
+                    }
+
+                    if (!sawMeta) {
+                        return;
+                    }
+
+                    if (stripMetaRefresh(document.head || document)) {
                         console.warn(
                             LOG_PREFIX +
                             ' Stripped a page-level meta refresh tag at ' +
