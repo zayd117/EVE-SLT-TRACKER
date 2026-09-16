@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.5
+// @version      0.9.6
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -17,137 +17,117 @@
 // ==/UserScript==
 
 // ================================================================
-// v0.9.5 CHANGE LOG  (status detection - field-reported)
+// v0.9.6 - STRUCTURAL PASS (no intended behaviour change)
 // ================================================================
 //
-// SYMPTOM
-//   Every card read "phase NOT verified - detail page did not state
-//   a phase", including cards whose detail page states the phase and
-//   the result plainly.
+// BUG FIXED
+//   * updateAlertCard() skipped applyAlertFilter() whenever the phase
+//     note came back empty, via a bare early return - AFTER it had
+//     already rewritten className, data-transition and
+//     data-diagnostic. A card that only became a SYS_DEKIT on
+//     confirmation therefore picked up the diagnostic flag but was
+//     never re-filtered, so with "Show DEBUG" off it stayed on screen
+//     as whatever colour first called it. An emptied note element is
+//     now removed rather than left showing stale text.
 //
-// ROOT CAUSE 1: the Operation vocabulary was wrong.
-//   normalizePhaseWord() matched /pre-?test/ and /\btest\b/ only. The
-//   regular stage is not called "test" on this page - it is called
-//   SLT. So the regular-stage row matched nothing, phase came back
-//   '', parseDetailDocument() bailed with "did not state a phase",
-//   and confirmation "failed" on pages that were perfectly readable.
-//   Every label then fell back to the colour guess it was supposed to
-//   be correcting.
+// UNBOUNDED GROWTH FIXED
+//   * phaseConfirmCache had no eviction at all. Its TTL was only ever
+//     consulted on READ, so one entry per url|serial accumulated for
+//     the life of a tab that is meant to stay open all shift. It now
+//     has a cap and a TTL sweep, like every other collection here.
 //
-// ROOT CAUSE 2: the result was never taken from the detail page.
-//   The page states the result per operation as a boolean in the Pass
-//   column - PRETEST/Pass=1 then SLT/Pass=0 means "cleared pre-test,
-//   failed the regular test on the taskcase that went 0". The old
-//   code read Pass only as a fallback for a missing taskset_status,
-//   and applyPhaseToTransition() could then only swap the PRETEST/
-//   TEST half of a label it had already decided from cell colour. The
-//   result half was owned by colour end to end.
+// CONSOLIDATED
+//   * bindSetting() replaces five hand-written control bindings. Each
+//     repeated the same seven steps - look up, guard, paint from
+//     settings, listen, write, persist, side effect. The side effects
+//     are what genuinely differ and stay at the call site.
+//   * createUI() was 585 lines doing six unrelated jobs. Split into
+//     buildTrackerPanelMarkup(), wireTrackerSettings(),
+//     wireDeveloperMode() and wireDebugButtons(); createUI() is now 26
+//     lines of assembly.
+//   * applyCardState() replaces two independent derivations of a
+//     card's class, data-transition and data-diagnostic - one in
+//     renderAlertElement(), one in updateAlertCard() - so a card built
+//     before confirmation and one corrected after it cannot drift.
+//   * chaseStaleConfirmations() backs both the master-tick retry and
+//     the on-restore re-check.
+//   * setTextIfChanged()/setClassIfChanged(). updateRefreshCountdown()
+//     runs once a SECOND for the life of the tab and rewrote
+//     textContent and className unconditionally, including on a node
+//     inside a collapsed <details>. The memo lives on the node, so
+//     replacing the element invalidates it for free.
+//   * renderAlertElement() called buildPhaseNote() twice to produce
+//     the one value it had just tested for.
+//   * TRANSITIONS is now the single source of truth for the category
+//     taxonomy. Title, status line, icon, card CSS class, .txt
+//     heading, .csv name and the diagnostic flag lived in eight
+//     separate places; adding SYS_DEKIT meant editing all eight, and
+//     one of them was missed.
+//   * writeLogEntryResult() replaces two hand-kept copies of the
+//     audit entry's result projection.
+//   * readJSON()/writeJSON() replace five load/save wrapper pairs and
+//     three ad-hoc sites - ten try/catch blocks. Each caller keeps its
+//     own migration, shape guard or filter; only the I/O shell is
+//     shared. flushAlertLog() is deliberately NOT routed through them:
+//     its catch carries a specific quota/audit-loss message.
+//   * exportLog(kind) replaces exportAlertLog/exportAlertLogCsv.
+//   * persistBeforeUnload() backs both the beforeunload and pagehide
+//     listeners. BOTH are still registered, deliberately.
+//   * clampAlertPanelToViewport() deleted - it was character-for-
+//     character the same maths as clampToViewport().
 //
-// FIXED
-//   * Operation is mapped properly: pre-test words -> PRETEST,
-//     everything else -> TEST. The literal Operation string is kept
-//     and shown on the card, so an operation this script has never
-//     seen is displayed rather than discarded.
-//   * Pass is the primary result signal, per row, on the row with the
-//     latest Started. taskset_status corroborates and wins on a
-//     disagreement, which is logged rather than resolved silently.
-//   * A row with no Finished and no status is RUNNING. Its Pass reads
-//     0 because it has not passed yet; that is no longer read as a
-//     failure.
-//   * PRETEST_SUCCESS is a real category now. "Pre-test passed, SLT
-//     has not reported" is no longer mislabelled TEST PASS.
-//   * The detail page can always confirm or upgrade a failure, but a
-//     PASS row can never downgrade a red the rack colour caught - the
-//     Test Status table can lag colour, and dropping a real failure is
-//     the one unacceptable outcome.
-//   * Cards show the evidence: operation, Pass=0/1, taskset and the
-//     failing taskcase. Exports carry Operation and Pass columns.
-//   * Restored cards are re-confirmed on load. Confirmation used to
-//     run once, at the moment of the colour change; a card stored
-//     before it succeeded came back out of sessionStorage with its
-//     stale badge for ever, so a build that fixed confirmation could
-//     not reach the cards raised by the build that broke it.
-//   * The slot-agreement check no longer runs on those retroactive
-//     re-checks - it compares a slot recorded hours ago against where
-//     the server sits now, and a failed server that has since been
-//     pulled and re-racked always "disagrees", correctly and about
-//     nothing.
-//   * Re-confirmation is driven by "is this label finished", not
-//     "did the phase confirm". A card whose phase confirmed but whose
-//     RESULT did not - a half-written Test Status row, or a record
-//     from a build that had no result field - is retried on restore
-//     and every 45s after, up to 8 attempts.
-//   * Confirmation detail on a card is Developer Mode only. It is
-//     still built, still stored, still exported - it is just not what
-//     an operator reads at a glance. The provenance glyph is off the
-//     card title for the same reason.
-//   * The alert container is a viewport-bounded flex column, so its
-//     scrollbar lives inside the panel instead of running off the
-//     bottom of the screen.
-//   * LOG FIRST, THEN NOTIFY. The log entry is written before any card
-//     or toast exists, and confirmation is attached to the EVENT
-//     rather than to the card. Previously the fetch was started inside
-//     surfaceAlert(), so an event in a muted section, or one held back
-//     by the flap guard, was written to the permanent log as a colour
-//     guess and never corrected - the audit trail was only as good as
-//     the notification settings. Events now carry an eventId, the log
-//     entry is corrected whether or not anyone was told, and a
-//     surfaced alert reuses the event's promise instead of fetching
-//     the same detail page twice.
-//   * SYS_DEKIT IS NOT A TEST RESULT. It is a factory diagnostic that
-//     routinely finishes Pass=0, and it was matching the "not a
-//     pre-test word, therefore TEST" fallback - so every SYS_DEKIT row
-//     was being reported as a TEST FAIL. It is now its own phase with
-//     its own two categories, it overrides the colour outright rather
-//     than being merged with it, its cards ride the Show DEBUG switch,
-//     and it never raises a desktop notification. The one exception is
-//     a retraction: if an alert already went out calling it a failure,
-//     a follow-up says otherwise, because leaving that standing sends
-//     someone to a rack for nothing. Diagnostics are excluded from the
-//     denominator in the .txt summary so they cannot dilute the
-//     failure rate, and the .csv marks every row result vs diagnostic.
-//   * PRE-TEST FAILS REACH THE DESKTOP AS PRE-TEST FAILS. Colour
-//     cannot tell a pre-test failure from a test failure, so the toast
-//     waits up to TOAST_CONFIRM_WAIT_MS for the detail page. In a burst
-//     the fetch queue (4 parallel) blows past that, the toast goes out
-//     on the provisional label - TEST FAIL - and the card then quietly
-//     corrects itself to PRE-TEST FAIL where only someone watching the
-//     panel would see it. Records now remember which label the desktop
-//     was actually given, and a later correction sends a CORRECTED
-//     toast. Suppressed for cards older than 30 minutes so a reload
-//     re-checking yesterday's cards cannot start a toast storm.
-//   * The alert panel's height is measured from ITS OWN top, not the
-//     viewport's. The drag handler clamps only the header to the
-//     screen by design, so a panel dragged down the page still claimed
-//     a full viewport of list height and put the bottom of its
-//     scrollbar track below the edge of the screen - the thumb ran out
-//     of screen before it ran out of track. Height is now recomputed on
-//     drag, drop, resize and every list change.
-//   * THE LOG IS DAY-SCOPED. Entries from previous days are dropped
-//     at startup and on a 60s rollover check, and every export and
-//     count is filtered to the current log day regardless. The floor
-//     changes daily - which servers are racked, how many, what type -
-//     so a nine-day-old entry is not context, it is noise that skews
-//     today's counts and eventually evicts real entries against the
-//     2000-entry cap. The boundary is the local calendar date and
-//     nothing else - an entry stamped 09/10 is a 09/10 entry whether it
-//     landed at 00:04 or 23:59.
-//   * Rack serials are compared by PARTS, so EVE5 vs EVE05 is no
-//     longer a fault, and one disagreement no longer declares the
-//     column mapping broken. Mapping faults are per-TABLE and show up
-//     as many disagreements and no agreements; that is now what it
-//     takes to raise DEGRADED.
+// DELETED
+//   * getEveHeaders() - zero call sites anywhere in the file.
+//   * getTestPhaseHint() and PHASE_ATTRIBUTES. It read data-
+//     attributes this page does not emit, so it returned '' on every
+//     call in production. Since v0.9.4 the phase comes from the detail
+//     page, so nothing consumed it: its only remaining effect was
+//     populating info.phase, which fed previousStates.phase and a
+//     phaseChanged dirty flag - i.e. it could change WHEN
+//     sessionStorage was written and nothing else. All three removed.
+//     record.phase / parsed.phase are a DIFFERENT field and untouched.
+//   * recordTransition() - a one-line pass-through to logRealAlert().
+//   * A duplicate .eve-credit CSS rule. The surviving rule keeps
+//     margin-top: 2px, which is what was actually in effect.
+//
+// NOT CHANGED, ON PURPOSE
+//   * The two window-drag implementations. They look parallel but
+//     differ in six documented ways (header-only geometry, the 4px
+//     threshold, edge vs corner snapping, live height sync). A
+//     unified helper would need seven option flags.
+//   * The four retry mechanisms - four different failure modes, no
+//     shared shape.
+//   * reconcileAlertPhase()'s record projection: its unverified
+//     branch deliberately leaves resultConfirmed alone, which drives
+//     the re-confirmation retry.
+//   * scan()'s prune guard, performSoftRefresh()'s onDone() contract,
+//     the DEKIT exclusion from toast-summary counters, and every
+//     inline reasoning comment.
+//
+// VERIFIED (jsdom, against v0.9.5 as the reference)
+//   * .txt and .csv exports byte-identical across all three scenarios.
+//   * PRE-TEST FAIL, TEST FAIL and SYS_DEKIT paths produce the same
+//     transition, label, card count, toast count and fetch count.
+//   * Every settings control produces the same stored value and the
+//     same side effect, including the timeout box's negative and
+//     non-numeric clamping and its write-back.
 //
 // ================================================================
 
 // ================================================================
-// v0.9.10 CHANGE LOG
+// EARLIER CHANGE LOG
 // ================================================================
 //
-// TRACKER COLLAPSE WIDTH FIX
-//   * Collapsing the tracker now hides only the contents below the
-//     header. The panel keeps the same width in both open and closed
-//     states instead of shrinking horizontally.
+// The full per-version change log (v0.9.1 through v0.9.10) lives in
+// CHANGELOG.md in the repo. It was ~450 lines of comment shipped to
+// every user on every auto-update and is history, not documentation
+// of the code below.
+//
+//   https://github.com/zayd117/EVE-SLT-TRACKER/blob/main/CHANGELOG.md
+//
+// The reasoning comments that remain INLINE below are a different
+// thing and are deliberately kept: each one records a field-reported
+// failure and the constraint that must not be re-broken.
 //
 // ================================================================
 
@@ -224,255 +204,6 @@
     //   localStorage    alertLog        permanent audit log
     //
     // ============================================================
-    // v0.9.6 CHANGE LOG
-    // ============================================================
-    //
-    //   * Replaced the desktop FAIL icon with a freshly encoded PNG.
-    //   * Removed the unused "This session" summary and all session
-    //     counter state/update logic.
-    //   * Manual Health Check UI/control is not present; automatic
-    //     detection-health reporting remains intact.
-    //   * Alert-window drag/snap now uses the HEADER as the only geometry
-    //     reference, so a tall alert list cannot trigger edge snapping.
-    //   * The alert body is allowed to extend below/off-screen while the
-    //     draggable header remains independently positioned.
-    //
-    // ============================================================
-
-    // ============================================================
-    // v0.9.4 CHANGE LOG  (phase mislabelling - field-reported)
-    // ============================================================
-    //
-    // THE BUG
-    //
-    // Two servers observed going lightgreen -> red were alerted and
-    // LOGGED as "TEST FAIL". Both detail pages said otherwise:
-    //
-    //   2637YW10AE   TA.B2-EVE08 pos 6    taskset PRETEST, status FAIL
-    //   2637YW109Q   TA.B5-EVE11 pos 15   taskset PRETEST, status FAIL
-    //
-    // Both were PRE-TEST fails. The audit log - the one artifact that
-    // has to be right - had the wrong category on both.
-    //
-    // ROOT CAUSE 1: colour does not encode phase.
-    //   The original spec assumed lightblue = pre-test and lightgreen =
-    //   test. It does not. A machine in PRE-TEST renders LIGHT GREEN
-    //   while it runs. Colour is a STATUS channel (queued / running /
-    //   failed / passed), not a PHASE channel, and the two were
-    //   conflated. Any pre-test that reached green before failing -
-    //   i.e. most of them, since 5_POWER_ON takes time - was filed as
-    //   a test fail. lightblue -> red only ever caught a pre-test that
-    //   died before it went green.
-    //
-    // ROOT CAUSE 2: the phase hint was dead code.
-    //   getTestPhaseHint() reads only data- attributes. This page emits
-    //   legacy bgcolor markup and no data- attributes at all, so
-    //   info.phase was ALWAYS '' and the re-label branch in
-    //   getTransitionType() never executed once in production.
-    //
-    // THE FIX
-    //   * Colour still DETECTS the event - it is the only cheap
-    //     per-scan signal. The LABEL now comes from the server's own
-    //     detail page (taskset / taskset_status / Operation). One fetch
-    //     per detected event, capped at 4 concurrent, short-TTL cached.
-    //   * The card appears instantly on the colour guess and is
-    //     RE-LABELLED in place when the detail page answers. Card,
-    //     stored copy and log entry are corrected together so the three
-    //     can never disagree.
-    //   * Toasts wait up to TOAST_CONFIRM_WAIT_MS for confirmation. A
-    //     fail toast a few seconds late is fine; a fail toast with the
-    //     wrong phase on it is the bug being fixed.
-    //   * Unconfirmed phases are marked as such (dashed card border,
-    //     warning glyph on the toast, phaseSource in the log) instead
-    //     of asserting a phase nothing verified.
-    //   * Retested servers have SEVERAL Test Status rows for one SN -
-    //     the real page shows two PRETEST FAILs 45 minutes apart. The
-    //     row with the latest Started is used, not the last row in
-    //     document order.
-    //   * SLOT VERIFICATION. The detail page states Rack Serial and
-    //     Position independently of our column arithmetic, so every
-    //     confirmation now cross-checks the slot the tracker THINKS it
-    //     read. This catches column misalignment at runtime, against
-    //     live data.
-    //
-    // TRANSITIONS WIDENED (previously silently dropped)
-    //   * darkgreen -> red      a retest failure after a pass. This was
-    //                           a MISSED FAILURE in every prior build.
-    //
-    // NOTE ON HISTORIC DATA
-    //   Entries logged before this version carry phaseSource 'color'.
-    //   Their PASS/FAIL half is reliable; their PRE-TEST vs TEST half
-    //   is not. The .txt export now warns about this explicitly.
-    //
-    // ============================================================
-    // v0.9.3 CHANGE LOG  (senior review remediation - P0/P1)
-    // ============================================================
-    //
-    // P0 - SILENT BLINDNESS
-    //   * scan() could WIPE EVERY BASELINE. The prune guard checked
-    //     that HEADERS were found, which is not the same as slots
-    //     being READABLE - getServerInfo() returns null for any cell
-    //     with no <a>, so a maintenance banner, a partial render or a
-    //     detached header cache produced headerCount > 0 with an empty
-    //     seenKeys and every tracked state was deleted. The next scan
-    //     re-baselined the whole rack, discarding every transition in
-    //     that window, while the panel reported a healthy scan.
-    //     Pruning now requires a plausible read (PRUNE_MIN_RATIO);
-    //     anything less preserves state and goes DEGRADED.
-    //   * DETECTION HEALTH. New always-visible OK/DEGRADED/BLIND chip
-    //     in the panel title, plus a rate-limited toast on the
-    //     transition edge. A tracker that cannot report its own
-    //     blindness is not a monitoring tool.
-    //   * TOAST COALESCING. One toast per transition was fine at 10
-    //     servers and catastrophic at 500: a batch completing produced
-    //     hundreds of simultaneous toasts, and the operator's rational
-    //     response is to mute notifications - at which point
-    //     monitoring has effectively stopped. Cards stay 1:1; above
-    //     TOAST_INDIVIDUAL_LIMIT events per cycle the toasts become
-    //     one summary. Passes are now silent, failures audible.
-    //   * COLSPAN REFUSAL. th.cellIndex is matched against
-    //     row.children[column]; any colspan/rowspan breaks that
-    //     mapping and the result is not a MISSED alert but a FALSE one
-    //     attributed to a real serial and written to the permanent
-    //     log. Affected tables are now refused, loudly.
-    //
-    // P1 - CORRECTNESS AND RELIABILITY
-    //   * Dedup no longer suppresses AUDIT LOG writes, only surfacing.
-    //     The "the log can never develop silent holes" claim was false
-    //     for a genuine repeat inside the cooldown. Repeats now bump a
-    //     counter on the existing entry (bounded search), so the log
-    //     is truthful without growing once per 4s scan tick. New
-    //     "Repeats" column in the .csv export.
-    //   * Stale header cache could hand scan() DETACHED nodes - empty
-    //     row walks with a non-zero headerCount, i.e. the exact input
-    //     that triggered the baseline wipe. isConnected check added.
-    //   * A throw inside processSlot() aborted the remaining slots,
-    //     skipped savePreviousStates() and left state half-mutated
-    //     with no UI signal. Per-slot error boundary, counted into
-    //     the health chip.
-    //   * The early meta-refresh observer ran querySelectorAll over
-    //     the WHOLE document for every parse mutation - O(mutations x
-    //     nodes) during initial render on a page of hundreds of cells.
-    //     Now filters addedNodes for META/HEAD and scans head only.
-    //   * BACKGROUND TAB THROTTLING is surfaced. Chromium clamps
-    //     hidden-tab timers to ~1/min, so the master tick, the refresh
-    //     and the watchdog all degrade together - silently. Returning
-    //     to the foreground force-restarts refresh and rescans.
-    //   * pagehide added alongside beforeunload, which is unreliable
-    //     on tab discard and crash.
-    //   * The watchdog can now ABORT the in-flight soft refresh
-    //     instead of only clearing the flag and leaving the fetch
-    //     running underneath a second call.
-    //   * MAX_RECENT_ALERT_KEYS is actually enforced - the expiry
-    //     sweep alone did nothing when every key was still live,
-    //     which is exactly the burst case the cap exists for.
-    //   * Audit-log eviction at MAX_LOG_ENTRIES warns once instead of
-    //     silently discarding the oldest records.
-    //   * The unsafeWindow diagnostic is gated on Developer Mode at
-    //     call time - page JS could otherwise fire toasts through the
-    //     extension.
-    //
-    // STILL OPEN (tracked, not fixed here):
-    //   * @match is host-agnostic; narrow it before publication.
-    //   * @updateURL points at mutable main; pin to a tag and enable
-    //     branch protection before a second person installs this.
-    //   * randomTestServerInfo() still contains internal-looking
-    //     identifiers - sanitize before publishing.
-    //
-    // ============================================================
-    // v0.9.1 CHANGE LOG
-    // ============================================================
-    //
-    // TIER 1 - silent monitoring failures
-    //   * Soft refresh could permanently kill auto-refresh. The
-    //     early "already in flight" return skipped the callback that
-    //     reschedules the timer, and there was no fetch timeout, so a
-    //     hung request pinned softRefreshInFlight for the life of the
-    //     tab. Now: AbortController with a hard 15s cap, the
-    //     reschedule callback runs on EVERY exit path, and a watchdog
-    //     force-restarts auto refresh if it goes overdue.
-    //   * "Notifs" off no longer stops audit logging. Recording and
-    //     surfacing are now separate steps; the per-section watch
-    //     flag suppresses the card and toast only. The exported log
-    //     is a complete record again.
-    //   * The test-phase hint can no longer CREATE an alert, only
-    //     re-label an already-tracked TEST_FAILURE as a pre-test
-    //     fail. Previously any "X -> red" fired when the hint said
-    //     pretest, including transitions the spec ignores.
-    //   * The phase hint no longer reads cell text/class/id. On a
-    //     page called Server Level Test the word "test" is
-    //     everywhere. It now reads only explicit data- attributes.
-    //   * Flap protection keys on the SERIAL as well as the slot, so
-    //     a replacement server that genuinely fails the same way
-    //     inside the cooldown is no longer suppressed. The cooldown
-    //     map is persisted, so a hard reload cannot re-arm it.
-    //   * @run-at document-start, so the page's own meta refresh is
-    //     stripped before the browser commits it.
-    //
-    // TIER 2 - performance
-    //   * scan() and applyVisibility() were O(headers x rows) - eight
-    //     EVE columns in one table meant eight full row walks. Both
-    //     now group headers by table and walk each table's rows once.
-    //   * normalizeColor() checks the legacy bgcolor attribute before
-    //     falling back to getComputedStyle(), which forces a style
-    //     recalc per cell per scan.
-    //   * The phase hint is cached on the cell node.
-    //   * Header lookups are cached and invalidated on real DOM
-    //     change, instead of being recomputed three times per cycle.
-    //   * The alert log is held in memory and written debounced,
-    //     instead of a full parse/stringify of up to 2000 entries on
-    //     every single alert.
-    //   * The MutationObserver is suppressed around the tracker's own
-    //     writes, and now inspects addedNodes/removedNodes rather
-    //     than only mutation.target - appending the alert container,
-    //     the download link and the copy textarea each used to
-    //     trigger a full re-scan.
-    //   * buildSectionControls() diffs the section set instead of
-    //     rebuilding every checkbox on every mutation tick.
-    //
-    // TIER 3 - operational
-    //   * One version string, sourced from GM_info.
-    //   * @noframes, @run-at, @updateURL/@downloadURL placeholders.
-    //   * Debug snapshot/compare only run in Developer Mode.
-    //   * Repeated soft-refresh failures disable it for THIS SESSION
-    //     only, instead of writing the disable to localStorage
-    //     permanently.
-    //
-    // TIER 4 - contained bugs
-    //   * Dismissing a card re-applies the active filter.
-    //   * Debug/test cards are evicted before real ones when the
-    //     stored-alert cap is hit.
-    //   * Toast clicks use GM_openInTab (window.open from a
-    //     notification callback is not a user gesture and gets
-    //     popup-blocked).
-    //   * The console diagnostic is exposed on unsafeWindow so it is
-    //     actually reachable from F12.
-    //   * typeof guard on GM_info (the old guard threw a
-    //     ReferenceError inside an error handler).
-    //   * detailUrl is protocol-checked before being opened; ts is
-    //     coerced with Number() before being interpolated.
-    //   * CSV date/time columns are derived from the ISO timestamp so
-    //     they sort correctly in Excel on any machine.
-    //   * Clear-log confirm counts the same entries the exports do.
-    //   * The serial copy button is only rendered when there is a
-    //     serial to copy.
-    //
-    // TIER 5 - cleanup
-    //   * Removed getNotificationContent() and updateRefreshStatus()
-    //     (pure indirection). Merged the two debug-detection helpers.
-    //   * padOrTrim() keeps log tables aligned. Table rule width is
-    //     derived, not a magic 68.
-    //   * The full chronological dump is capped so the .txt does not
-    //     print every entry twice at high volume.
-    //   * Panel dragging uses Pointer Events (works on touch, and the
-    //     move/up listeners only exist during a drag).
-    //   * initialize() has an error boundary.
-    //
-    // NOT INCLUDED (deliberate - these are new features, not fixes):
-    //   dwell-time tracking, stuck-server detection, serial history,
-    //   shift-boundary reports, failure-rate thresholds.
-    //
-    // ============================================================
     // IMPORTANT:
     // Company credentials are NOT stored in this script.
     // The tracker uses your already-authenticated EVE browser session.
@@ -491,7 +222,7 @@
             GM_info.script.version
         )
             ? GM_info.script.version
-            : '0.9.5';
+            : '0.9.11';
 
     const LOG_PREFIX = '[EVE Tracker]';
 
@@ -511,6 +242,55 @@
     const MENU_STATE_KEY      = 'eveRackTrackerMenuState';
     const DEBUG_SNAPSHOT_KEY  = 'eveRackTrackerDebugSnapshot';
     const ALERT_PANEL_POSITION_KEY = 'eveRackTrackerAlertPanelPosition';
+
+
+    // ============================================================
+    // STORAGE I/O
+    // ============================================================
+    //
+    // Every persisted value here is JSON in web storage, read and
+    // written behind the same try/catch. Only the SHELL is shared -
+    // each caller keeps its own migration, shape guard or filter,
+    // because those are the parts that are not boilerplate.
+    //
+    // label === null means "fail silently". The flap-protection save
+    // is deliberately silent: worst case a flap slips through after a
+    // reload, and a console warning per failed write would be noise.
+    // ============================================================
+
+    function readJSON(store, key, fallback, label) {
+        try {
+            const saved = store.getItem(key);
+            if (saved) {
+                return JSON.parse(saved);
+            }
+        } catch (error) {
+            if (label) {
+                warn(label + ' load error:', error);
+            }
+        }
+
+        return fallback;
+    }
+
+
+    function writeJSON(store, key, value, label) {
+        try {
+            store.setItem(key, JSON.stringify(value));
+            return true;
+        } catch (error) {
+            if (label) {
+                warn(label + ' save error:', error);
+            }
+            return false;
+        }
+    }
+
+
+    // Shared geometry constants. These were re-declared as locals in
+    // four and two places respectively.
+    const PANEL_MARGIN        = 10;
+    const PANEL_SNAP_DISTANCE = 35;
 
 
     // ============================================================
@@ -573,7 +353,6 @@
     // ============================================================
 
     const defaultSettings = {
-
         // Per-section flags, keyed by section name (A7, B2, ...).
         // { show, watch }. There is no global show/watch flag.
         //
@@ -600,7 +379,6 @@
         // Gate for the developer page, the debug snapshot/compare
         // machinery, and the diagnostic tools.
         developerMode: false
-
     };
 
 
@@ -634,7 +412,6 @@
 
     let alertFilter = 'all';
     let alertSearch = '';
-
 
 
     function log(...args)  { console.log(LOG_PREFIX, ...args); }
@@ -676,7 +453,6 @@
 
 
     function reportHealth(state, detail, quiet) {
-
         const changed = state !== healthState;
 
         healthState  = state;
@@ -721,7 +497,6 @@
             ICON_FAIL,
             null
         );
-
     }
 
 
@@ -737,7 +512,6 @@
     // ------------------------------------------------------------
 
     function safeUrl(url) {
-
         if (!url) {
             return '';
         }
@@ -748,12 +522,10 @@
         } catch (error) {
             return '';
         }
-
     }
 
 
     function openExternal(url) {
-
         const target = safeUrl(url);
 
         if (!target) {
@@ -762,7 +534,6 @@
         }
 
         window.open(target, '_blank', 'noopener,noreferrer');
-
     }
 
 
@@ -770,7 +541,6 @@
     // one gets popup-blocked. GM_openInTab is the privileged path.
 
     function openFromNotification(url) {
-
         const target = safeUrl(url);
 
         if (!target) {
@@ -784,7 +554,6 @@
 
         // Best effort. May be blocked - hence the grant above.
         window.open(target, '_blank', 'noopener,noreferrer');
-
     }
 
 
@@ -793,82 +562,57 @@
     // ============================================================
 
     function loadSettings() {
+        const parsed =
+            readJSON(localStorage, SETTINGS_KEY, null, 'Settings');
 
-        try {
-
-            const saved = localStorage.getItem(SETTINGS_KEY);
-
-            if (saved) {
-
-                const parsed = JSON.parse(saved);
-
-                // Migrate the old global visibility flag.
-                if (
-                    typeof parsed.showDebug !== 'boolean' &&
-                    typeof parsed.hideTestResults === 'boolean'
-                ) {
-                    parsed.showDebug = !parsed.hideTestResults;
-                }
-
-                delete parsed.hideTestResults;
-
-                if (typeof parsed.developerMode !== 'boolean') {
-                    parsed.developerMode = defaultSettings.developerMode;
-                }
-
-                const merged = { ...defaultSettings, ...parsed };
-
-                // Shallow spread would replace this wholesale; make
-                // sure it is always a usable object.
-                if (
-                    !merged.sections ||
-                    typeof merged.sections !== 'object'
-                ) {
-                    merged.sections = {};
-                }
-
-                return merged;
-
+        if (parsed && typeof parsed === 'object') {
+            // Migrate the old global visibility flag.
+            if (
+                typeof parsed.showDebug !== 'boolean' &&
+                typeof parsed.hideTestResults === 'boolean'
+            ) {
+                parsed.showDebug = !parsed.hideTestResults;
             }
 
-        } catch (error) {
-            warn('Settings load error:', error);
+            delete parsed.hideTestResults;
+            if (typeof parsed.developerMode !== 'boolean') {
+                parsed.developerMode = defaultSettings.developerMode;
+            }
+
+            const merged = { ...defaultSettings, ...parsed };
+
+            // Shallow spread would replace this wholesale; make sure
+            // it is always a usable object.
+            if (
+                !merged.sections ||
+                typeof merged.sections !== 'object'
+            ) {
+                merged.sections = {};
+            }
+
+            return merged;
         }
 
         return { ...defaultSettings, sections: {} };
-
     }
 
 
     function saveSettings() {
-
-        try {
-            localStorage.setItem(
-                SETTINGS_KEY,
-                JSON.stringify(settings)
-            );
-        } catch (error) {
-            warn('Settings save error:', error);
-        }
-
+        writeJSON(localStorage, SETTINGS_KEY, settings, 'Settings');
     }
 
 
     function getSectionSettings(section) {
-
         if (!settings.sections[section]) {
-
             settings.sections[section] = { show: true, watch: true };
 
             // Persist immediately. Previously a newly-discovered
             // section lived only in memory until some unrelated
             // action happened to save, so storage and runtime drifted.
             saveSettings();
-
         }
 
         return settings.sections[section];
-
     }
 
 
@@ -877,35 +621,27 @@
     // ============================================================
 
     function loadPreviousStates() {
+        const parsed =
+            readJSON(
+                sessionStorage,
+                PREV_STATES_KEY,
+                null,
+                'Previous state'
+            );
 
-        try {
-
-            const saved = sessionStorage.getItem(PREV_STATES_KEY);
-
-            if (saved) {
-                return new Map(Object.entries(JSON.parse(saved)));
-            }
-
-        } catch (error) {
-            warn('Previous state load error:', error);
-        }
-
-        return new Map();
-
+        return (parsed && typeof parsed === 'object')
+            ? new Map(Object.entries(parsed))
+            : new Map();
     }
 
 
     function savePreviousStates() {
-
-        try {
-            sessionStorage.setItem(
-                PREV_STATES_KEY,
-                JSON.stringify(Object.fromEntries(previousStates))
-            );
-        } catch (error) {
-            warn('Previous state save error:', error);
-        }
-
+        writeJSON(
+            sessionStorage,
+            PREV_STATES_KEY,
+            Object.fromEntries(previousStates),
+            'Previous state'
+        );
     }
 
 
@@ -925,7 +661,6 @@
 
 
     function isOwnUiNode(node) {
-
         const element =
             (node && node.nodeType === 1)
                 ? node
@@ -936,7 +671,6 @@
         }
 
         return OWN_UI_IDS.some(id => element.closest('#' + id));
-
     }
 
 
@@ -952,13 +686,11 @@
     // ============================================================
 
     function withoutObserver(fn) {
-
         observerSuppressDepth += 1;
 
         try {
             return fn();
         } finally {
-
             // Discard anything queued by our own writes. takeRecords()
             // is synchronous, so this runs before the observer's
             // microtask would have fired.
@@ -967,9 +699,7 @@
             }
 
             observerSuppressDepth -= 1;
-
         }
-
     }
 
 
@@ -997,7 +727,6 @@
 
 
     function getEveTableGroups(root) {
-
         const scanRoot = root || document;
 
         // The cache holds live <th>/<table> references. withoutObserver()
@@ -1007,21 +736,17 @@
         // which is precisely the input that used to wipe every baseline.
         // Cheap identity check beats rebuilding on every call.
         if (!root && cachedGroups) {
-
             const first = cachedGroups[0];
-
             if (!first || first.table.isConnected) {
                 return cachedGroups;
             }
 
             cachedGroups = null;
-
         }
 
         const byTable = new Map();
 
         scanRoot.querySelectorAll('th').forEach(th => {
-
             const match =
                 th.textContent.trim().match(EVE_HEADER_PATTERN);
 
@@ -1030,7 +755,6 @@
             }
 
             const table = th.closest('table');
-
             if (!table) {
                 return;
             }
@@ -1045,7 +769,6 @@
                 eve: 'EVE' + match[2],
                 column: th.cellIndex
             });
-
         });
 
         // th.cellIndex is matched against row.children[column]. Any
@@ -1057,14 +780,12 @@
         const groups = [];
 
         byTable.forEach(group => {
-
             const spanned =
                 group.table.querySelector(
                     'td[colspan], th[colspan], td[rowspan], th[rowspan]'
                 );
 
             if (spanned) {
-
                 if (!root) {
                     reportHealth(
                         'DEGRADED',
@@ -1074,11 +795,9 @@
                 }
 
                 return;
-
             }
 
             groups.push(group);
-
         });
 
         if (!root) {
@@ -1086,23 +805,6 @@
         }
 
         return groups;
-
-    }
-
-
-    // Flat header list, for the places that genuinely want every
-    // header regardless of which table it sits in.
-
-    function getEveHeaders(root) {
-
-        const headers = [];
-
-        getEveTableGroups(root).forEach(group => {
-            group.headers.forEach(header => headers.push(header));
-        });
-
-        return headers;
-
     }
 
 
@@ -1118,11 +820,9 @@
     // ============================================================
 
     function stripMetaRefresh(root) {
-
         let removed = 0;
 
         root.querySelectorAll('meta[http-equiv]').forEach(meta => {
-
             if (
                 (meta.getAttribute('http-equiv') || '')
                     .toLowerCase() === 'refresh'
@@ -1130,11 +830,9 @@
                 meta.remove();
                 removed += 1;
             }
-
         });
 
         return removed;
-
     }
 
 
@@ -1143,21 +841,15 @@
     // ============================================================
 
     function startAutoRefresh() {
-
         if (
             !settings.autoRefresh ||
             !settings.refreshIntervalSeconds ||
             settings.refreshIntervalSeconds <= 0
         ) {
-
             log('Auto refresh: OFF');
-
             autoRefreshDueAt = null;
-
             updateRefreshCountdown();
-
             return;
-
         }
 
         const seconds = Number(settings.refreshIntervalSeconds);
@@ -1169,37 +861,25 @@
         updateRefreshCountdown();
 
         autoRefreshTimer = setTimeout(() => {
-
             autoRefreshTimer = null;
-
             if (softRefreshEnabled()) {
-
                 // performSoftRefresh() guarantees the callback runs on
                 // every exit path, including the early "already in
                 // flight" return. Nothing here reschedules on its own,
                 // so a missed callback used to kill auto refresh for
                 // the life of the tab.
                 performSoftRefresh(restartAutoRefresh);
-
             } else {
-
                 savePreviousStates();
-
                 debugSnapshotBeforeRefresh('auto-refresh');
-
                 flushAlertLog();
-
                 location.reload();
-
             }
-
         }, seconds * 1000);
-
     }
 
 
     function restartAutoRefresh() {
-
         if (autoRefreshTimer) {
             clearTimeout(autoRefreshTimer);
             autoRefreshTimer = null;
@@ -1208,7 +888,6 @@
         autoRefreshDueAt = null;
 
         startAutoRefresh();
-
     }
 
 
@@ -1224,7 +903,6 @@
     // ============================================================
 
     function autoRefreshWatchdog() {
-
         if (!settings.autoRefresh || !autoRefreshDueAt) {
             return;
         }
@@ -1250,7 +928,6 @@
         // Clearing the flag without aborting left the fetch running, so
         // a second performSoftRefresh() could swap tables concurrently.
         if (softRefreshController) {
-
             try {
                 softRefreshController.abort();
             } catch (error) {
@@ -1258,13 +935,11 @@
             }
 
             softRefreshController = null;
-
         }
 
         softRefreshInFlight = false;
 
         restartAutoRefresh();
-
     }
 
 
@@ -1272,8 +947,30 @@
     // LIVE REFRESH COUNTDOWN
     // ============================================================
 
-    function updateRefreshCountdown() {
+    // updateRefreshCountdown() runs once a SECOND for the life of the
+    // tab and used to rewrite textContent and className unconditionally
+    // - including on #eve-refresh-status, which sits inside a collapsed
+    // <details> most of the time. The last written value is kept on the
+    // node itself, so replacing the element invalidates the memo for
+    // free.
 
+    function setTextIfChanged(element, text) {
+        if (element && element.__eveText !== text) {
+            element.textContent = text;
+            element.__eveText = text;
+        }
+    }
+
+
+    function setClassIfChanged(element, className) {
+        if (element && element.__eveClass !== className) {
+            element.className = className;
+            element.__eveClass = className;
+        }
+    }
+
+
+    function updateRefreshCountdown() {
         const badge  = document.getElementById('eve-refresh-badge');
         const status = document.getElementById('eve-refresh-status');
 
@@ -1282,18 +979,10 @@
         }
 
         if (!settings.autoRefresh || !autoRefreshDueAt) {
-
-            if (badge) {
-                badge.textContent = 'OFF';
-                badge.className = 'eve-summary-badge eve-badge-off';
-            }
-
-            if (status) {
-                status.textContent = 'OFF';
-            }
-
+            setTextIfChanged(badge, 'OFF');
+            setClassIfChanged(badge, 'eve-summary-badge eve-badge-off');
+            setTextIfChanged(status, 'OFF');
             return;
-
         }
 
         const remaining =
@@ -1308,29 +997,24 @@
                   `${String(remaining % 60).padStart(2, '0')}s`
                 : `${remaining}s`;
 
-        if (badge) {
+        setTextIfChanged(
+            badge,
+            remaining > 0 ? `ON \u{b7} ${label}` : 'refreshing\u{2026}'
+        );
 
-            badge.textContent =
-                remaining > 0
-                    ? `ON \u{b7} ${label}`
-                    : 'refreshing\u{2026}';
+        setClassIfChanged(
+            badge,
+            'eve-summary-badge ' +
+            (remaining <= 5 ? 'eve-badge-soon' : 'eve-badge-on')
+        );
 
-            badge.className =
-                'eve-summary-badge ' +
-                (remaining <= 5 ? 'eve-badge-soon' : 'eve-badge-on');
-
-        }
-
-        if (status) {
-
-            status.textContent =
-                remaining > 0
-                    ? `ON \u{2022} Every ${settings.refreshIntervalSeconds}s \u{2022} ` +
-                      `next refresh in ${label}`
-                    : 'Refreshing now\u{2026}';
-
-        }
-
+        setTextIfChanged(
+            status,
+            remaining > 0
+                ? `ON \u{2022} Every ${settings.refreshIntervalSeconds}s \u{2022} ` +
+                  `next refresh in ${label}`
+                : 'Refreshing now\u{2026}'
+        );
     }
 
 
@@ -1352,17 +1036,14 @@
     // ============================================================
 
     async function performSoftRefresh(onDone) {
-
         let finished = false;
 
         const finish = () => {
-
             if (finished) {
                 return;
             }
 
             finished = true;
-
             try {
                 if (onDone) {
                     onDone();
@@ -1370,11 +1051,9 @@
             } catch (error) {
                 fail('Soft refresh completion callback threw:', error);
             }
-
         };
 
         if (softRefreshInFlight) {
-
             // Still reschedule. Returning without this used to leave
             // the auto-refresh timer permanently unscheduled.
             warn(
@@ -1383,9 +1062,7 @@
             );
 
             finish();
-
             return;
-
         }
 
         softRefreshInFlight = true;
@@ -1407,7 +1084,6 @@
             );
 
         try {
-
             const response =
                 await fetch(window.location.href, {
                     credentials: 'same-origin',
@@ -1436,12 +1112,10 @@
             }
 
             const html = await response.text();
-
             const doc =
                 new DOMParser().parseFromString(html, 'text/html');
 
             stripMetaRefresh(doc);
-
             const newGroups = getEveTableGroups(doc);
 
             // Sanity check: swapping in a login page would make the
@@ -1458,7 +1132,6 @@
                 swapEveTables(newGroups.map(g => g.table), doc);
 
             softRefreshFailures = 0;
-
             log(
                 `Soft refresh OK \u{2014} ${swapped} table(s) updated, ` +
                 `${previousStates.size} states tracked. Panel position ` +
@@ -1466,11 +1139,8 @@
             );
 
             finish();
-
         } catch (error) {
-
             softRefreshFailures += 1;
-
             const reason =
                 (error && error.name === 'AbortError')
                     ? `timed out after ${SOFT_REFRESH_TIMEOUT_MS / 1000}s`
@@ -1483,38 +1153,27 @@
             );
 
             if (softRefreshFailures >= MAX_SOFT_REFRESH_FAILURES) {
-
                 // SESSION ONLY. The old build called saveSettings()
                 // here, which wrote the disable to localStorage and
                 // meant the user silently never got soft refresh back.
                 softRefreshDisabledForSession = true;
-
                 warn(
                     'Soft refresh disabled for THIS SESSION after ' +
                     'repeated failures - using full page reloads. It ' +
                     'is re-enabled automatically the next time the tab ' +
                     'is opened; your saved setting is unchanged.'
                 );
-
             }
 
             debugSnapshotBeforeRefresh('soft-refresh-fallback');
-
             flushAlertLog();
-
             finish();
-
             location.reload();
-
         } finally {
-
             clearTimeout(abortTimer);
-
             softRefreshController = null;
             softRefreshInFlight = false;
-
         }
-
     }
 
 
@@ -1526,7 +1185,6 @@
     // ------------------------------------------------------------
 
     function swapEveTables(newTables, doc) {
-
         if (pageObserver) {
             pageObserver.disconnect();
         }
@@ -1542,25 +1200,19 @@
             liveTables.length &&
             liveTables.length === newTables.length
         ) {
-
             liveTables.forEach((liveTable, index) => {
-
                 liveTable.replaceWith(
                     document.importNode(newTables[index], true)
                 );
 
                 swapped += 1;
-
             });
-
         } else {
-
             swapped =
                 swapPageBody(
                     doc ||
                     (newTables[0] ? newTables[0].ownerDocument : null)
                 );
-
         }
 
         invalidateHeaderCache();
@@ -1568,12 +1220,10 @@
         afterSwap();
 
         return swapped;
-
     }
 
 
     function swapPageBody(doc) {
-
         if (!doc || !doc.body) {
             return 0;
         }
@@ -1589,7 +1239,6 @@
         let inserted = 0;
 
         [...doc.body.children].forEach(node => {
-
             // Scripts imported this way never execute, so importing
             // them only bloats the DOM.
             if (node.tagName === 'SCRIPT') {
@@ -1602,11 +1251,9 @@
             );
 
             inserted += 1;
-
         });
 
         return inserted;
-
     }
 
 
@@ -1615,7 +1262,6 @@
     // consumers, instead of each recomputing them.
 
     function afterSwap() {
-
         observePage();
 
         const groups = getEveTableGroups();
@@ -1625,7 +1271,6 @@
         applyVisibility(groups);
 
         scan(groups);
-
     }
 
 
@@ -1634,7 +1279,6 @@
     // ============================================================
 
     function isRelevantMutation(mutation) {
-
         if (observerSuppressDepth > 0) {
             return false;
         }
@@ -1645,7 +1289,6 @@
         // container, the export download link and the copy textarea as
         // real page changes and ran a full re-scan for each.
         if (mutation.type === 'childList') {
-
             const touched = [
                 ...mutation.addedNodes,
                 ...mutation.removedNodes
@@ -1657,22 +1300,18 @@
             ) {
                 return false;
             }
-
         }
 
         return !isOwnUiNode(mutation.target);
-
     }
 
 
     function observePage() {
-
         if (pageObserver) {
             pageObserver.disconnect();
         }
 
         pageObserver = new MutationObserver(mutations => {
-
             if (!mutations.some(isRelevantMutation)) {
                 return;
             }
@@ -1682,23 +1321,16 @@
             }
 
             scanTimer = setTimeout(() => {
-
                 scanTimer = null;
 
                 // The page changed for real, so any cached header
                 // layout is suspect.
                 invalidateHeaderCache();
-
                 const groups = getEveTableGroups();
-
                 buildSectionControls(groups);
-
                 applyVisibility(groups);
-
                 scan(groups);
-
             }, OBSERVER_DEBOUNCE_MS);
-
         });
 
         pageObserver.observe(document.body, {
@@ -1707,7 +1339,6 @@
             attributes: true,
             attributeFilter: ['style', 'class', 'bgcolor']
         });
-
     }
 
 
@@ -1723,7 +1354,6 @@
     // ============================================================
 
     function getNotificationTimeoutMs() {
-
         const seconds = Number(settings.notificationTimeoutSeconds);
 
         if (!seconds || seconds <= 0 || Number.isNaN(seconds)) {
@@ -1731,7 +1361,6 @@
         }
 
         return seconds * 1000;
-
     }
 
 
@@ -1753,9 +1382,7 @@
 
 
     function sendDesktopNotification(title, text, imageUrl, onclick) {
-
         if (typeof GM_notification !== 'function') {
-
             fail(
                 'Cannot send desktop notification: GM_notification is ' +
                 'not a function. Verify "@grant GM_notification" is in ' +
@@ -1763,7 +1390,6 @@
             );
 
             return false;
-
         }
 
         const timeoutMs = getNotificationTimeoutMs();
@@ -1801,9 +1427,7 @@
         const sentAt = Date.now();
 
         payload.ondone = () => {
-
             const aliveMs = Date.now() - sentAt;
-
             if (aliveMs < 250) {
                 warn(
                     `Toast "${title}" closed after only ${aliveMs}ms. It ` +
@@ -1813,13 +1437,10 @@
             } else {
                 devLog(`Toast "${title}" closed after ${aliveMs}ms.`);
             }
-
         };
 
         try {
-
             GM_notification(payload);
-
             devLog('GM_notification() dispatched.', {
                 title: title,
                 tag: tag,
@@ -1831,9 +1452,7 @@
             });
 
             return true;
-
         } catch (error) {
-
             fail(
                 'GM_notification() threw with image included. Retrying ' +
                 'as text-only:',
@@ -1841,20 +1460,15 @@
             );
 
             try {
-
                 delete payload.image;
-
                 GM_notification(payload);
-
                 warn(
                     'Text-only fallback toast succeeded. The embedded ' +
                     'icon is the problem, not the notification system.'
                 );
 
                 return true;
-
             } catch (fallbackError) {
-
                 fail(
                     'Text-only fallback ALSO threw. The notification ' +
                     'system itself is unavailable:',
@@ -1862,11 +1476,8 @@
                 );
 
                 return false;
-
             }
-
         }
-
     }
 
 
@@ -1888,25 +1499,109 @@
         'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAEZUlEQVR42u3c3ZHTShhFUcyTicPk6Ql08uCVACiq5key+uu9dgAwI53VslXce7s/Hz+kaj9dAgEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAEgASABIAAkAKT/9+ftHQCl17+rAQD00bN/SwO3+/PhNutTn3x+vf32BBAYAKi68m0MAKAv7nsPAwDo68vewAAA+tampxvwFkjHrHnoqyFPAB1zlg99FACgVQgBoPHbHWcAAB282lkGALD+9xF/5kl5C2T9J7b+qyFPAOtPfy0GwPrTBgBQ2gAAFpk2AID1pw14C2T9r26pV0OeANaffhQAYP3pHwYA609/CgJAvgPI8Z9cPwDWXw8A6+8e/wBYf3r9AFh/ev0AWH96/QAovX4AHP/1ALD+7vEPgPWn1w+A9afXD4D1p9cPgPWn1w+A0usHwPFfDwDr7x7/AFh/ev0AWH96/QBYf3r9AFh/ev0AqB4Ajv/u8Q+A9afXD4D1p9cPgPWn1w+A9afXD4D1p9cPgPXXA0Dd4x8Ax396/TsDGP35wfoBOGBAQw1YPwCHDWicAesH4Fvr+XdAgwx47QPAKesZMawFf8jtj/99ADg7rb8L4CPrX1yIj/4AnD6dZQ1YPwAvms6CBqz/2m7356P2oX+de2z9ngAX7GaR2fniDsBlu7l8fF56AnDxbhzA1j8MwOGTvcqAj/4AdA9s61+qAW+Bzl7MKxdg/Z4Ayy3mZaP0rQOA7jS99gFg6cWc+tdZPwADFtP5iGL9SwO4cIhn/NW++K7cWm+BFtnKgROxfk+AeVs56iexfgC6n7+99ARg8OG0xz84dfxP+gi0jQHrB8BzwFUFIGnAF18Admvuf3dv/SMBLHjbJv6fV6x/8BNgnAEvPQHoGvDaB4DuXbR+AEL3cv2POta/FYDFDfjiC0DXgPUD0M1rHwAcb64PAO6xKwOAO+2aAOB+uxoAuOuuAwDuvSsAgAUIAAb84gDI+gGwBr8vADbhNwXAMvyOANiHAGDArwaAoVg/AOZi/QDI+gGwG+sHwHqsHwAbEgBNA+gC0B2T9QPQnZT1A9AdlvUD0J2X9QMgAZA8ZR3/AHSnZv0AdAdn/QB0Z2f9AHTHZ/0AdA1YPwCeAwKAOgGQmqP1A9A1YP0AdA1YPwBdA9YPgOeAAEga4AqArgHrB6BrwPoBoEgA9OZr/QB0DVg/AJ4DAiBpgBkAugasH4CuAesHoGvA+gFgQwAYugBIGaACgK4B6wega8D6p3e7Px+ugjwBJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAkACQAJAAEgEsgACQApF5/ASm83YWSRjGVAAAAAElFTkSuQmCC';
 
 
+    // ============================================================
+    // THE TRANSITION TABLE - ONE SOURCE OF TRUTH
+    // ============================================================
+    //
+    // Every category used to be re-encoded independently in eight
+    // places: getTransitionIcon(), getStatusLine(),
+    // getTransitionTitle(), LOG_CATEGORIES, the .csv categoryNames
+    // map, ALERT_CLASS_BY_TRANSITION, isDiagnosticTransition() and
+    // the toast-summary counters. Adding SYS_DEKIT in v0.9.5 meant
+    // threading it through all eight by hand, and the toast counters
+    // are the one that got missed.
+    //
+    // KEY ORDER HERE IS THE ORDER OF THE .txt REPORT SECTIONS.
+    // It matches the previous LOG_CATEGORIES array exactly.
+    //
+    //   diagnostic  not a hardware result: excluded from the failure
+    //               denominator, never interrupts anyone
+    //   failure     counts toward the FAIL half of a toast summary
+    // ============================================================
+
+    const TRANSITIONS = {
+        PRETEST_FAILURE: {
+            title:      'PRE-TEST FAIL \u{274c}',
+            status:     'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test FAIL \u{274c}',
+            icon:       ICON_FAIL,
+            css:        'eve-pretest',
+            logHeading: 'PRE-TEST FAILS',
+            csvName:    'PRE-TEST FAIL',
+            diagnostic: false,
+            failure:    true
+        },
+
+        TEST_FAILURE: {
+            title:      'TEST FAIL \u{274c}',
+            status:     'Testing \u{1f7e2}. . . \u{25ba} Test FAIL \u{274c}',
+            icon:       ICON_FAIL,
+            css:        'eve-failure',
+            logHeading: 'TEST FAILS',
+            csvName:    'TEST FAIL',
+            diagnostic: false,
+            failure:    true
+        },
+
+        PRETEST_SUCCESS: {
+            title:      'PRE-TEST PASS \u{2705}',
+            status:     'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test PASS \u{2705}',
+            icon:       ICON_PASS,
+            css:        'eve-pretest-pass',
+            logHeading: 'PRE-TEST PASSES',
+            csvName:    'PRE-TEST PASS',
+            diagnostic: false,
+            failure:    false
+        },
+
+        TEST_SUCCESS: {
+            title:      'TEST PASS \u{2705}',
+            status:     'Testing \u{1f7e2}. . . \u{25ba} Test PASS \u{2705}',
+            icon:       ICON_PASS,
+            css:        'eve-success',
+            logHeading: 'TEST PASSES',
+            csvName:    'TEST PASS',
+            diagnostic: false,
+            failure:    false
+        },
+
+        // SYS_DEKIT carries the PASS icon even on Pass=0. A
+        // diagnostic is not a failure, and the one occasion it
+        // reaches the desktop is a RETRACTION of an alert that
+        // wrongly called it one.
+        DEKIT_FAILURE: {
+            title:      'SYS_DEKIT \u{1f527}',
+            status:     'SYS_DEKIT \u{1f527}. . . \u{25ba} diagnostic, Pass=0',
+            icon:       ICON_PASS,
+            css:        'eve-dekit',
+            logHeading: 'SYS_DEKIT \u{2014} DIAGNOSTIC, NOT A RESULT (Pass=0)',
+            csvName:    'SYS_DEKIT (Pass=0)',
+            diagnostic: true,
+            failure:    false
+        },
+
+        DEKIT_SUCCESS: {
+            title:      'SYS_DEKIT \u{1f527}',
+            status:     'SYS_DEKIT \u{1f527}. . . \u{25ba} diagnostic, Pass=1',
+            icon:       ICON_PASS,
+            css:        'eve-dekit',
+            logHeading: 'SYS_DEKIT \u{2014} DIAGNOSTIC, NOT A RESULT (Pass=1)',
+            csvName:    'SYS_DEKIT (Pass=1)',
+            diagnostic: true,
+            failure:    false
+        }
+    };
+
+
+    function transitionMeta(transition) {
+        return TRANSITIONS[transition] || null;
+    }
+
+
     function getTransitionIcon(transition) {
+        const meta = transitionMeta(transition);
 
-        if (
-            transition === 'TEST_SUCCESS' ||
-            transition === 'PRETEST_SUCCESS'
-        ) {
-            return ICON_PASS;
-        }
-
-        // A diagnostic is not a failure, so it must not carry the red X
-        // on the one occasion it does reach the desktop (the retraction
-        // of an alert that turned out to be SYS_DEKIT).
-        if (isDiagnosticTransition(transition)) {
-            return ICON_PASS;
-        }
-
-        // TEST_FAILURE and PRETEST_FAILURE both use the red X.
-        return ICON_FAIL;
-
+        // Unknown transition keeps the old fallback: the red X.
+        return meta ? meta.icon : ICON_FAIL;
     }
 
 
@@ -1927,71 +1622,25 @@
     // ============================================================
 
     function getStatusLine(transition) {
+        const meta = transitionMeta(transition);
 
-        if (transition === 'TEST_SUCCESS') {
-            return 'Testing \u{1f7e2}. . . \u{25ba} Test PASS \u{2705}';
-        }
-
-        if (transition === 'TEST_FAILURE') {
-            return 'Testing \u{1f7e2}. . . \u{25ba} Test FAIL \u{274c}';
-        }
-
-        if (transition === 'PRETEST_FAILURE') {
-            return 'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test FAIL \u{274c}';
-        }
-
-        if (transition === 'PRETEST_SUCCESS') {
-            return 'Pre-Testing \u{1f537}. . . \u{25ba} Pre-Test PASS \u{2705}';
-        }
-
-        if (transition === 'DEKIT_FAILURE') {
-            return 'SYS_DEKIT \u{1f527}. . . \u{25ba} diagnostic, Pass=0';
-        }
-
-        if (transition === 'DEKIT_SUCCESS') {
-            return 'SYS_DEKIT \u{1f527}. . . \u{25ba} diagnostic, Pass=1';
-        }
-
-        return '';
-
+        return meta ? meta.status : '';
     }
 
 
     function getTransitionTitle(transition) {
+        const meta = transitionMeta(transition);
 
-        if (transition === 'TEST_SUCCESS') {
-            return 'TEST PASS \u{2705}';
-        }
-
-        if (transition === 'TEST_FAILURE') {
-            return 'TEST FAIL \u{274c}';
-        }
-
-        if (transition === 'PRETEST_FAILURE') {
-            return 'PRE-TEST FAIL \u{274c}';
-        }
-
-        if (transition === 'PRETEST_SUCCESS') {
-            return 'PRE-TEST PASS \u{2705}';
-        }
-
-        if (isDiagnosticTransition(transition)) {
-            return 'SYS_DEKIT \u{1f527}';
-        }
-
-        return '';
-
+        return meta ? meta.title : '';
     }
 
 
     function buildNotificationBody(info, transition) {
-
         return [
             `Serial #: ${info.serial}`,
             `\u{1f4cd} ${info.section} \u{2022} ${info.eve} \u{2022} ${info.unit}`,
             getStatusLine(transition)
         ].join('\n');
-
     }
 
 
@@ -2013,35 +1662,27 @@
     // ============================================================
 
     function checkNotificationPermission() {
-
         try {
-
             if (typeof GM_notification !== 'function') {
-
                 fail(
                     'GM_notification is not available in this script ' +
                     'context. Check that "@grant GM_notification" is ' +
                     'present in the userscript header and that ' +
                     'Tampermonkey has not disabled grants for this script.'
                 );
-
             } else {
-
                 devLog(
                     'GM_notification() is available. If a test button ' +
                     'logs a successful dispatch but no toast appears, ' +
                     'the cause is Edge/Windows notification permissions ' +
                     'for the Tampermonkey EXTENSION - not this script.'
                 );
-
             }
-
         } catch (error) {
             warn('GM_notification availability check failed:', error);
         }
 
         try {
-
             if (typeof Notification === 'undefined') {
                 devLog(
                     'Page-level Notification API unavailable (not used ' +
@@ -2054,11 +1695,9 @@
                 `Page-level Notification.permission: ` +
                 `${Notification.permission} (informational only).`
             );
-
         } catch (error) {
             warn('Page-level notification permission check failed:', error);
         }
-
     }
 
 
@@ -2080,7 +1719,6 @@
     // ============================================================
 
     function runNotificationDiagnostic() {
-
         console.log(
             '%c' + LOG_PREFIX + ' NOTIFICATION DIAGNOSTIC STARTING',
             'font-weight:bold;font-size:14px;'
@@ -2104,7 +1742,6 @@
         );
 
         const tests = [
-
             {
                 n: 1,
                 label: 'BASELINE (ascii, no image, no timeout, no tag)',
@@ -2160,11 +1797,9 @@
                     null
                 )
             }
-
         ];
 
         tests.forEach((test, index) => {
-
             setTimeout(() => {
 
                 log(`--> Firing test ${test.n}: ${test.label}`);
@@ -2174,13 +1809,10 @@
                 } catch (error) {
                     fail(`Test ${test.n} THREW:`, error);
                 }
-
             }, index * 2000);
-
         });
 
         setTimeout(() => {
-
             console.log(
                 '%c' + LOG_PREFIX + ' DIAGNOSTIC COMPLETE - HOW TO READ IT',
                 'font-weight:bold;font-size:14px;'
@@ -2196,9 +1828,7 @@
                 '                         the toast.\n' +
                 'ALL 5 appear          -> Notifications are healthy.'
             );
-
         }, tests.length * 2000 + 1000);
-
     }
 
 
@@ -2207,7 +1837,6 @@
     // the F12 console - which is exactly where this is meant to be run.
 
     try {
-
         const consoleTarget =
             (typeof unsafeWindow !== 'undefined')
                 ? unsafeWindow
@@ -2218,7 +1847,6 @@
         // through the extension. Low impact, but no reason to leave
         // it armed on a page the tracker does not control.
         consoleTarget.eveNotifyDiagnostic = function () {
-
             if (!settings || !settings.developerMode) {
                 console.warn(
                     LOG_PREFIX +
@@ -2229,9 +1857,7 @@
             }
 
             runNotificationDiagnostic();
-
         };
-
     } catch (error) {
         warn('Could not expose the diagnostic on window:', error);
     }
@@ -2272,7 +1898,6 @@
 
 
     function canonicalColor(raw) {
-
         const value = (raw || '').toLowerCase().trim();
 
         if (!value) {
@@ -2280,12 +1905,10 @@
         }
 
         return COLOR_ALIASES[value] || value;
-
     }
 
 
     function normalizeColor(element) {
-
         if (!element) {
             return '';
         }
@@ -2306,76 +1929,28 @@
         return canonicalColor(
             getComputedStyle(element).backgroundColor
         );
-
     }
 
 
     // ============================================================
-    // TEST PHASE HINT
+    // TEST PHASE HINT - REMOVED
     // ============================================================
     //
-    // The hint is ADVISORY. Color is the only thing that can create an
-    // alert; the hint may only re-label one.
+    // getTestPhaseHint() read explicit data- attributes ONLY. This page
+    // emits legacy bgcolor markup and no data- attributes at all, so it
+    // returned '' on every call in production - which is exactly what
+    // the v0.9.4 investigation found.
     //
-    // It reads explicit data- attributes ONLY. The previous version
-    // concatenated textContent + title + class + id + every data-
-    // attribute and matched /\btest\b/i against the lot. On a page
-    // called Server Level Test the word "test" is everywhere, so the
-    // hint fired constantly and (combined with the old override) turned
-    // ordinary red transitions into pre-test fails.
+    // Since v0.9.4 the PHASE half of every label comes from the
+    // server's own detail page (parseDetailDocument). Nothing reads the
+    // hint any more: its only remaining effect was populating
+    // info.phase, which fed previousStates.phase and a phaseChanged
+    // dirty flag, i.e. it could change WHEN sessionStorage was written
+    // and nothing else. Removed along with both.
     //
-    // Result is cached on the cell node. Soft refresh replaces those
-    // nodes wholesale, so the cache invalidates itself.
+    // NOTE: record.phase / parsed.phase are a DIFFERENT field, set from
+    // the detail page, and are untouched.
     // ============================================================
-
-    const PHASE_ATTRIBUTES = [
-        'data-phase',
-        'data-test-phase',
-        'data-teststate',
-        'data-test-state',
-        'data-status'
-    ];
-
-
-    function getTestPhaseHint(cell) {
-
-        if (!cell) {
-            return '';
-        }
-
-        if (cell.__evePhaseHint !== undefined) {
-            return cell.__evePhaseHint;
-        }
-
-        let hint = '';
-
-        for (const name of PHASE_ATTRIBUTES) {
-
-            const raw = cell.getAttribute(name);
-
-            if (!raw) {
-                continue;
-            }
-
-            const value = raw.toLowerCase();
-
-            if (/pre[\s_-]*test/.test(value)) {
-                hint = 'pretest';
-                break;
-            }
-
-            if (/\btest(?:ing)?\b/.test(value)) {
-                hint = 'test';
-                break;
-            }
-
-        }
-
-        cell.__evePhaseHint = hint;
-
-        return hint;
-
-    }
 
 
     // ============================================================
@@ -2407,7 +1982,8 @@
     //   * The permanent audit log has been recording the wrong CATEGORY,
     //     which is the failure that actually matters here.
     //
-    // Compounding it, getTestPhaseHint() reads only data- attributes.
+    // Compounding it, the old getTestPhaseHint() read only data-
+    // attributes.
     // This page emits legacy bgcolor markup and no data- attributes at
     // all, so info.phase was ALWAYS '' and the re-label branch in
     // getTransitionType() never executed once in production.
@@ -2434,6 +2010,49 @@
     const TOAST_CONFIRM_WAIT_MS       = 8000;
 
     const phaseConfirmCache = new Map();
+
+    // CAP + TTL SWEEP.
+    //
+    // This cache used to be unbounded: one entry per url|serial, each
+    // holding a full parsed result, for the life of a tab that is
+    // meant to stay open all shift on a floor of up to 500 servers.
+    // The TTL was only ever consulted on READ, so nothing was ever
+    // evicted. Every other collection in this script has an explicit
+    // cap - MAX_LOG_ENTRIES, MAX_STORED_ALERTS, MAX_RECENT_ALERT_KEYS
+    // - and this one did not.
+    const MAX_PHASE_CACHE_ENTRIES = 400;
+
+    function cachePhaseResult(cacheKey, value) {
+        // Delete first so a refreshed key moves to the END of the
+        // Map's insertion order; otherwise oldest-first eviction
+        // below could drop an entry that was just re-read.
+        phaseConfirmCache.delete(cacheKey);
+
+        phaseConfirmCache.set(cacheKey, { at: Date.now(), value: value });
+
+        if (phaseConfirmCache.size <= MAX_PHASE_CACHE_ENTRIES) {
+            return;
+        }
+
+        const cutoff = Date.now() - PHASE_CONFIRM_CACHE_MS;
+
+        phaseConfirmCache.forEach((entry, key) => {
+            if (entry.at < cutoff) {
+                phaseConfirmCache.delete(key);
+            }
+        });
+
+        // Still over cap with nothing expired - a genuine burst.
+        // Drop oldest-first; Map iterates in insertion order.
+        while (phaseConfirmCache.size > MAX_PHASE_CACHE_ENTRIES) {
+            const oldest = phaseConfirmCache.keys().next().value;
+            if (oldest === undefined) {
+                break;
+            }
+
+            phaseConfirmCache.delete(oldest);
+        }
+    }
 
     let phaseConfirmActive  = 0;
     let phaseConfirmQueue   = [];
@@ -2481,7 +2100,6 @@
 
 
     function normalizePhaseWord(raw) {
-
         const value = String(raw || '').trim().toLowerCase();
 
         if (!value) {
@@ -2497,7 +2115,6 @@
         }
 
         return 'TEST';
-
     }
 
 
@@ -2505,7 +2122,6 @@
     // it was not a pre-test word? Drives phaseExact on the result.
 
     function isKnownOperationWord(raw) {
-
         const value = String(raw || '').trim().toLowerCase();
 
         if (!value) {
@@ -2517,12 +2133,10 @@
             TEST_OPERATION_RE.test(value) ||
             DEKIT_OPERATION_RE.test(value)
         );
-
     }
 
 
     function normalizeStatusWord(raw) {
-
         const value = String(raw || '').trim().toLowerCase();
 
         if (!value) {
@@ -2538,7 +2152,6 @@
         }
 
         return '';
-
     }
 
 
@@ -2553,7 +2166,6 @@
     // ------------------------------------------------------------
 
     function normalizePassFlag(raw) {
-
         const value = String(raw || '').trim().toLowerCase();
 
         if (value === '1' || value === 'true' || value === 'y') {
@@ -2565,7 +2177,6 @@
         }
 
         return null;
-
     }
 
 
@@ -2589,7 +2200,6 @@
 
 
     function parseDetailDocument(doc, serial) {
-
         const result = {
             confirmed: false,
             phase: '',
@@ -2600,7 +2210,6 @@
 
             // false = phase was ASSUMED from "not a pre-test word".
             phaseExact: false,
-
             status: '',
 
             // 1 / 0 / null - the authoritative per-row result.
@@ -2613,7 +2222,6 @@
             // Independent of `confirmed`: the phase can be known while
             // the result is still pending.
             resultConfirmed: false,
-
             taskset: '',
             taskcase: '',
             started: '',
@@ -2627,7 +2235,6 @@
             rackSerialOnPage: '',
             positionOnPage: '',
             locationMatches: null,
-
             reason: ''
         };
 
@@ -2639,15 +2246,12 @@
         // ----- identity: Server Serial from the property table -----
 
         doc.querySelectorAll('tr').forEach(row => {
-
             const cells = row.children;
-
             if (cells.length < 2) {
                 return;
             }
 
             const label = cellText(cells[0]).toLowerCase();
-
             if (
                 !result.serialOnPage &&
                 (label === 'server serial' || label === 'server asset')
@@ -2662,7 +2266,6 @@
             if (!result.positionOnPage && label === 'position') {
                 result.positionOnPage = cellText(cells[1]);
             }
-
         });
 
         if (result.serialOnPage && serial) {
@@ -2679,7 +2282,6 @@
         const tables = [...doc.querySelectorAll('table')];
 
         for (const table of tables) {
-
             const headerCells =
                 [...table.querySelectorAll('th')]
                     .map(th => th.textContent.trim().toLowerCase());
@@ -2701,9 +2303,7 @@
             }
 
             statusTable = table;
-
             columnIndex = {};
-
             headerCells.forEach((name, index) => {
                 if (columnIndex[name] === undefined) {
                     columnIndex[name] = index;
@@ -2711,7 +2311,6 @@
             });
 
             break;
-
         }
 
         if (!statusTable) {
@@ -2755,21 +2354,15 @@
         let chosen = pool[pool.length - 1];
 
         if (startedIndex !== undefined && pool.length > 1) {
-
             let best = '';
-
             pool.forEach(row => {
-
                 // "2026-09-09 21:51:10" sorts correctly as a string.
                 const started = cellText(row.children[startedIndex]);
-
                 if (started && started >= best) {
                     best = started;
                     chosen = row;
                 }
-
             });
-
         }
 
         if (startedIndex !== undefined) {
@@ -2784,15 +2377,12 @@
         }
 
         const readColumn = name => {
-
             const index = columnIndex[name];
-
             if (index === undefined) {
                 return '';
             }
 
             return cellText(chosen.children[index]);
-
         };
 
         result.taskset  = readColumn('taskset');
@@ -2829,23 +2419,15 @@
         result.running = !result.finished && !statusWord;
 
         if (result.running) {
-
             result.status = '';
             result.reason = 'that operation is still running';
-
         } else if (result.pass === 1) {
-
             result.status = 'PASS';
-
         } else if (result.pass === 0) {
-
             result.status = 'FAIL';
-
         } else {
-
             // No usable Pass column - fall back to the words.
             result.status = statusWord;
-
         }
 
         // The Pass boolean and taskset_status disagreeing means one of
@@ -2856,14 +2438,12 @@
             result.status &&
             statusWord !== result.status
         ) {
-
             fail(
                 `${serial}: detail page Pass=${result.pass} disagrees with ` +
                 `taskset_status "${statusWord}". Using taskset_status.`
             );
 
             result.status = statusWord;
-
         }
 
         result.resultConfirmed = !!result.status;
@@ -2882,7 +2462,6 @@
         }
 
         return result;
-
     }
 
 
@@ -2892,15 +2471,10 @@
     // ------------------------------------------------------------
 
     function fetchDetailDocument(url) {
-
         return new Promise(resolve => {
-
             const run = async () => {
-
                 phaseConfirmActive += 1;
-
                 const controller = new AbortController();
-
                 const abortTimer =
                     setTimeout(
                         () => controller.abort(),
@@ -2908,7 +2482,6 @@
                     );
 
                 try {
-
                     const response =
                         await fetch(url, {
                             credentials: 'same-origin',
@@ -2924,35 +2497,25 @@
                     }
 
                     const html = await response.text();
-
                     resolve(
                         new DOMParser()
                             .parseFromString(html, 'text/html')
                     );
-
                 } catch (error) {
-
                     devLog(
                         'Phase confirmation fetch failed:',
                         (error && error.message) ? error.message : error
                     );
 
                     resolve(null);
-
                 } finally {
-
                     clearTimeout(abortTimer);
-
                     phaseConfirmActive -= 1;
-
                     const next = phaseConfirmQueue.shift();
-
                     if (next) {
                         next();
                     }
-
                 }
-
             };
 
             if (phaseConfirmActive < PHASE_CONFIRM_MAX_PARALLEL) {
@@ -2960,9 +2523,7 @@
             } else {
                 phaseConfirmQueue.push(run);
             }
-
         });
-
     }
 
 
@@ -2984,7 +2545,6 @@
     // mapping fault every time the two spell the same rack differently.
 
     function normalizeRackSerial(value) {
-
         const text = String(value || '').trim().toUpperCase();
 
         const match = text.match(/^TA\.([^-]+)-EVE0*(\d+)/);
@@ -2992,12 +2552,10 @@
         return match
             ? `TA.${match[1]}-EVE${parseInt(match[2], 10)}`
             : text;
-
     }
 
 
     function checkLocationAgreement(parsed, info) {
-
         if (!parsed.rackSerialOnPage || !info) {
             return null;
         }
@@ -3020,17 +2578,14 @@
         let positionOk = true;
 
         if (parsed.positionOnPage) {
-
             const pagePosition = parseInt(parsed.positionOnPage, 10);
             const unitNumber = parseInt(String(info.unit).replace(/\D/g, ''), 10);
-
             if (
                 !Number.isNaN(pagePosition) &&
                 !Number.isNaN(unitNumber)
             ) {
                 positionOk = pagePosition === unitNumber;
             }
-
         }
 
         return {
@@ -3038,7 +2593,6 @@
             expected: `${expectedRack} / U${String(info.unit).replace(/\D/g, '')}`,
             actual: `${parsed.rackSerialOnPage} / position ${parsed.positionOnPage || '?'}`
         };
-
     }
 
 
@@ -3075,7 +2629,6 @@
         }
 
         return slotAgreementByTable.get(key);
-
     }
 
 
@@ -3085,7 +2638,6 @@
 
 
     function noteSlotDisagreement(serial, info, location) {
-
         const tally = slotTallyFor(info);
 
         tally.bad += 1;
@@ -3115,12 +2667,10 @@
             `${tally.bad} servers in ${info.section}\u{2022}${info.eve} ` +
             'disagree with their detail pages. Column mapping may be wrong.'
         );
-
     }
 
 
     async function confirmPhase(detailUrl, info, options) {
-
         const serial = info ? info.serial : '';
 
         // live:false = this is a retroactive re-check of a stored card,
@@ -3158,18 +2708,14 @@
         const doc = await fetchDetailDocument(url);
 
         if (!doc) {
-
             phaseConfirmFailures += 1;
-
             const value = {
                 confirmed: false,
                 reason: 'detail page unreachable'
             };
 
-            phaseConfirmCache.set(cacheKey, { at: Date.now(), value: value });
-
+            cachePhaseResult(cacheKey, value);
             return value;
-
         }
 
         const parsed = parseDetailDocument(doc, serial);
@@ -3195,7 +2741,6 @@
         // wrong, and every label derived from it would be about the
         // wrong machine. Never silently accept that.
         if (parsed.serialMatches === false) {
-
             fail(
                 `Detail page for "${serial}" reports Server Serial ` +
                 `"${parsed.serialOnPage}". The cell's link points at a ` +
@@ -3208,13 +2753,8 @@
                 reason: `serial mismatch (page says ${parsed.serialOnPage})`
             };
 
-            phaseConfirmCache.set(
-                cacheKey,
-                { at: Date.now(), value: mismatch }
-            );
-
+            cachePhaseResult(cacheKey, mismatch);
             return mismatch;
-
         }
 
         // Independent verification that we read the right CELL. The
@@ -3239,10 +2779,9 @@
             noteSlotAgreement(info);
         }
 
-        phaseConfirmCache.set(cacheKey, { at: Date.now(), value: parsed });
+        cachePhaseResult(cacheKey, parsed);
 
         return parsed;
-
     }
 
 
@@ -3286,7 +2825,6 @@
     // ------------------------------------------------------------
 
     function getTransitionType(oldColor, newColor) {
-
         if (
             newColor === 'red' &&
             FAILURE_FROM_COLORS.indexOf(oldColor) !== -1
@@ -3303,7 +2841,6 @@
         }
 
         return null;
-
     }
 
 
@@ -3345,12 +2882,20 @@
     // What they never do is interrupt anyone.
 
     function isDiagnosticTransition(transition) {
+        const meta = transitionMeta(transition);
+
+        if (meta) {
+            return meta.diagnostic;
+        }
+
+        // An unknown DEKIT_* variant is still a diagnostic. Kept as a
+        // fallback so a category added to the page but not yet to
+        // TRANSITIONS cannot start raising desktop failures.
         return /^DEKIT_/.test(String(transition || ''));
     }
 
 
     function resolveTransitionFromDetail(transition, parsed) {
-
         if (!parsed || !parsed.phase) {
             return transition;
         }
@@ -3371,7 +2916,6 @@
         // No result on the page yet: keep the colour's result half and
         // correct the phase half only.
         if (!parsed.status) {
-
             if (!provisionalIsFailure) {
                 return transition;
             }
@@ -3379,26 +2923,20 @@
             return parsed.phase === 'PRETEST'
                 ? 'PRETEST_FAILURE'
                 : 'TEST_FAILURE';
-
         }
 
         // Never let a stale PASS row erase a failure the colour caught.
         if (parsed.status === 'PASS' && provisionalIsFailure) {
-
             return parsed.phase === 'PRETEST'
                 ? 'PRETEST_FAILURE'
                 : 'TEST_FAILURE';
-
         }
 
         return (
             TRANSITION_BY_PHASE_RESULT[`${parsed.phase}|${parsed.status}`] ||
             transition
         );
-
     }
-
-
 
 
     // ============================================================
@@ -3406,7 +2944,6 @@
     // ============================================================
 
     function getServerInfo(cell, section, eve, unit) {
-
         if (!cell) {
             return null;
         }
@@ -3432,16 +2969,13 @@
             serial: parts[0] || '',
             serverType: parts.slice(1).join(' '),
             color: normalizeColor(cell),
-            phase: getTestPhaseHint(cell),
 
             // The cell links to its unique server-detail page.
             // Persisted with the alert so the card can open the exact
             // server that generated the result, even after a refresh.
             detailUrl: safeUrl(anchor.href),
-
             cell: cell
         };
-
     }
 
 
@@ -3463,47 +2997,38 @@
     // ============================================================
 
     function loadRecentAlerts() {
+        const parsed =
+            readJSON(
+                sessionStorage,
+                RECENT_ALERTS_KEY,
+                null,
+                'Flap-protection'
+            );
 
-        try {
+        const map = new Map();
 
-            const saved = sessionStorage.getItem(RECENT_ALERTS_KEY);
-
-            if (saved) {
-
-                const parsed = JSON.parse(saved);
-                const now = Date.now();
-                const map = new Map();
-
-                Object.entries(parsed).forEach(([sig, time]) => {
-                    if (now - time < ALERT_COOLDOWN_MS) {
-                        map.set(sig, time);
-                    }
-                });
-
-                return map;
-
-            }
-
-        } catch (error) {
-            warn('Flap-protection load error:', error);
+        if (parsed && typeof parsed === 'object') {
+            const now = Date.now();
+            Object.entries(parsed).forEach(([sig, time]) => {
+                if (now - time < ALERT_COOLDOWN_MS) {
+                    map.set(sig, time);
+                }
+            });
         }
 
-        return new Map();
-
+        return map;
     }
 
 
     function saveRecentAlerts() {
-
-        try {
-            sessionStorage.setItem(
-                RECENT_ALERTS_KEY,
-                JSON.stringify(Object.fromEntries(recentAlerts))
-            );
-        } catch (error) {
-            // Non-fatal: worst case a flap slips through after reload.
-        }
-
+        // Silent by design: worst case a flap slips through after a
+        // reload, which is not worth a console warning per write.
+        writeJSON(
+            sessionStorage,
+            RECENT_ALERTS_KEY,
+            Object.fromEntries(recentAlerts),
+            null
+        );
     }
 
 
@@ -3516,7 +3041,6 @@
         const now = Date.now();
 
         if (last && (now - last) < ALERT_COOLDOWN_MS) {
-
             devLog(
                 `${signature} suppressed \u{2014} same transition already ` +
                 `alerted within the last ${ALERT_COOLDOWN_MS / 1000}s ` +
@@ -3524,13 +3048,11 @@
             );
 
             return true;
-
         }
 
         recentAlerts.set(signature, now);
 
         if (recentAlerts.size > MAX_RECENT_ALERT_KEYS) {
-
             recentAlerts.forEach((time, sig) => {
                 if ((now - time) > ALERT_COOLDOWN_MS) {
                     recentAlerts.delete(sig);
@@ -3541,7 +3063,6 @@
             // still live - which is exactly the burst case this cap
             // exists for. Evict oldest-first until it actually holds.
             if (recentAlerts.size > MAX_RECENT_ALERT_KEYS) {
-
                 const ordered =
                     [...recentAlerts.entries()]
                         .sort((a, b) => a[1] - b[1]);
@@ -3552,15 +3073,12 @@
                 for (let i = 0; i < excess; i += 1) {
                     recentAlerts.delete(ordered[i][0]);
                 }
-
             }
-
         }
 
         saveRecentAlerts();
 
         return false;
-
     }
 
 
@@ -3580,7 +3098,6 @@
     // ============================================================
 
     function scan(groupsIn) {
-
         const groups = groupsIn || getEveTableGroups();
 
         // Tracks whether this scan observed any change, so idle scans
@@ -3598,30 +3115,22 @@
         let slotErrors = 0;
 
         groups.forEach(group => {
-
             const headers = group.headers;
-
             headerCount += headers.length;
-
             group.table.querySelectorAll('tbody tr').forEach(row => {
-
                 const cells = row.children;
-
                 if (!cells.length) {
                     return;
                 }
 
                 // First cell = U#
                 const unit = cells[0].textContent.trim();
-
                 if (!/^U\d+$/i.test(unit)) {
                     return;
                 }
 
                 headers.forEach(header => {
-
                     const serverCell = cells[header.column];
-
                     if (!serverCell) {
                         return;
                     }
@@ -3643,27 +3152,19 @@
                     // skipped savePreviousStates(), and left in-memory
                     // state half-mutated with no UI signal at all.
                     try {
-
                         processSlot(header, unit, info, seenKeys, () => {
                             statesDirty = true;
                         });
-
                     } catch (error) {
-
                         slotErrors += 1;
-
                         fail(
                             'processSlot threw for ' +
                             `${header.section}|${header.eve}|${unit}:`,
                             error
                         );
-
                     }
-
                 });
-
             });
-
         });
 
         // ----------------------------------------------------
@@ -3683,7 +3184,6 @@
         // that read implausibly few slots.
 
         if (headerCount && previousStates.size) {
-
             const floor =
                 Math.max(
                     1,
@@ -3691,9 +3191,7 @@
                 );
 
             if (seenKeys.size >= floor) {
-
                 let pruned = 0;
-
                 previousStates.forEach((value, key) => {
                     if (!seenKeys.has(key)) {
                         previousStates.delete(key);
@@ -3707,18 +3205,14 @@
                         `Pruned ${pruned} slot(s) no longer present on the page.`
                     );
                 }
-
             } else {
-
                 reportHealth(
                     'DEGRADED',
                     `Scan read only ${seenKeys.size} of ` +
                     `${previousStates.size} tracked slots. Baselines ` +
                     'PRESERVED rather than pruned.'
                 );
-
             }
-
         }
 
         // ----------------------------------------------------
@@ -3731,9 +3225,7 @@
         // must not look identical to "no alerts because all is well".
 
         if (!headerCount) {
-
             blindScans += 1;
-
             if (blindScans >= BLIND_SCAN_THRESHOLD) {
                 reportHealth(
                     'BLIND',
@@ -3741,19 +3233,14 @@
                     'probably changed, or the page failed to load.'
                 );
             }
-
         } else {
-
             blindScans = 0;
-
             if (slotErrors) {
-
                 reportHealth(
                     'DEGRADED',
                     `${slotErrors} slot(s) threw during this scan. See ` +
                     'the console for the failing keys.'
                 );
-
             } else if (
                 healthState !== 'OK' &&
                 seenKeys.size &&
@@ -3761,7 +3248,6 @@
             ) {
                 reportHealth('OK', '');
             }
-
         }
 
         if (statesDirty) {
@@ -3776,11 +3262,9 @@
                 `(${headerCount} headers, ${previousStates.size} states)`;
         }
 
-
         // Coalesce this cycle's toasts. Must run after the WHOLE pass,
         // so a batch completing produces one summary, not a storm.
         flushPendingToasts();
-
     }
 
 
@@ -3799,8 +3283,7 @@
 
         const newState = {
             color: info.color,
-            serial: info.serial,
-            phase: info.phase || ''
+            serial: info.serial
         };
 
         const colorChanged =
@@ -3809,13 +3292,8 @@
         const serialChanged =
             oldState && oldState.serial !== info.serial;
 
-        const phaseChanged =
-            oldState && (oldState.phase || '') !== (info.phase || '');
-
-        if (!oldState || colorChanged || serialChanged || phaseChanged) {
-
+        if (!oldState || colorChanged || serialChanged) {
             markDirty();
-
             devLog(
                 `${key} \u{2192} color:${info.color} serial:${info.serial}` +
                 (
@@ -3824,7 +3302,6 @@
                         : ' (baseline)'
                 )
             );
-
         }
 
         previousStates.set(key, newState);
@@ -3851,14 +3328,12 @@
         // failed - and wrote that into the permanent audit log.
 
         if (serialChanged) {
-
             log(
                 `${key} \u{2014} server swapped (${oldState.serial} ` +
                 `\u{2192} ${info.serial}). Re-baselined; no alert raised.`
             );
 
             return;
-
         }
 
         if (!colorChanged) {
@@ -3899,7 +3374,7 @@
         // when it answers, and the card (if there is one) is reconciled
         // from that same promise rather than fetching the page twice.
 
-        const eventId = recordTransition(info, transition, suppressed);
+        const eventId = logRealAlert(info, transition, !!suppressed);
 
         const confirmation = confirmEvent(info, transition, eventId);
 
@@ -3910,7 +3385,6 @@
         const sectionSettings = getSectionSettings(header.section);
 
         if (!sectionSettings.watch) {
-
             log(
                 `${key} ${transition} recorded to the log but not ` +
                 `surfaced \u{2014} "Notifs" is off for section ` +
@@ -3918,22 +3392,9 @@
             );
 
             return;
-
         }
 
         surfaceAlert(info, transition, confirmation, eventId);
-
-    }
-
-
-    // ============================================================
-    // RECORD A TRANSITION (log + session counters)
-    // ============================================================
-
-    function recordTransition(info, transition, suppressed) {
-
-        return logRealAlert(info, transition, !!suppressed);
-
     }
 
 
@@ -3946,7 +3407,6 @@
     // ------------------------------------------------------------
 
     function confirmEvent(info, transition, eventId) {
-
         if (!eventId || !info || !info.detailUrl || isDebugData(info)) {
             return null;
         }
@@ -3968,7 +3428,6 @@
                 applyConfirmationToLogEntry(eventId, transition, null);
                 return null;
             });
-
     }
 
 
@@ -4005,7 +3464,6 @@
     // the card says a few seconds later.
 
     function markToastSent(record, transition) {
-
         if (!record) {
             return;
         }
@@ -4013,12 +3471,10 @@
         record.notifiedTransition = transition || record.transition || '';
 
         updateStoredAlert(record);
-
     }
 
 
     function notifyLabelCorrection(record, previousTransition) {
-
         if (!record || !previousTransition) {
             return;
         }
@@ -4079,12 +3535,10 @@
                 ? () => openFromNotification(record.detailUrl)
                 : null
         );
-
     }
 
 
     function surfaceAlert(info, transition, eventConfirmation, eventId) {
-
         const record =
             createPersistentAlert(
                 getTransitionTitle(transition),
@@ -4123,7 +3577,6 @@
             record: record,
             confirmation: confirmation
         });
-
     }
 
 
@@ -4131,7 +3584,6 @@
     // events are weighed together rather than one at a time.
 
     async function flushPendingToasts() {
-
         let batch = pendingToasts;
 
         pendingToasts = [];
@@ -4151,12 +3603,10 @@
                 .filter(Boolean);
 
         if (confirmations.length) {
-
             await Promise.race([
                 Promise.allSettled(confirmations),
                 new Promise(r => setTimeout(r, TOAST_CONFIRM_WAIT_MS))
             ]);
-
         }
 
         // Read the FINAL label off the record, not the provisional one
@@ -4193,9 +3643,7 @@
         }
 
         if (batch.length <= TOAST_INDIVIDUAL_LIMIT) {
-
             batch.forEach(item => {
-
                 const unverified =
                     settings.developerMode &&
                     item.record &&
@@ -4217,11 +3665,9 @@
                 );
 
                 markToastSent(item.record, item.transition);
-
             });
 
             return;
-
         }
 
         const counts = {
@@ -4260,9 +3706,7 @@
             `${batch.length} events this cycle \u{2014} sent one summary ` +
             'toast instead of one per event. All cards are in the panel.'
         );
-
     }
-
 
 
     // ============================================================
@@ -4279,13 +3723,11 @@
     // ============================================================
 
     function debugSnapshotBeforeRefresh(reason) {
-
         if (!settings.developerMode) {
             return;
         }
 
         try {
-
             const snapshot = {
                 reason: reason,
                 timestamp: new Date().toISOString(),
@@ -4302,24 +3744,19 @@
                 `Snapshot taken before refresh (${reason}). ` +
                 `${snapshot.count} states saved.`
             );
-
         } catch (error) {
             warn('[DEV] Snapshot failed:', error);
         }
-
     }
 
 
     function debugCompareAfterRefresh() {
-
         if (!settings.developerMode) {
             return;
         }
 
         try {
-
             const raw = sessionStorage.getItem(DEBUG_SNAPSHOT_KEY);
-
             if (!raw) {
                 devLog(
                     'No pre-refresh snapshot found (fresh session, or no ' +
@@ -4329,17 +3766,13 @@
             }
 
             const snapshot = JSON.parse(raw);
-
             const beforeKeys = Object.keys(snapshot.data);
-
             const missing =
                 beforeKeys.filter(k => !previousStates.has(k));
 
             const changed = beforeKeys.filter(k => {
-
                 const before = snapshot.data[k];
                 const after = previousStates.get(k);
-
                 return (
                     after &&
                     (
@@ -4347,7 +3780,6 @@
                         after.serial !== before.serial
                     )
                 );
-
             });
 
             devLog('===== PERSISTENCE TEST RESULT =====');
@@ -4358,13 +3790,9 @@
             );
 
             if (!missing.length && !changed.length) {
-
                 devLog('\u{2705} PASS \u{2014} all states survived the refresh intact.');
-
             } else {
-
                 warn('[DEV] \u{274c} FAIL \u{2014} mismatch detected.');
-
                 if (missing.length) {
                     warn('[DEV] Missing keys after refresh:', missing);
                 }
@@ -4372,17 +3800,13 @@
                 if (changed.length) {
                     warn('[DEV] Keys with different values after refresh:', changed);
                 }
-
             }
 
             devLog('===================================');
-
             sessionStorage.removeItem(DEBUG_SNAPSHOT_KEY);
-
         } catch (error) {
             warn('[DEV] Compare failed:', error);
         }
-
     }
 
 
@@ -4391,7 +3815,6 @@
     // ============================================================
 
     function randomTestServerInfo() {
-
         const sections = ['B1', 'B2', 'B3', 'B4', 'B5'];
 
         const eveNumbers = [
@@ -4415,7 +3838,6 @@
             serverType: 'E62CSTANDARDCNIC',
             detailUrl: ''
         };
-
     }
 
 
@@ -4428,7 +3850,6 @@
     // ============================================================
 
     function sendTestNotification(type) {
-
         const transitionByType = {
             success: 'TEST_SUCCESS',
             failure: 'TEST_FAILURE'
@@ -4447,14 +3868,12 @@
         createPersistentAlert(title, info, transition);
 
         if (settings.showDebug) {
-
             sendDesktopNotification(
                 title,
                 buildNotificationBody(info, transition),
                 getTransitionIcon(transition),
                 () => log('Test desktop notification clicked')
             );
-
         }
 
         log('TEST NOTIFICATION:', {
@@ -4462,7 +3881,6 @@
             serial: info.serial,
             location: `${info.section}-${info.eve} | ${info.unit}`
         });
-
     }
 
 
@@ -4499,7 +3917,6 @@
     // ------------------------------------------------------------
 
     function logDayKeyFor(value) {
-
         const parsed = new Date(value);
 
         if (Number.isNaN(parsed.getTime())) {
@@ -4531,7 +3948,6 @@
 
 
     function pruneLogToDay(day) {
-
         const entries = getAlertLog();
 
         const kept = entries.filter(entry => entryLogDay(entry) === day);
@@ -4553,7 +3969,6 @@
         flushAlertLog();
 
         return removed;
-
     }
 
 
@@ -4563,7 +3978,6 @@
     // ------------------------------------------------------------
 
     function checkLogDayRollover() {
-
         const today = currentLogDay();
 
         if (activeLogDay === today) {
@@ -4593,14 +4007,12 @@
         // gone, and they get told so while an export could still have
         // mattered.
         if (!previous) {
-
             log(
                 `Alert log: discarded ${removed} entr(y/ies) from a ` +
                 `previous day. The log tracks ${today} only.`
             );
 
             return;
-
         }
 
         log(
@@ -4615,48 +4027,27 @@
             ICON_FAIL,
             null
         );
-
     }
 
 
     function loadAlertLogFromStorage() {
+        const parsed =
+            readJSON(localStorage, ALERT_LOG_KEY, null, 'Alert log');
 
-        try {
-
-            const saved = localStorage.getItem(ALERT_LOG_KEY);
-
-            if (saved) {
-
-                const parsed = JSON.parse(saved);
-
-                if (Array.isArray(parsed)) {
-                    return parsed;
-                }
-
-            }
-
-        } catch (error) {
-            warn('Alert log load error:', error);
-        }
-
-        return [];
-
+        return Array.isArray(parsed) ? parsed : [];
     }
 
 
     function getAlertLog() {
-
         if (!alertLogCache) {
             alertLogCache = loadAlertLogFromStorage();
         }
 
         return alertLogCache;
-
     }
 
 
     function flushAlertLog() {
-
         if (logWriteTimer) {
             clearTimeout(logWriteTimer);
             logWriteTimer = null;
@@ -4667,16 +4058,13 @@
         }
 
         try {
-
             localStorage.setItem(
                 ALERT_LOG_KEY,
                 JSON.stringify(alertLogCache)
             );
 
             logWritePending = false;
-
         } catch (error) {
-
             // Almost always a quota error. Surface it loudly - silently
             // losing audit entries is the failure mode that matters.
             fail(
@@ -4685,14 +4073,11 @@
                 'reload. Export the log and clear it to free space.',
                 error
             );
-
         }
-
     }
 
 
     function scheduleLogWrite() {
-
         logWritePending = true;
 
         if (logWriteTimer) {
@@ -4703,12 +4088,10 @@
             logWriteTimer = null;
             flushAlertLog();
         }, LOG_WRITE_DEBOUNCE_MS);
-
     }
 
 
     function appendAlertLog(entry) {
-
         const logEntries = getAlertLog();
 
         logEntries.push(entry);
@@ -4724,19 +4107,15 @@
         }
 
         if (evicted && !appendAlertLog.warnedEviction) {
-
             appendAlertLog.warnedEviction = true;
-
             fail(
                 `Alert log hit the ${MAX_LOG_ENTRIES}-entry cap and is ` +
                 'now discarding the OLDEST entries. Export and clear the ' +
                 'log to keep a complete record.'
             );
-
         }
 
         scheduleLogWrite();
-
     }
 
 
@@ -4747,7 +4126,6 @@
     // ------------------------------------------------------------
 
     function isDebugData(candidate) {
-
         if (!candidate) {
             return false;
         }
@@ -4767,12 +4145,10 @@
             location.includes('DEBUG') ||
             title.includes('DEBUG')
         );
-
     }
 
 
     function logRealAlert(info, transition, suppressed) {
-
         if (isDebugData(info)) {
             devLog(
                 'Debug/test transition \u{2014} not written to the alert ' +
@@ -4788,15 +4164,10 @@
         // existing record instead. Bounded backward search: a match
         // older than the last 200 entries is not the same flap episode.
         if (suppressed) {
-
             const entries = getAlertLog();
-
             const limit = Math.max(0, entries.length - 200);
-
             for (let i = entries.length - 1; i >= limit; i -= 1) {
-
                 const candidate = entries[i];
-
                 if (
                     candidate.transition === transition &&
                     candidate.serial === info.serial &&
@@ -4804,22 +4175,17 @@
                     candidate.eve === info.eve &&
                     candidate.unit === info.unit
                 ) {
-
                     candidate.repeats = (candidate.repeats || 0) + 1;
                     candidate.lastRepeatIso = now.toISOString();
-
                     scheduleLogWrite();
 
                     // The repeat belongs to the ORIGINAL entry, so the
                     // caller confirms against that one.
                     return candidate.eventId || '';
-
                 }
-
             }
 
             return '';
-
         }
 
         // Stable identity for this event, independent of any card. The
@@ -4852,7 +4218,6 @@
             taskcase: '',
             operation: '',
             pass: '',
-
             serial: info.serial,
             section: info.section,
             eve: info.eve,
@@ -4861,7 +4226,6 @@
         });
 
         return eventId;
-
     }
 
 
@@ -4870,7 +4234,6 @@
     // ------------------------------------------------------------
 
     function findLogEntry(eventId) {
-
         if (!eventId) {
             return null;
         }
@@ -4884,12 +4247,10 @@
         }
 
         return null;
-
     }
 
 
     function isLogEntryResolved(eventId) {
-
         const entry = findLogEntry(eventId);
 
         return !!(
@@ -4897,12 +4258,10 @@
             entry.phaseSource === 'confirmed' &&
             entry.resultConfirmed === true
         );
-
     }
 
 
     function linkLogEntryToAlert(eventId, alertId) {
-
         const entry = findLogEntry(eventId);
 
         if (!entry) {
@@ -4912,15 +4271,43 @@
         entry.alertId = alertId;
 
         scheduleLogWrite();
-
     }
 
 
     // The audit entry is corrected the moment the detail page answers,
     // whether or not this event was ever surfaced as a card.
 
-    function applyConfirmationToLogEntry(eventId, transition, confirmation) {
+    // ------------------------------------------------------------
+    // THE AUDIT ENTRY'S RESULT HALF, WRITTEN FROM ONE PLACE.
+    //
+    // Two callers used to write these nine fields by hand:
+    // applyConfirmationToLogEntry() (source: a confirmation) and
+    // updateLogEntryForAlert() (source: a card record). Two hand-kept
+    // copies is the wrong way to hold up "card, stored copy and log
+    // entry are corrected together so the three can never disagree".
+    // The SOURCES still differ; the PROJECTION no longer does.
+    //
+    // `pass` comes in as the 1/0/null boolean and is stored as a
+    // string, because that is what the .csv export column expects.
+    // ------------------------------------------------------------
 
+    function writeLogEntryResult(entry, fields) {
+        entry.transition      = fields.transition;
+        entry.result          = getTransitionTitle(fields.transition);
+        entry.diagnostic      = isDiagnosticTransition(fields.transition);
+        entry.phaseSource     = fields.phaseSource;
+        entry.resultConfirmed = fields.resultConfirmed === true;
+        entry.operation       = fields.operation || '';
+        entry.taskset         = fields.taskset || '';
+        entry.taskcase        = fields.taskcase || '';
+        entry.pass =
+            (fields.pass === 0 || fields.pass === 1)
+                ? String(fields.pass)
+                : '';
+    }
+
+
+    function applyConfirmationToLogEntry(eventId, transition, confirmation) {
         const entry = findLogEntry(eventId);
 
         if (!entry) {
@@ -4928,33 +4315,24 @@
         }
 
         if (confirmation && confirmation.confirmed) {
-
-            entry.transition =
-                resolveTransitionFromDetail(transition, confirmation);
-
-            entry.result          = getTransitionTitle(entry.transition);
-            entry.diagnostic      = isDiagnosticTransition(entry.transition);
-            entry.phaseSource     = 'confirmed';
-            entry.resultConfirmed = !!confirmation.resultConfirmed;
-            entry.operation       = confirmation.operation || '';
-            entry.taskset         = confirmation.taskset || '';
-            entry.taskcase        = confirmation.taskcase || '';
-            entry.pass =
-                (confirmation.pass === 0 || confirmation.pass === 1)
-                    ? String(confirmation.pass)
-                    : '';
-
+            writeLogEntryResult(entry, {
+                transition:
+                    resolveTransitionFromDetail(transition, confirmation),
+                phaseSource:     'confirmed',
+                resultConfirmed: !!confirmation.resultConfirmed,
+                operation:       confirmation.operation,
+                taskset:         confirmation.taskset,
+                taskcase:        confirmation.taskcase,
+                pass:            confirmation.pass
+            });
         } else {
-
             entry.phaseSource      = 'unverified';
             entry.resultConfirmed  = false;
             entry.unverifiedReason =
                 (confirmation && confirmation.reason) || 'unknown';
-
         }
 
         scheduleLogWrite();
-
     }
 
 
@@ -4963,7 +4341,6 @@
     // user sees always agree with the file they get.
 
     function loadRealAlertLog() {
-
         // Day-scoped as well as debug-filtered, so an export taken
         // between the rollover moment and the next tick still contains
         // exactly one day.
@@ -4973,7 +4350,6 @@
             !isDebugData(entry) &&
             entryLogDay(entry) === today
         );
-
     }
 
 
@@ -4982,7 +4358,6 @@
     // ============================================================
 
     function formatDuration(ms) {
-
         const totalMinutes = Math.max(0, Math.floor(ms / 60000));
 
         const days    = Math.floor(totalMinutes / 1440);
@@ -5006,7 +4381,6 @@
     // verbose locale time string break every subsequent column.
 
     function padOrTrim(text, width) {
-
         const value = String(text === undefined || text === null ? '' : text);
 
         if (value.length === width) {
@@ -5020,7 +4394,6 @@
         }
 
         return value + ' '.repeat(width - value.length);
-
     }
 
 
@@ -5028,7 +4401,6 @@
     // strings, which sort as text and differ machine-to-machine.
 
     function isoDateParts(iso) {
-
         if (!iso) {
             return { date: '', time: '' };
         }
@@ -5052,28 +4424,18 @@
             date: isoString.slice(0, 10),
             time: isoString.slice(11, 19)
         };
-
     }
 
 
-    const LOG_CATEGORIES = [
-        { transition: 'PRETEST_FAILURE', heading: 'PRE-TEST FAILS' },
-        { transition: 'TEST_FAILURE',    heading: 'TEST FAILS' },
-        { transition: 'PRETEST_SUCCESS', heading: 'PRE-TEST PASSES' },
-        { transition: 'TEST_SUCCESS',    heading: 'TEST PASSES' },
-
-        // Last, and named for what it is. SYS_DEKIT is a factory
-        // diagnostic - it belongs in the record, but not among the
-        // hardware results anyone is counting.
-        {
-            transition: 'DEKIT_FAILURE',
-            heading: 'SYS_DEKIT \u{2014} DIAGNOSTIC, NOT A RESULT (Pass=0)'
-        },
-        {
-            transition: 'DEKIT_SUCCESS',
-            heading: 'SYS_DEKIT \u{2014} DIAGNOSTIC, NOT A RESULT (Pass=1)'
-        }
-    ];
+    // Derived from TRANSITIONS, in the order that table declares
+    // them. SYS_DEKIT is last and named for what it is: a factory
+    // diagnostic that belongs in the record, but not among the
+    // hardware results anyone is counting.
+    const LOG_CATEGORIES =
+        Object.keys(TRANSITIONS).map(key => ({
+            transition: key,
+            heading:    TRANSITIONS[key].logHeading
+        }));
 
     // Column widths drive the rule width, instead of a magic number
     // that did not match either the rule or the columns.
@@ -5093,7 +4455,6 @@
 
 
     function buildLogTable(entries, lines) {
-
         lines.push(
             '  ' +
             LOG_COLUMNS
@@ -5105,9 +4466,7 @@
         lines.push('  ' + LOG_THIN);
 
         entries.forEach((entry, index) => {
-
             const parts = isoDateParts(entry.iso);
-
             lines.push(
                 '  ' +
                 padOrTrim(index + 1, LOG_COLUMNS[0].width) +
@@ -5116,9 +4475,7 @@
                 padOrTrim(entry.serial, LOG_COLUMNS[3].width) +
                 `${entry.section} \u{2022} ${entry.eve} \u{2022} ${entry.unit}`
             );
-
         });
-
     }
 
 
@@ -5127,85 +4484,75 @@
     // ============================================================
 
     function buildAlertLogText() {
-
         const logEntries = loadRealAlertLog();
 
         const lines = [];
 
-        lines.push(LOG_RULE);
-        lines.push('EVE SLT TRACKER \u{2014} ALERT LOG');
-        lines.push('by Zay Davidson');
-        lines.push(`Tracker version: ${SCRIPT_VERSION}`);
-        lines.push(LOG_RULE);
-        lines.push('');
-
-        lines.push(`Exported:      ${new Date().toLocaleString()}`);
-        lines.push(`Log day:       ${currentLogDay()}`);
+        lines.push(
+            LOG_RULE,
+            'EVE SLT TRACKER \u{2014} ALERT LOG',
+            'by Zay Davidson',
+            `Tracker version: ${SCRIPT_VERSION}`,
+            LOG_RULE,
+            '',
+            `Exported:      ${new Date().toLocaleString()}`,
+            `Log day:       ${currentLogDay()}`
+        );
 
         if (logEntries.length) {
-
             const first = new Date(logEntries[0].iso);
             const last  = new Date(logEntries[logEntries.length - 1].iso);
-
-            lines.push(`First alert:   ${first.toLocaleString()}`);
-            lines.push(`Last alert:    ${last.toLocaleString()}`);
-            lines.push(`Time span:     ${formatDuration(last - first)}`);
+            lines.push(
+                `First alert:   ${first.toLocaleString()}`,
+                `Last alert:    ${last.toLocaleString()}`,
+                `Time span:     ${formatDuration(last - first)}`
+            );
 
         }
 
-        lines.push(`Total alerts:  ${logEntries.length}`);
-        lines.push('');
         lines.push(
-            'This log covers ONE CALENDAR DAY. Every entry stamped'
+            `Total alerts:  ${logEntries.length}`,
+            '',
+            'This log covers ONE CALENDAR DAY. Every entry stamped',
+            `${currentLogDay()} is here regardless of the time of day it`,
+            'was recorded. Entries from any other date are discarded',
+            'automatically.',
+            ''
         );
-        lines.push(
-            `${currentLogDay()} is here regardless of the time of day it`
-        );
-        lines.push(
-            'was recorded. Entries from any other date are discarded'
-        );
-        lines.push('automatically.');
-        lines.push('');
         const unverified =
             logEntries.filter(
                 e => (e.phaseSource || 'color') !== 'confirmed'
             ).length;
 
         if (unverified) {
-            lines.push('');
             lines.push(
+                '',
                 `WARNING: ${unverified} of ${logEntries.length} entries ` +
-                'have an UNCONFIRMED phase.'
-            );
-            lines.push(
-                '      The PRE-TEST vs TEST half of those categories was'
-            );
-            lines.push(
-                '      inferred from cell colour, which does not reliably'
-            );
-            lines.push(
+                'have an UNCONFIRMED phase.',
+                '      The PRE-TEST vs TEST half of those categories was',
+                '      inferred from cell colour, which does not reliably',
                 '      encode phase. Treat them as "fail"/"pass" only.'
             );
         }
 
-        lines.push('');
-        lines.push('Note: debug/test notifications are NOT recorded here.');
-        lines.push('      Every entry is a real detected transition.');
-        lines.push('      Section "Notifs" being off does NOT affect this');
-        lines.push('      log - muted sections are still recorded.');
-        lines.push('');
+        lines.push(
+            '',
+            'Note: debug/test notifications are NOT recorded here.',
+            '      Every entry is a real detected transition.',
+            '      Section "Notifs" being off does NOT affect this',
+            '      log - muted sections are still recorded.',
+            ''
+        );
 
         if (!logEntries.length) {
-
-            lines.push(LOG_RULE);
-            lines.push('No alerts have been recorded yet.');
-            lines.push(LOG_RULE);
             lines.push(
+                LOG_RULE,
+                'No alerts have been recorded yet.',
+                LOG_RULE,
                 'Report bugs: https://github.com/zayd117/EVE-SLT-TRACKER/issues'
             );
 
             return lines.join('\n');
-
         }
 
         // ----- SUMMARY ------------------------------------------
@@ -5226,9 +4573,11 @@
                 entry => known.indexOf(entry.transition) === -1
             );
 
-        lines.push(LOG_RULE);
-        lines.push('SUMMARY');
-        lines.push(LOG_RULE);
+        lines.push(
+            LOG_RULE,
+            'SUMMARY',
+            LOG_RULE
+        );
 
         // Diagnostics are excluded from the denominator. A floor that
         // ran 40 SYS_DEKIT passes would otherwise report a halved
@@ -5237,9 +4586,7 @@
             logEntries.filter(entry => !entry.diagnostic);
 
         LOG_CATEGORIES.forEach(category => {
-
             const count = grouped[category.transition].length;
-
             const diagnosticCategory =
                 isDiagnosticTransition(category.transition);
 
@@ -5259,19 +4606,16 @@
                 padOrTrim(count, 8) +
                 `${share}%`
             );
-
         });
 
-        lines.push('');
         lines.push(
+            '',
             `  Hardware results: ${resultEntries.length}` +
             `  \u{2022}  SYS_DEKIT diagnostics: ` +
-            `${logEntries.length - resultEntries.length}`
+            `${logEntries.length - resultEntries.length}`,
+            '  Percentages above are of hardware results only, except',
+            '  the SYS_DEKIT rows, which are of all entries.'
         );
-        lines.push(
-            '  Percentages above are of hardware results only, except'
-        );
-        lines.push('  the SYS_DEKIT rows, which are of all entries.');
 
         if (other.length) {
             lines.push(
@@ -5292,29 +4636,27 @@
         const sectionNames = Object.keys(bySection).sort();
 
         if (sectionNames.length > 1) {
-
-            lines.push(LOG_RULE);
-            lines.push('ALERTS BY SECTION');
-            lines.push(LOG_RULE);
-
+            lines.push(
+                LOG_RULE,
+                'ALERTS BY SECTION',
+                LOG_RULE
+            );
             sectionNames.forEach(section => {
                 lines.push('  ' + padOrTrim(section, 20) + bySection[section]);
             });
 
             lines.push('');
-
         }
 
         // ----- ONE SECTION PER CATEGORY -------------------------
 
         LOG_CATEGORIES.forEach(category => {
-
             const entries = grouped[category.transition];
-
-            lines.push(LOG_RULE);
-            lines.push(`${category.heading} (${entries.length})`);
-            lines.push(LOG_RULE);
-
+            lines.push(
+                LOG_RULE,
+                `${category.heading} (${entries.length})`,
+                LOG_RULE
+            );
             if (!entries.length) {
                 lines.push('  None recorded.');
             } else {
@@ -5322,13 +4664,14 @@
             }
 
             lines.push('');
-
         });
 
         if (other.length) {
-            lines.push(LOG_RULE);
-            lines.push(`OTHER (${other.length})`);
-            lines.push(LOG_RULE);
+            lines.push(
+                LOG_RULE,
+                `OTHER (${other.length})`,
+                LOG_RULE
+            );
             buildLogTable(other, lines);
             lines.push('');
         }
@@ -5339,35 +4682,25 @@
         // this section is a second copy of the whole log. Capped, since
         // at 2000 entries it doubled the file for no extra information.
 
-        lines.push(LOG_RULE);
-        lines.push(`FULL CHRONOLOGICAL RECORD (${logEntries.length})`);
-        lines.push(LOG_RULE);
+        lines.push(
+            LOG_RULE,
+            `FULL CHRONOLOGICAL RECORD (${logEntries.length})`,
+            LOG_RULE
+        );
 
         if (logEntries.length > MAX_CHRONOLOGICAL_ENTRIES) {
-
             lines.push(
                 `  Omitted: ${logEntries.length} entries exceeds the ` +
-                `${MAX_CHRONOLOGICAL_ENTRIES}-entry cap for this section.`
-            );
-            lines.push(
-                '  Every entry appears above in its category table, and'
-            );
-            lines.push(
+                `${MAX_CHRONOLOGICAL_ENTRIES}-entry cap for this section.`,
+                '  Every entry appears above in its category table, and',
                 '  the .csv export contains the full chronological data.'
             );
-
         } else {
-
             logEntries.forEach((entry, index) => {
-
                 lines.push(
                     `[${index + 1}] ${entry.date} ${entry.time} \u{2014} ` +
-                    `${entry.result}`
-                );
-
-                lines.push(`      Serial #: ${entry.serial}`);
-
-                lines.push(
+                    `${entry.result}`,
+                    `      Serial #: ${entry.serial}`,
                     `      Location: ${entry.section} \u{2022} ` +
                     `${entry.eve} \u{2022} ${entry.unit}`
                 );
@@ -5376,22 +4709,21 @@
                     lines.push(`      Type:     ${entry.serverType}`);
                 }
 
-                lines.push(`      ISO:      ${entry.iso}`);
-                lines.push('');
-
+                lines.push(
+                    `      ISO:      ${entry.iso}`,
+                    ''
+                );
             });
-
         }
 
-        lines.push('');
-        lines.push(LOG_RULE);
         lines.push(
-            'Report bugs: https://github.com/zayd117/EVE-SLT-TRACKER/issues'
+            '',
+            LOG_RULE,
+            'Report bugs: https://github.com/zayd117/EVE-SLT-TRACKER/issues',
+            LOG_RULE
         );
-        lines.push(LOG_RULE);
 
         return lines.join('\n');
-
     }
 
 
@@ -5400,19 +4732,16 @@
     // ============================================================
 
     function csvEscape(value) {
-
         const text =
             String(value === undefined || value === null ? '' : value);
 
         return /[",\n\r]/.test(text)
             ? '"' + text.replace(/"/g, '""') + '"'
             : text;
-
     }
 
 
     function buildAlertLogCsv() {
-
         const logEntries = loadRealAlertLog();
 
         const rows = [];
@@ -5439,27 +4768,20 @@
             'Notified'
         ].join(','));
 
-        const categoryNames = {
-            PRETEST_FAILURE: 'PRE-TEST FAIL',
-            TEST_FAILURE: 'TEST FAIL',
-            TEST_SUCCESS: 'TEST PASS',
-            PRETEST_SUCCESS: 'PRE-TEST PASS',
-            DEKIT_FAILURE: 'SYS_DEKIT (Pass=0)',
-            DEKIT_SUCCESS: 'SYS_DEKIT (Pass=1)'
-        };
-
         logEntries.forEach(entry => {
-
             // ISO-derived so Excel sorts these correctly and the file
             // is identical regardless of the exporting machine's locale.
             const parts = isoDateParts(entry.iso);
-
             rows.push([
                 parts.date,
                 parts.time,
                 entry.iso,
                 entry.result,
-                categoryNames[entry.transition] || entry.transition,
+                (
+                    transitionMeta(entry.transition)
+                        ? transitionMeta(entry.transition).csvName
+                        : entry.transition
+                ),
                 entry.serial,
                 entry.section,
                 entry.eve,
@@ -5486,11 +4808,9 @@
                 // recorded either way; this column says which.
                 entry.alertId ? 'yes' : 'no'
             ].map(csvEscape).join(','));
-
         });
 
         return rows.join('\r\n');
-
     }
 
 
@@ -5499,25 +4819,20 @@
     // ============================================================
 
     function downloadFile(content, extension, mimeType) {
-
         try {
-
             const blob = new Blob([content], { type: mimeType });
-
             const url = URL.createObjectURL(blob);
 
             // Local log day + local wall time. The old UTC ISO stamp
             // put a 3am export under the previous calendar date, which
             // is exactly the confusion a day-scoped log cannot afford.
             const now = new Date();
-
             const time =
                 [now.getHours(), now.getMinutes(), now.getSeconds()]
                     .map(part => String(part).padStart(2, '0'))
                     .join('-');
 
             const link = document.createElement('a');
-
             link.href = url;
             link.download =
                 `eve-slt-tracker-log-${currentLogDay()}-${time}.${extension}`;
@@ -5526,67 +4841,51 @@
             // document.body, which the observer used to treat as a real
             // page change and answer with a full re-scan.
             withoutObserver(() => {
-
                 document.body.appendChild(link);
-
                 link.click();
-
                 document.body.removeChild(link);
-
             });
 
             setTimeout(() => URL.revokeObjectURL(url), 2000);
-
             return true;
-
         } catch (error) {
             fail('Export failed:', error);
             return false;
         }
-
     }
 
 
-    function exportAlertLog() {
+    // The two exports were the same six statements differing only in
+    // the builder, the extension, the MIME type and one word in the
+    // log line.
+    const LOG_EXPORTS = {
+        txt: { build: buildAlertLogText, mime: 'text/plain;charset=utf-8' },
+        csv: { build: buildAlertLogCsv,  mime: 'text/csv;charset=utf-8'  }
+    };
 
+
+    function exportLog(kind) {
+        const spec = LOG_EXPORTS[kind];
+
+        if (!spec) {
+            fail(`Unknown export format "${kind}".`);
+            return;
+        }
+
+        // Anything still sitting in the debounced write must be on
+        // disk before the file is built, or the export can be behind
+        // the panel.
         flushAlertLog();
 
         const count = loadRealAlertLog().length;
 
-        if (
-            downloadFile(
-                buildAlertLogText(),
-                'txt',
-                'text/plain;charset=utf-8'
-            )
-        ) {
-            log(`Exported alert log as .txt (${count} real entries).`);
+        if (downloadFile(spec.build(), kind, spec.mime)) {
+            log(`Exported alert log as .${kind} (${count} real entries).`);
         }
-
-    }
-
-
-    function exportAlertLogCsv() {
-
-        flushAlertLog();
-
-        const count = loadRealAlertLog().length;
-
-        if (
-            downloadFile(
-                buildAlertLogCsv(),
-                'csv',
-                'text/csv;charset=utf-8'
-            )
-        ) {
-            log(`Exported alert log as .csv (${count} real entries).`);
-        }
-
     }
 
 
     function clearAlertLog() {
-
         // Counted the same way the exports count, so the number in the
         // confirmation always matches the file the user just saved.
         const count = loadRealAlertLog().length;
@@ -5616,23 +4915,18 @@
         }
 
         try {
-
             alertLogCache = [];
             logWritePending = false;
-
             if (logWriteTimer) {
                 clearTimeout(logWriteTimer);
                 logWriteTimer = null;
             }
 
             localStorage.removeItem(ALERT_LOG_KEY);
-
             log(`Alert log cleared (${total} entries removed).`);
-
         } catch (error) {
             fail('Could not clear the alert log:', error);
         }
-
     }
 
 
@@ -5647,70 +4941,47 @@
     // ============================================================
 
     function copySerialToClipboard(serial, buttonEl) {
-
         function showCopied(ok) {
-
             if (!buttonEl) {
                 return;
             }
 
             const hint = buttonEl.querySelector('.eve-alert-copy-hint');
-
             if (!hint) {
                 return;
             }
 
             hint.textContent = ok ? '\u{2713} copied' : '\u{2715} failed';
-
             buttonEl.classList.add(ok ? 'eve-copied' : 'eve-copy-failed');
-
             setTimeout(() => {
-
                 hint.textContent = '\u{29c9} copy';
-
                 buttonEl.classList.remove('eve-copied', 'eve-copy-failed');
-
             }, 1500);
-
         }
 
         function fallbackCopy() {
-
             try {
-
                 const textarea = document.createElement('textarea');
-
                 textarea.value = serial;
                 textarea.style.position = 'fixed';
                 textarea.style.opacity = '0';
-
                 let ok = false;
-
                 withoutObserver(() => {
-
                     document.body.appendChild(textarea);
-
                     textarea.select();
-
                     ok = document.execCommand('copy');
-
                     document.body.removeChild(textarea);
-
                 });
 
                 showCopied(ok);
-
                 devLog(`Serial ${serial} copied (fallback method).`);
-
             } catch (error) {
                 showCopied(false);
                 fail('Clipboard copy failed:', error);
             }
-
         }
 
         if (navigator.clipboard && navigator.clipboard.writeText) {
-
             navigator.clipboard
                 .writeText(serial)
                 .then(() => {
@@ -5718,13 +4989,9 @@
                     devLog(`Serial ${serial} copied to clipboard.`);
                 })
                 .catch(fallbackCopy);
-
         } else {
-
             fallbackCopy();
-
         }
-
     }
 
 
@@ -5733,7 +5000,6 @@
     // ============================================================
 
     function formatRelativeTime(ts) {
-
         if (!ts) {
             return '';
         }
@@ -5750,35 +5016,26 @@
         } else if (seconds < 3600) {
             relative = `${Math.floor(seconds / 60)}m ago`;
         } else if (seconds < 86400) {
-
             const hours = Math.floor(seconds / 3600);
             const mins  = Math.floor((seconds % 3600) / 60);
-
             relative = mins ? `${hours}h ${mins}m ago` : `${hours}h ago`;
-
         } else {
             relative = `${Math.floor(seconds / 86400)}d ago`;
         }
 
         return `\u{1f552} ${relative} \u{b7} ${new Date(ts).toLocaleTimeString()}`;
-
     }
 
 
     function refreshRelativeTimes() {
-
         document
             .querySelectorAll('.eve-alert-time[data-ts]')
             .forEach(el => {
-
                 const ts = Number(el.dataset.ts);
-
                 if (ts) {
                     el.textContent = formatRelativeTime(ts);
                 }
-
             });
-
     }
 
 
@@ -5800,10 +5057,8 @@
 
 
     function escapeHtml(text) {
-
         return String(text === undefined || text === null ? '' : text)
             .replace(/[&<>"']/g, ch => HTML_ESCAPES[ch]);
-
     }
 
 
@@ -5822,46 +5077,29 @@
     // ============================================================
 
     function loadActiveAlerts() {
+        const parsed =
+            readJSON(
+                sessionStorage,
+                ACTIVE_ALERTS_KEY,
+                null,
+                'Active alert'
+            );
 
-        try {
-
-            const saved = sessionStorage.getItem(ACTIVE_ALERTS_KEY);
-
-            if (saved) {
-
-                const parsed = JSON.parse(saved);
-
-                if (Array.isArray(parsed)) {
-                    return parsed;
-                }
-
-            }
-
-        } catch (error) {
-            warn('Active alert load error:', error);
-        }
-
-        return [];
-
+        return Array.isArray(parsed) ? parsed : [];
     }
 
 
     function saveActiveAlerts(alerts) {
-
-        try {
-            sessionStorage.setItem(
-                ACTIVE_ALERTS_KEY,
-                JSON.stringify(alerts)
-            );
-        } catch (error) {
-            warn('Active alert save error:', error);
-        }
-
+        writeJSON(
+            sessionStorage,
+            ACTIVE_ALERTS_KEY,
+            alerts,
+            'Active alert'
+        );
     }
 
 
     function storeAlert(record) {
-
         const alerts = loadActiveAlerts();
 
         alerts.push(record);
@@ -5870,24 +5108,18 @@
         // that pressing the test buttons a few times could push real,
         // undismissed alerts out of storage entirely.
         while (alerts.length > MAX_STORED_ALERTS) {
-
             const debugIndex = alerts.findIndex(a => isDebugData(a));
-
             alerts.splice(debugIndex === -1 ? 0 : debugIndex, 1);
-
         }
 
         saveActiveAlerts(alerts);
-
     }
 
 
     function removeStoredAlert(alertId) {
-
         saveActiveAlerts(
             loadActiveAlerts().filter(record => record.id !== alertId)
         );
-
     }
 
 
@@ -5902,7 +5134,6 @@
     // into the slot check and tripping a false slot-mismatch alarm.
 
     function infoFromRecord(record) {
-
         const parts =
             String(record.location || '')
                 .split('\u{2022}')
@@ -5915,7 +5146,6 @@
             eve:       record.eve || parts[1] || '',
             unit:      record.unit || parts[2] || ''
         };
-
     }
 
 
@@ -5944,7 +5174,6 @@
     // ------------------------------------------------------------
 
     function needsReconfirmation(record) {
-
         if (!record || !record.detailUrl || isDebugData(record)) {
             return false;
         }
@@ -5953,7 +5182,6 @@
             record.phaseSource !== 'confirmed' ||
             record.resultConfirmed !== true
         );
-
     }
 
 
@@ -5966,7 +5194,6 @@
 
 
     function reconfirmRecord(record) {
-
         const attempts = Number(record.resultAttempts) || 0;
 
         if (attempts >= RESULT_RETRY_MAX_ATTEMPTS) {
@@ -5989,28 +5216,31 @@
             });
 
         return true;
-
     }
 
 
     // Called on the master tick. Picks up rows that finished writing
     // after we read them, without waiting for a page reload.
 
-    function retryPendingConfirmations() {
-
-        const stale = loadActiveAlerts().filter(needsReconfirmation);
-
-        if (!stale.length) {
-            return;
-        }
-
+    // Filter to the records that still owe an answer and start a
+    // re-check on each. Returns how many actually started, which is
+    // not the same as how many were stale: reconfirmRecord() refuses
+    // past RESULT_RETRY_MAX_ATTEMPTS.
+    function chaseStaleConfirmations(alerts) {
         let started = 0;
 
-        stale.forEach(record => {
+        alerts.filter(needsReconfirmation).forEach(record => {
             if (reconfirmRecord(record)) {
                 started += 1;
             }
         });
+
+        return started;
+    }
+
+
+    function retryPendingConfirmations() {
+        const started = chaseStaleConfirmations(loadActiveAlerts());
 
         if (started) {
             devLog(
@@ -6018,12 +5248,10 @@
                 'pending.'
             );
         }
-
     }
 
 
     function restorePersistedAlerts() {
-
         const alerts = loadActiveAlerts();
 
         if (!alerts.length) {
@@ -6067,7 +5295,6 @@
         );
 
         stale.forEach(record => reconfirmRecord(record));
-
     }
 
 
@@ -6076,15 +5303,12 @@
     // ============================================================
 
     function createPersistentAlert(title, info, transition) {
-
         const record = {
-
             id:
                 `alert-${Date.now()}-` +
                 Math.random().toString(36).slice(2, 8),
 
             title: title,
-
             transition: transition,
 
             // Persisted so the DEBUG visibility modifier still works
@@ -6098,7 +5322,6 @@
             // Direct link to the exact server-detail page. DEBUG/test
             // records have no URL and stay non-navigating.
             detailUrl: (info && info.detailUrl) ? safeUrl(info.detailUrl) : '',
-
             location:
                 info
                     ? `${info.section} \u{2022} ${info.eve} \u{2022} ${info.unit}`
@@ -6110,7 +5333,6 @@
             section: info ? info.section : '',
             eve:     info ? info.eve : '',
             unit:    info ? info.unit : '',
-
             statusLine: getStatusLine(transition),
 
             // Links this card to its permanent log entry.
@@ -6138,15 +5360,12 @@
             resultConfirmed: false,
             phaseExact: false,
             pendingReason: '',
-
             ts: Date.now()
-
         };
 
         renderAlertElement(record, true);
 
         return record;
-
     }
 
 
@@ -6166,7 +5385,6 @@
     // which code path last touched it.
 
     function buildPhaseNote(record) {
-
         if (!record) {
             return '';
         }
@@ -6225,12 +5443,10 @@
                 : '';
 
         return `${head}\u{a0}\u{b7}\u{a0}${parts.join(' \u{b7} ')}${tail}`;
-
     }
 
 
     function reconcileAlertPhase(record, confirmation) {
-
         if (!record) {
             return;
         }
@@ -6238,7 +5454,6 @@
         const before = record.transition;
 
         if (confirmation && confirmation.confirmed) {
-
             record.transition =
                 resolveTransitionFromDetail(before, confirmation);
 
@@ -6264,20 +5479,16 @@
                 confirmation.resultConfirmed
                     ? ''
                     : (confirmation.reason || '');
-
         } else {
-
             record.phaseSource = 'unverified';
             record.unverifiedReason =
                 (confirmation && confirmation.reason) || 'unknown';
-
         }
 
         record.title      = getTransitionTitle(record.transition);
         record.statusLine = getStatusLine(record.transition);
 
         if (before !== record.transition) {
-
             log(
                 `${record.serial} re-labelled ${before} \u{2192} ` +
                 `${record.transition} from the detail page ` +
@@ -6293,15 +5504,10 @@
                 record.notifiedTransition &&
                 record.notifiedTransition !== record.transition
             ) {
-
                 const announced = record.notifiedTransition;
-
                 record.notifiedTransition = record.transition;
-
                 notifyLabelCorrection(record, announced);
-
             }
-
         }
 
         updateAlertCard(record);
@@ -6309,7 +5515,6 @@
         updateStoredAlert(record);
 
         updateLogEntryForAlert(record);
-
     }
 
 
@@ -6317,7 +5522,6 @@
     // a card the user is mid-click on must not vanish.
 
     function updateAlertCard(record) {
-
         const card =
             document.querySelector(
                 `.eve-alert[data-alert-id="${CSS.escape(record.id)}"]`
@@ -6327,21 +5531,7 @@
             return;
         }
 
-        const alertClass =
-            ALERT_CLASS_BY_TRANSITION[record.transition] || 'eve-failure';
-
-        card.className =
-            `eve-alert ${alertClass}` +
-            (record.detailUrl ? ' eve-alert-clickable' : '') +
-            (record.phaseSource === 'unverified' ? ' eve-alert-unverified' : '');
-
-        card.dataset.transition = record.transition || '';
-
-        // A card that only became a SYS_DEKIT on confirmation has to
-        // pick up the flag now, or it stays visible as whatever colour
-        // first called it.
-        card.dataset.diagnostic =
-            isDiagnosticTransition(record.transition) ? '1' : '0';
+        applyCardState(card, record, record.detailUrl);
 
         const titleEl = card.querySelector('.eve-alert-header span');
 
@@ -6364,33 +5554,44 @@
         const noteText = buildPhaseNote(record);
 
         if (!noteText) {
+            // BUG FIX. This used to be a bare `return`, which skipped
+            // applyAlertFilter() at the bottom of the function - even
+            // though className, data-transition and data-diagnostic
+            // had ALREADY been rewritten a few lines above. A card
+            // that only became a SYS_DEKIT on confirmation therefore
+            // picked up the flag but was never re-filtered, so with
+            // "Show DEBUG" off it stayed visible as whatever colour
+            // first called it. That is the exact outcome the comment
+            // on the data-diagnostic write says must not happen.
+            //
+            // A note that has become empty is also removed rather
+            // than left showing stale text.
+            if (noteEl) {
+                noteEl.remove();
+            }
+
+            applyAlertFilter();
             return;
         }
 
         if (!noteEl) {
-
             noteEl = document.createElement('div');
             noteEl.className = 'eve-alert-phase-note';
-
             const timeEl = card.querySelector('.eve-alert-time');
-
             if (timeEl) {
                 card.insertBefore(noteEl, timeEl);
             } else {
                 card.appendChild(noteEl);
             }
-
         }
 
         noteEl.textContent = noteText;
 
         applyAlertFilter();
-
     }
 
 
     function updateStoredAlert(record) {
-
         const alerts = loadActiveAlerts();
 
         const index = alerts.findIndex(a => a.id === record.id);
@@ -6402,7 +5603,6 @@
         alerts[index] = { ...alerts[index], ...record };
 
         saveActiveAlerts(alerts);
-
     }
 
 
@@ -6410,11 +5610,9 @@
     // alert's entry by id and correct its category in place.
 
     function updateLogEntryForAlert(record) {
-
         const entries = getAlertLog();
 
         for (let i = entries.length - 1; i >= 0; i -= 1) {
-
             const entry = entries[i];
 
             // eventId is the stable link. alertId is the fallback for
@@ -6427,25 +5625,23 @@
                 continue;
             }
 
-            entry.transition      = record.transition;
-            entry.diagnostic      = isDiagnosticTransition(record.transition);
-            entry.result          = record.title;
-            entry.phaseSource     = record.phaseSource;
-            entry.resultConfirmed = record.resultConfirmed === true;
-            entry.taskset         = record.taskset || '';
-            entry.taskcase        = record.taskcase || '';
-            entry.operation       = record.operation || '';
-            entry.pass            =
-                (record.passFlag === 0 || record.passFlag === 1)
-                    ? String(record.passFlag)
-                    : '';
+            // record.title is getTransitionTitle(record.transition),
+            // set by reconcileAlertPhase() immediately above this
+            // call, so deriving it inside the shared writer is the
+            // same value by a shorter route.
+            writeLogEntryResult(entry, {
+                transition:      record.transition,
+                phaseSource:     record.phaseSource,
+                resultConfirmed: record.resultConfirmed,
+                operation:       record.operation,
+                taskset:         record.taskset,
+                taskcase:        record.taskcase,
+                pass:            record.passFlag
+            });
 
             scheduleLogWrite();
-
             return;
-
         }
-
     }
 
 
@@ -6457,55 +5653,73 @@
     // refresh, so both paths produce an identical card.
     // ============================================================
 
-    const ALERT_CLASS_BY_TRANSITION = {
-        TEST_SUCCESS: 'eve-success',
-        TEST_FAILURE: 'eve-failure',
-        PRETEST_FAILURE: 'eve-pretest',
-        PRETEST_SUCCESS: 'eve-pretest-pass',
-        DEKIT_FAILURE: 'eve-dekit',
-        DEKIT_SUCCESS: 'eve-dekit'
-    };
+    // Derived from TRANSITIONS. Call sites still read
+    // ALERT_CLASS_BY_TRANSITION[t] || 'eve-failure', so an unknown
+    // transition keeps the old failure styling.
+    const ALERT_CLASS_BY_TRANSITION =
+        Object.fromEntries(
+            Object.keys(TRANSITIONS)
+                .map(key => [key, TRANSITIONS[key].css])
+        );
 
 
-    function renderAlertElement(record, shouldStore) {
+    // ------------------------------------------------------------
+    // The four pieces of card state derived from a record's
+    // transition, written from one place.
+    //
+    // renderAlertElement() (building a new card) and updateAlertCard()
+    // (repainting one in place) each derived these independently, so a
+    // card built before confirmation and a card corrected after it
+    // could drift apart.
+    // ------------------------------------------------------------
 
-        const container = getAlertContainer();
-
-        const alert = document.createElement('div');
-
+    function applyCardState(element, record, detailUrl) {
         const alertClass =
             ALERT_CLASS_BY_TRANSITION[record.transition] || 'eve-failure';
 
-        alert.className = `eve-alert ${alertClass}`;
+        element.className =
+            `eve-alert ${alertClass}` +
+            (detailUrl ? ' eve-alert-clickable' : '') +
+            (record.phaseSource === 'unverified'
+                ? ' eve-alert-unverified'
+                : '');
+
+        element.dataset.transition = record.transition || '';
+
+        // Diagnostics ride the same visibility switch as DEBUG data:
+        // present, recorded, exported - just not in the operator's way.
+        // A card that only became a SYS_DEKIT on confirmation has to
+        // pick the flag up here, or it stays visible as whatever colour
+        // first called it.
+        element.dataset.diagnostic =
+            isDiagnosticTransition(record.transition) ? '1' : '0';
+    }
+
+
+    function renderAlertElement(record, shouldStore) {
+        const container = getAlertContainer();
+
+        const alert = document.createElement('div');
 
         // Re-validated on render, not just on creation - the record
         // round-trips through sessionStorage, which the page's own
         // scripts can write.
         const detailUrl = safeUrl(record.detailUrl);
 
+        // className, data-transition and data-diagnostic, including
+        // the clickable and unverified modifiers. Provenance survives
+        // a refresh: a restored card that was never verified must
+        // still look unverified.
+        applyCardState(alert, record, detailUrl);
+
         if (detailUrl) {
-            alert.classList.add('eve-alert-clickable');
             alert.title =
                 'Click anywhere on this alert to open Server Detail';
         }
 
         alert.dataset.alertId = record.id;
 
-        // Used by the filter buttons and the search box.
-        alert.dataset.transition = record.transition || '';
-
         alert.dataset.debug = isDebugData(record) ? '1' : '0';
-
-        // Diagnostics ride the same visibility switch as DEBUG data:
-        // present, recorded, exported - just not in the operator's way.
-        alert.dataset.diagnostic =
-            isDiagnosticTransition(record.transition) ? '1' : '0';
-
-        // Provenance survives a refresh: a restored card that was never
-        // verified must still look unverified.
-        if (record.phaseSource === 'unverified') {
-            alert.classList.add('eve-alert-unverified');
-        }
 
         alert.dataset.search =
             `${record.serial || ''} ${record.location || ''}`;
@@ -6513,6 +5727,10 @@
         // Number() so a poisoned stored value cannot break out of the
         // attribute - this was the one unescaped interpolation here.
         const ts = Number(record.ts) || 0;
+
+        // Built once. The template used to call buildPhaseNote() a
+        // second time to produce the value it had just tested for.
+        const phaseNote = buildPhaseNote(record);
 
         const serialBlock =
             record.serial
@@ -6559,8 +5777,8 @@
             </div>
 
             ${
-                buildPhaseNote(record)
-                    ? `<div class="eve-alert-phase-note">${escapeHtml(buildPhaseNote(record))}</div>`
+                phaseNote
+                    ? `<div class="eve-alert-phase-note">${escapeHtml(phaseNote)}</div>`
                     : ''
             }
 
@@ -6582,9 +5800,7 @@
         // page. DEBUG/test alerts have no URL and do nothing.
 
         if (detailUrl) {
-
             alert.addEventListener('click', event => {
-
                 if (
                     event.target.closest('.eve-alert-serial') ||
                     event.target.closest('.eve-alert-close')
@@ -6593,19 +5809,15 @@
                 }
 
                 openExternal(detailUrl);
-
             });
-
         }
 
         alert
             .querySelector('.eve-alert-close')
             .addEventListener('click', () => {
-
                 // Dismissing is the ONLY thing that removes an alert
                 // from storage - a refresh must not.
                 removeStoredAlert(record.id);
-
                 alert.remove();
 
                 // Both, in this order. The old close handler called
@@ -6613,18 +5825,15 @@
                 // "(visible/total)" count with the unfiltered total and
                 // left the active filter unapplied.
                 refreshAlertChrome();
-
             });
 
         const serialButton = alert.querySelector('button.eve-alert-serial');
 
         if (serialButton && record.serial) {
-
             serialButton.addEventListener(
                 'click',
                 () => copySerialToClipboard(record.serial, serialButton)
             );
-
         }
 
         // Newest alert on TOP so the most recent result is the first
@@ -6636,7 +5845,6 @@
         }
 
         refreshAlertChrome();
-
     }
 
 
@@ -6645,7 +5853,6 @@
     // ============================================================
 
     function getAlertContainer() {
-
         const existing = document.getElementById('eve-alert-body');
 
         if (existing) {
@@ -6742,7 +5949,6 @@
         document
             .getElementById('eve-alert-toggle')
             .addEventListener('click', () => {
-
                 const collapsed =
                     container.classList.toggle('eve-alerts-collapsed');
 
@@ -6758,21 +5964,15 @@
                 } catch (error) {
                     // Non-fatal: collapse state just will not persist.
                 }
-
             });
 
         try {
-
             if (sessionStorage.getItem(ALERTS_COLLAPSED_KEY) === '1') {
-
                 container.classList.add('eve-alerts-collapsed');
-
                 if (caret) {
                     caret.textContent = '\u{25b8}';
                 }
-
             }
-
         } catch (error) {
             // Non-fatal.
         }
@@ -6784,20 +5984,16 @@
         document
             .getElementById('eve-alert-dismiss-all')
             .addEventListener('click', () => {
-
                 clearStoredAlerts();
-
                 body
                     .querySelectorAll('.eve-alert')
                     .forEach(node => node.remove());
 
                 refreshAlertChrome();
-
                 log(
                     'All alerts dismissed and cleared from storage. ' +
                     '(The exportable log is NOT affected.)'
                 );
-
             });
 
         // ----------------------------------------------------
@@ -6806,11 +6002,11 @@
 
         document
             .getElementById('eve-alert-export')
-            .addEventListener('click', exportAlertLog);
+            .addEventListener('click', () => exportLog('txt'));
 
         document
             .getElementById('eve-alert-export-csv')
-            .addEventListener('click', exportAlertLogCsv);
+            .addEventListener('click', () => exportLog('csv'));
 
         // ----------------------------------------------------
         // FILTER + SEARCH
@@ -6819,9 +6015,7 @@
         container
             .querySelectorAll('.eve-filter-category')
             .forEach(button => {
-
                 button.addEventListener('click', () => {
-
                     container
                         .querySelectorAll('.eve-filter-category')
                         .forEach(other =>
@@ -6829,27 +6023,18 @@
                         );
 
                     button.classList.add('eve-filter-active');
-
                     alertFilter = button.dataset.filter;
-
                     applyAlertFilter();
-
                 });
-
             });
 
         const searchInput = document.getElementById('eve-alert-search');
 
         if (searchInput) {
-
             searchInput.addEventListener('input', () => {
-
                 alertSearch = searchInput.value.trim().toLowerCase();
-
                 applyAlertFilter();
-
             });
-
         }
 
         // ----------------------------------------------------
@@ -6860,9 +6045,7 @@
             document.getElementById('eve-alert-visibility-toggle');
 
         if (visibilityToggle) {
-
             const updateVisibilityToggle = () => {
-
                 visibilityToggle.textContent =
                     settings.showDebug
                         ? '\u{1f441} Hide DEBUG'
@@ -6877,32 +6060,22 @@
                     settings.showDebug
                         ? 'Hide DEBUG/test alerts from every category filter and suppress DEBUG/test desktop toasts'
                         : 'Show DEBUG/test alerts in every category filter and resume DEBUG/test desktop toasts';
-
             };
 
             updateVisibilityToggle();
-
             visibilityToggle.addEventListener('click', () => {
-
                 settings.showDebug = !settings.showDebug;
-
                 saveSettings();
-
                 updateVisibilityToggle();
-
                 applyAlertFilter();
-
                 log(
                     'DEBUG/test visibility/toasts ' +
                     (settings.showDebug ? 'VISIBLE.' : 'HIDDEN.')
                 );
-
             });
-
         }
 
         return body;
-
     }
 
 
@@ -6930,7 +6103,6 @@
 
 
     function syncAlertPanelHeight(container) {
-
         const panel =
             container ||
             document.getElementById('eve-alert-container');
@@ -6950,75 +6122,45 @@
 
 
     function saveAlertPanelPosition(container) {
-
-        try {
-            if (!container) return;
-
-            localStorage.setItem(
-                ALERT_PANEL_POSITION_KEY,
-                JSON.stringify({
-                    left: container.style.left,
-                    top: container.style.top
-                })
-            );
-        } catch (error) {
-            // Non-fatal.
+        if (!container) {
+            return;
         }
 
-    }
-
-
-    function clampAlertPanelToViewport(container, left, top) {
-
-        const margin = 10;
-
-        const maxLeft = Math.max(
-            margin,
-            window.innerWidth - container.offsetWidth - margin
+        writeJSON(
+            localStorage,
+            ALERT_PANEL_POSITION_KEY,
+            { left: container.style.left, top: container.style.top },
+            null
         );
-
-        const maxTop = Math.max(
-            margin,
-            window.innerHeight - container.offsetHeight - margin
-        );
-
-        return {
-            left: Math.max(margin, Math.min(left, maxLeft)),
-            top: Math.max(margin, Math.min(top, maxTop))
-        };
-
     }
 
 
     function restoreAlertPanelPosition(container) {
+        const pos =
+            readJSON(localStorage, ALERT_PANEL_POSITION_KEY, null, null);
 
-        try {
-            const saved = localStorage.getItem(ALERT_PANEL_POSITION_KEY);
-
-            if (!saved) return;
-
-            const pos = JSON.parse(saved);
-            const clamped = clampAlertPanelToViewport(
-                container,
-                Number.parseInt(pos.left, 10) || 10,
-                Number.parseInt(pos.top, 10) || 10
-            );
-
-            container.style.left = `${clamped.left}px`;
-            container.style.top = `${clamped.top}px`;
-            container.style.right = 'auto';
-
-            syncAlertPanelHeight(container);
-
-        } catch (error) {
-            // Non-fatal.
+        if (!pos || !container) {
+            return;
         }
 
+        // clampToViewport() is the SAME function that used to exist a
+        // second time as clampAlertPanelToViewport(). Identical maths,
+        // identical margin, identical return shape.
+        const clamped = clampToViewport(
+            container,
+            Number.parseInt(pos.left, 10) || PANEL_MARGIN,
+            Number.parseInt(pos.top, 10) || PANEL_MARGIN
+        );
+
+        container.style.left = `${clamped.left}px`;
+        container.style.top = `${clamped.top}px`;
+        container.style.right = 'auto';
+
+        syncAlertPanelHeight(container);
     }
 
 
     function setupAlertWindowUX(container) {
-
         if (!container) return;
 
         const header = container.querySelector('#eve-alert-header');
@@ -7046,8 +6188,7 @@
 
         function getHeaderViewportBounds() {
             const rect = header.getBoundingClientRect();
-            const margin = 10;
-
+            const margin = PANEL_MARGIN;
             return {
                 margin,
                 width: rect.width,
@@ -7059,7 +6200,6 @@
 
         function positionHeaderFromPointer(event) {
             const bounds = getHeaderViewportBounds();
-
             const left = Math.min(
                 Math.max(bounds.margin, event.clientX - dragState.offsetX),
                 bounds.maxLeft
@@ -7081,7 +6221,6 @@
 
         function onPointerMove(event) {
             if (!dragState) return;
-
             if (
                 Math.abs(event.clientX - dragState.startX) > 4 ||
                 Math.abs(event.clientY - dragState.startY) > 4
@@ -7094,7 +6233,6 @@
 
         function onPointerUp() {
             if (!dragState) return;
-
             document.removeEventListener('pointermove', onPointerMove);
             document.removeEventListener('pointerup', onPointerUp);
             document.removeEventListener('pointercancel', onPointerUp);
@@ -7104,7 +6242,6 @@
             // real drag is allowed to change the panel coordinates.
             const wasDragged = draggedEnough;
             dragState = null;
-
             if (!wasDragged) {
                 return;
             }
@@ -7114,11 +6251,9 @@
             // a false bottom/right snap.
             const rect = header.getBoundingClientRect();
             const bounds = getHeaderViewportBounds();
-            const snapDistance = 35;
-
+            const snapDistance = PANEL_SNAP_DISTANCE;
             let left = rect.left;
             let top = rect.top;
-
             const nearLeft = rect.left <= bounds.margin + snapDistance;
             const nearRight =
                 window.innerWidth - rect.right <= bounds.margin + snapDistance;
@@ -7148,9 +6283,7 @@
             container.style.left = `${left}px`;
             container.style.top = `${top}px`;
             container.style.right = 'auto';
-
             syncAlertPanelHeight(container);
-
             saveAlertPanelPosition(container);
             draggedEnough = false;
         }
@@ -7169,7 +6302,6 @@
             }
 
             const rect = header.getBoundingClientRect();
-
             dragState = {
                 offsetX: event.clientX - rect.left,
                 offsetY: event.clientY - rect.top,
@@ -7189,14 +6321,12 @@
             document.addEventListener('pointermove', onPointerMove);
             document.addEventListener('pointerup', onPointerUp);
             document.addEventListener('pointercancel', onPointerUp);
-
             event.preventDefault();
         });
 
         window.addEventListener('resize', () => {
             const rect = header.getBoundingClientRect();
             const bounds = getHeaderViewportBounds();
-
             const left = Math.max(
                 bounds.margin,
                 Math.min(rect.left, bounds.maxLeft)
@@ -7210,12 +6340,9 @@
             container.style.left = `${left}px`;
             container.style.top = `${top}px`;
             container.style.right = 'auto';
-
             syncAlertPanelHeight(container);
-
             saveAlertPanelPosition(container);
         });
-
     }
 
 
@@ -7234,7 +6361,6 @@
 
 
     function applyAlertFilter() {
-
         const body = document.getElementById('eve-alert-body');
 
         if (!body) {
@@ -7245,13 +6371,18 @@
 
         let visible = 0;
 
+        // Loop invariants. Both depend only on state that is fixed
+        // for the whole call, so they are computed once instead of
+        // once per card.
+        //
+        // "Passes" covers pre-test passes too, so a confirmed
+        // PRE-TEST PASS card cannot vanish from every filter.
+        const allowedTransitions =
+            FILTER_TRANSITION_GROUPS[alertFilter] || [alertFilter];
+
+        const showDebug = !!settings.showDebug;
+
         cards.forEach(card => {
-
-            // "Passes" covers pre-test passes too, so a confirmed
-            // PRE-TEST PASS card cannot vanish from every filter.
-            const allowedTransitions =
-                FILTER_TRANSITION_GROUPS[alertFilter] || [alertFilter];
-
             const matchesType =
                 alertFilter === 'all' ||
                 allowedTransitions.indexOf(card.dataset.transition) !== -1;
@@ -7263,7 +6394,7 @@
                     .indexOf(alertSearch) !== -1;
 
             const matchesDebugVisibility =
-                settings.showDebug ||
+                showDebug ||
                 (
                     card.dataset.debug !== '1' &&
                     card.dataset.diagnostic !== '1'
@@ -7273,11 +6404,9 @@
                 matchesType && matchesSearch && matchesDebugVisibility;
 
             card.style.display = show ? '' : 'none';
-
             if (show) {
                 visible += 1;
             }
-
         });
 
         const countEl = document.getElementById('eve-alert-count');
@@ -7288,7 +6417,6 @@
                     ? `(${cards.length})`
                     : `(${visible}/${cards.length})`;
         }
-
     }
 
 
@@ -7305,7 +6433,6 @@
     // ============================================================
 
     function updateAlertContainerVisibility() {
-
         const container = document.getElementById('eve-alert-container');
         const body = document.getElementById('eve-alert-body');
 
@@ -7332,16 +6459,13 @@
             // What the original comment always claimed it did.
             dismissAll.style.display = count > 1 ? '' : 'none';
         }
-
     }
 
 
     function refreshAlertChrome() {
-
         updateAlertContainerVisibility();
 
         applyAlertFilter();
-
     }
 
 
@@ -7354,12 +6478,63 @@
     // instead of silently doing nothing.
     // ============================================================
 
-    function wireButton(id, handler) {
+    // ------------------------------------------------------------
+    // ONE BINDING for a settings-backed control.
+    //
+    // Five controls repeated the same seven steps: look the element
+    // up, guard it, paint it from `settings`, listen for change, write
+    // `settings`, persist, then run a side effect and log. The side
+    // effects are the part that genuinely differs, so they stay at the
+    // call site as `after`/`message`.
+    //
+    //   coerce     turn the raw control value into the stored value
+    //   writeBack  reflect the coerced value back into the control,
+    //              so a rejected input does not stay on screen
+    //   after      the control's own side effect
+    //   message    console line, built from the stored value
+    // ------------------------------------------------------------
 
+    function bindSetting(id, key, options) {
         const el = document.getElementById(id);
 
         if (!el) {
+            return null;
+        }
 
+        const opts = options || {};
+        const isCheckbox = el.type === 'checkbox';
+
+        if (isCheckbox) {
+            el.checked = !!settings[key];
+        } else {
+            el.value = String(settings[key]);
+        }
+
+        el.addEventListener('change', () => {
+            const raw = isCheckbox ? el.checked : el.value;
+            settings[key] = opts.coerce ? opts.coerce(raw) : raw;
+            if (!isCheckbox && opts.writeBack) {
+                el.value = String(settings[key]);
+            }
+
+            saveSettings();
+            if (opts.after) {
+                opts.after(settings[key]);
+            }
+
+            if (opts.message) {
+                log(opts.message(settings[key]));
+            }
+        });
+
+        return el;
+    }
+
+
+    function wireButton(id, handler) {
+        const el = document.getElementById(id);
+
+        if (!el) {
             // typeof guard: the old "GM_info && GM_info.script" threw a
             // ReferenceError inside this very error handler when the
             // identifier was undeclared.
@@ -7370,7 +6545,6 @@
             );
 
             return;
-
         }
 
         el.addEventListener('click', event => {
@@ -7382,9 +6556,7 @@
             } catch (error) {
                 fail(`Handler for #${id} threw:`, error);
             }
-
         });
-
     }
 
 
@@ -7393,33 +6565,27 @@
     // ============================================================
 
     function savePanelPosition(panel) {
-
-        try {
-
-            if (!panel) {
-                return;
-            }
-
-            localStorage.setItem(
-                PANEL_POSITION_KEY,
-                JSON.stringify({
-                    left: panel.style.left,
-                    top: panel.style.top,
-                    collapsed:
-                        panel.classList.contains('eve-tracker-collapsed')
-                })
-            );
-
-        } catch (error) {
-            // Non-fatal - position just will not persist.
+        if (!panel) {
+            return;
         }
 
+        // Silent: non-fatal, the position just will not persist.
+        writeJSON(
+            localStorage,
+            PANEL_POSITION_KEY,
+            {
+                left: panel.style.left,
+                top: panel.style.top,
+                collapsed:
+                    panel.classList.contains('eve-tracker-collapsed')
+            },
+            null
+        );
     }
 
 
     function clampToViewport(panel, left, top) {
-
-        const margin = 10;
+        const margin = PANEL_MARGIN;
 
         const maxLeft =
             Math.max(margin, window.innerWidth - panel.offsetWidth - margin);
@@ -7431,24 +6597,18 @@
             left: Math.max(margin, Math.min(left, maxLeft)),
             top: Math.max(margin, Math.min(top, maxTop))
         };
-
     }
 
 
     function restorePanelPosition(panel, body, collapseButton) {
+        const pos = readJSON(localStorage, PANEL_POSITION_KEY, null, null);
 
-        try {
+        if (!pos) {
+            return;
+        }
 
-            const saved = localStorage.getItem(PANEL_POSITION_KEY);
-
-            if (!saved) {
-                return;
-            }
-
-            const pos = JSON.parse(saved);
-
+        {
             if (pos.left && pos.top) {
-
                 // Clamp, in case the window is now smaller than it was
                 // when the position was saved - otherwise the panel is
                 // stranded off-screen with no way to drag it back.
@@ -7462,13 +6622,10 @@
                 panel.style.left = `${clamped.left}px`;
                 panel.style.top = `${clamped.top}px`;
                 panel.style.right = 'auto';
-
             }
 
             if (pos.collapsed) {
-
                 panel.classList.add('eve-tracker-collapsed');
-
                 if (body) {
                     body.style.display = 'none';
                 }
@@ -7477,13 +6634,8 @@
                     collapseButton.textContent = '\u{ff0b}';
                     collapseButton.title = 'Expand EVE SLT Tracker';
                 }
-
             }
-
-        } catch (error) {
-            // Non-fatal.
         }
-
     }
 
 
@@ -7492,53 +6644,31 @@
     // ============================================================
 
     function setupMenuStatePersistence(panel) {
-
         if (!panel) {
             return;
         }
 
-        let open = {};
-
-        try {
-            open = JSON.parse(localStorage.getItem(MENU_STATE_KEY) || '{}');
-        } catch (error) {
-            open = {};
-        }
+        const open =
+            readJSON(localStorage, MENU_STATE_KEY, null, null) || {};
 
         panel
             .querySelectorAll('details.eve-collapse')
             .forEach((details, index) => {
-
                 const key = 'menu' + index;
-
                 if (open[key]) {
                     details.open = true;
                 }
 
                 details.addEventListener('toggle', () => {
-
-                    try {
-
-                        const current =
-                            JSON.parse(
-                                localStorage.getItem(MENU_STATE_KEY) || '{}'
-                            );
-
-                        current[key] = details.open;
-
-                        localStorage.setItem(
-                            MENU_STATE_KEY,
-                            JSON.stringify(current)
-                        );
-
-                    } catch (error) {
-                        // Non-fatal.
-                    }
-
+                    // `open` is the only writer of this key in this
+                    // tab (@noframes, one page), so the previous
+                    // read-parse-modify-write on every single toggle
+                    // was defending against a concurrent writer that
+                    // cannot exist.
+                    open[key] = details.open;
+                    writeJSON(localStorage, MENU_STATE_KEY, open, null);
                 });
-
             });
-
     }
 
 
@@ -7554,7 +6684,6 @@
     // ============================================================
 
     function setupTrackerWindowUX(panel) {
-
         if (!panel) {
             return;
         }
@@ -7592,29 +6721,23 @@
         restorePanelPosition(panel, body, collapseButton);
 
         collapseButton.addEventListener('click', event => {
-
             event.stopPropagation();
-
             const collapsed =
                 panel.classList.toggle('eve-tracker-collapsed');
 
             body.style.display = collapsed ? 'none' : '';
-
             collapseButton.textContent = collapsed ? '\u{ff0b}' : '\u{2212}';
-
             collapseButton.title =
                 collapsed
                     ? 'Expand EVE SLT Tracker'
                     : 'Collapse EVE SLT Tracker';
 
             savePanelPosition(panel);
-
         });
 
         let dragState = null;
 
         function onPointerMove(event) {
-
             if (!dragState) {
                 return;
             }
@@ -7634,7 +6757,6 @@
         }
 
         function onPointerUp() {
-
             if (!dragState) {
                 return;
             }
@@ -7642,13 +6764,10 @@
             document.removeEventListener('pointermove', onPointerMove);
             document.removeEventListener('pointerup', onPointerUp);
             document.removeEventListener('pointercancel', onPointerUp);
-
             dragState = null;
-
-            const margin = 10;
-            const snapDistance = 35;
+            const margin = PANEL_MARGIN;
+            const snapDistance = PANEL_SNAP_DISTANCE;
             const rect = panel.getBoundingClientRect();
-
             const maxLeft =
                 Math.max(margin, window.innerWidth - rect.width - margin);
 
@@ -7657,7 +6776,6 @@
 
             let left = rect.left;
             let top = rect.top;
-
             const nearLeft = left <= snapDistance;
             const nearRight =
                 window.innerWidth - rect.right <= snapDistance;
@@ -7679,19 +6797,15 @@
             panel.style.left = `${left}px`;
             panel.style.top = `${top}px`;
             panel.style.right = 'auto';
-
             savePanelPosition(panel);
-
         }
 
         title.addEventListener('pointerdown', event => {
-
             if (event.target.closest('.eve-collapse-btn')) {
                 return;
             }
 
             const rect = panel.getBoundingClientRect();
-
             dragState = {
                 offsetX: event.clientX - rect.left,
                 offsetY: event.clientY - rect.top
@@ -7700,28 +6814,21 @@
             panel.style.left = `${rect.left}px`;
             panel.style.top = `${rect.top}px`;
             panel.style.right = 'auto';
-
             document.addEventListener('pointermove', onPointerMove);
             document.addEventListener('pointerup', onPointerUp);
             document.addEventListener('pointercancel', onPointerUp);
-
             event.preventDefault();
-
         });
 
         // Keep the tracker inside the viewport if the browser resizes.
         window.addEventListener('resize', () => {
-
             const rect = panel.getBoundingClientRect();
-
             const clamped = clampToViewport(panel, rect.left, rect.top);
 
             panel.style.left = `${clamped.left}px`;
             panel.style.top = `${clamped.top}px`;
             panel.style.right = 'auto';
-
         });
-
     }
 
 
@@ -7730,7 +6837,6 @@
     // ============================================================
 
     function createUI() {
-
         if (document.getElementById('eve-tracker-panel')) {
             return;
         }
@@ -7740,7 +6846,72 @@
         panel.id = 'eve-tracker-panel';
         panel.classList.add('eve-tracker-window');
 
-        panel.innerHTML = `
+        panel.innerHTML = buildTrackerPanelMarkup();
+
+        withoutObserver(() => document.body.appendChild(panel));
+
+        setupTrackerWindowUX(panel);
+
+        setupMenuStatePersistence(panel);
+
+        buildSectionControls();
+
+        wireTrackerSettings();
+
+        wireDeveloperMode();
+
+        wireDebugButtons();
+    }
+
+
+    // ------------------------------------------------------------
+    // Developer-page buttons. Reachable only with Developer Mode on,
+    // but wired unconditionally - the container is what gets hidden.
+    // ------------------------------------------------------------
+
+    function wireDebugButtons() {
+        wireButton('eve-debug-success', () => sendTestNotification('success'));
+        wireButton('eve-debug-failure', () => sendTestNotification('failure'));
+
+        wireButton('eve-debug-notify-diagnostic', () => {
+            log('Open this console and watch your desktop for ~10 seconds.');
+            runNotificationDiagnostic();
+        });
+
+        wireButton('eve-debug-persistence', () => {
+            savePreviousStates();
+            debugSnapshotBeforeRefresh('manual-button');
+            flushAlertLog();
+            log('Reloading page now to test persistence...');
+            location.reload();
+        });
+
+        wireButton('eve-clear-log', () => clearAlertLog());
+    }
+
+
+    // ============================================================
+    // BUILD SECTION CONTROLS
+    // ============================================================
+    //
+    // Diffs the section set. The old build did list.innerHTML = '' and
+    // rebuilt every checkbox on every mutation tick (~4x/second during
+    // page activity), which thrashes layout and can destroy a checkbox
+    // the user is mid-click on. The set is unchanged almost always, so
+    // the common path is now just syncing checked states.
+    // ============================================================
+
+    let renderedSectionSignature = null;
+
+
+    // ------------------------------------------------------------
+    // The panel's markup, lifted verbatim out of createUI(). The
+    // element ids it declares are what wireTrackerSettings(),
+    // wireDeveloperMode() and wireDebugButtons() bind to.
+    // ------------------------------------------------------------
+
+    function buildTrackerPanelMarkup() {
+        return `
 
             <div class="eve-panel-title">
 
@@ -8021,138 +7192,20 @@
 
             </div>
         `;
+    }
 
-        withoutObserver(() => document.body.appendChild(panel));
 
-        setupTrackerWindowUX(panel);
+    // ------------------------------------------------------------
+    // DEVELOPER MODE / TWO-PAGE UI
+    //
+    //   Page 0 = normal tracker UI (default)
+    //   Page 1 = developer / diagnostics UI
+    //
+    // Turning Developer Mode off always returns to page 0 and hides
+    // the developer page and navigation entirely.
+    // ------------------------------------------------------------
 
-        setupMenuStatePersistence(panel);
-
-        buildSectionControls();
-
-        // ========================================================
-        // AUTO REFRESH CONTROLS
-        // ========================================================
-
-        const autoRefreshCheckbox =
-            document.getElementById('eve-auto-refresh');
-
-        const refreshInterval =
-            document.getElementById('eve-refresh-interval');
-
-        autoRefreshCheckbox.checked = settings.autoRefresh;
-
-        refreshInterval.value = String(settings.refreshIntervalSeconds);
-
-        autoRefreshCheckbox.addEventListener('change', () => {
-
-            settings.autoRefresh = autoRefreshCheckbox.checked;
-
-            saveSettings();
-
-            // Apply immediately - cancels any pending reload if turned
-            // off, reschedules if turned on.
-            restartAutoRefresh();
-
-        });
-
-        refreshInterval.addEventListener('change', () => {
-
-            settings.refreshIntervalSeconds =
-                Number(refreshInterval.value);
-
-            saveSettings();
-
-            restartAutoRefresh();
-
-        });
-
-        updateRefreshCountdown();
-
-        // ========================================================
-        // SOFT REFRESH TOGGLE
-        // ========================================================
-
-        const softRefreshCheckbox =
-            document.getElementById('eve-soft-refresh');
-
-        if (softRefreshCheckbox) {
-
-            softRefreshCheckbox.checked = settings.softRefresh;
-
-            softRefreshCheckbox.addEventListener('change', () => {
-
-                settings.softRefresh = softRefreshCheckbox.checked;
-
-                // A deliberate re-tick clears the session-level
-                // failure lockout too.
-                if (settings.softRefresh) {
-                    softRefreshDisabledForSession = false;
-                    softRefreshFailures = 0;
-                }
-
-                saveSettings();
-
-                log(
-                    'Soft refresh ' +
-                    (
-                        settings.softRefresh
-                            ? 'ENABLED \u{2014} page content swaps in ' +
-                              'place, tracker position preserved.'
-                            : 'DISABLED \u{2014} using full page reloads.'
-                    )
-                );
-
-            });
-
-        }
-
-        // ========================================================
-        // NOTIFICATION TIMEOUT CONTROL
-        // ========================================================
-
-        const notificationTimeoutInput =
-            document.getElementById('eve-notification-timeout');
-
-        if (notificationTimeoutInput) {
-
-            notificationTimeoutInput.value =
-                String(settings.notificationTimeoutSeconds);
-
-            notificationTimeoutInput.addEventListener('change', () => {
-
-                const value = Number(notificationTimeoutInput.value);
-
-                settings.notificationTimeoutSeconds =
-                    (!Number.isNaN(value) && value >= 0) ? value : 0;
-
-                notificationTimeoutInput.value =
-                    String(settings.notificationTimeoutSeconds);
-
-                saveSettings();
-
-                log(
-                    'Notification auto-close set to ' +
-                    `${settings.notificationTimeoutSeconds} seconds ` +
-                    '(0 = never auto-closes).'
-                );
-
-            });
-
-        }
-
-        // ========================================================
-        // BULK SECTION CONTROLS
-        // ========================================================
-
-        wireButton('eve-show-all',    () => setAllSections('show', true));
-        wireButton('eve-hide-all',    () => setAllSections('show', false));
-        wireButton('eve-watch-all',   () => setAllSections('watch', true));
-        wireButton('eve-watch-none',  () => setAllSections('watch', false));
-
-        // ========================================================
-        // DEVELOPER MODE / TWO-PAGE UI
-        // ========================================================
+    function wireDeveloperMode() {
         //
         // Page 0 = normal tracker UI (default)
         // Page 1 = developer / diagnostics UI
@@ -8179,7 +7232,6 @@
         let developerPage = 0;
 
         function showDeveloperPage(pageIndex) {
-
             developerPage =
                 settings.developerMode && pageIndex === 1 ? 1 : 0;
 
@@ -8192,36 +7244,27 @@
             }
 
             if (debugPage) {
-
                 const showDebugPage =
                     developerPage === 1 && settings.developerMode;
 
                 debugPage.hidden = !showDebugPage;
-
                 debugPage.classList.toggle(
                     'eve-ui-page-active',
                     showDebugPage
                 );
-
             }
 
             pageDots.forEach((dot, index) => {
-
                 const active =
                     index === developerPage && settings.developerMode;
 
                 dot.classList.toggle('eve-page-dot-active', active);
-
                 dot.setAttribute('aria-current', active ? 'page' : 'false');
-
             });
-
         }
 
         function applyDeveloperModeUI() {
-
             const enabled = !!settings.developerMode;
-
             const trackerPanel = document.getElementById('eve-tracker-panel');
             if (trackerPanel) {
                 trackerPanel.classList.toggle(
@@ -8243,12 +7286,10 @@
             }
 
             if (pageNavigation) {
-
                 // Always reserve the navigation area so the normal UI
                 // keeps a stable layout; only the dots are rendered
                 // when Developer Mode is on.
                 pageNavigation.hidden = false;
-
                 pageNavigation.classList.toggle(
                     'eve-dev-nav-disabled',
                     !enabled
@@ -8258,7 +7299,6 @@
                     'aria-hidden',
                     enabled ? 'false' : 'true'
                 );
-
             }
 
             pageDots.forEach(dot => {
@@ -8275,36 +7315,26 @@
             }
 
             showDeveloperPage(developerPage);
-
         }
 
         pageDots.forEach(dot => {
-
             dot.addEventListener('click', () => {
-
                 if (!settings.developerMode) {
                     return;
                 }
 
                 showDeveloperPage(Number(dot.dataset.page));
-
             });
-
         });
 
         if (developerModeCheckbox) {
-
             developerModeCheckbox.addEventListener('change', () => {
-
                 settings.developerMode = developerModeCheckbox.checked;
-
                 saveSettings();
 
                 // Enabling always starts on the normal page.
                 developerPage = 0;
-
                 applyDeveloperModeUI();
-
                 log(
                     'Developer Mode ' +
                     (
@@ -8313,64 +7343,74 @@
                             : 'DISABLED. Developer page hidden.'
                     )
                 );
-
             });
-
         }
 
         applyDeveloperModeUI();
+    }
 
-        // ========================================================
-        // DEBUG BUTTONS
-        // ========================================================
+    // ------------------------------------------------------------
+    // Every settings-backed control in the panel. Split out of
+    // createUI(), which was doing six unrelated jobs in 585 lines.
+    // ------------------------------------------------------------
 
-        wireButton('eve-debug-success', () => sendTestNotification('success'));
-        wireButton('eve-debug-failure', () => sendTestNotification('failure'));
-
-        wireButton('eve-debug-notify-diagnostic', () => {
-
-            log('Open this console and watch your desktop for ~10 seconds.');
-
-            runNotificationDiagnostic();
-
+    function wireTrackerSettings() {
+        // Applied immediately - cancels any pending reload if turned
+        // off, reschedules if turned on.
+        bindSetting('eve-auto-refresh', 'autoRefresh', {
+            after: restartAutoRefresh
         });
 
-        wireButton('eve-debug-persistence', () => {
-
-            savePreviousStates();
-
-            debugSnapshotBeforeRefresh('manual-button');
-
-            flushAlertLog();
-
-            log('Reloading page now to test persistence...');
-
-            location.reload();
-
+        bindSetting('eve-refresh-interval', 'refreshIntervalSeconds', {
+            coerce: Number,
+            after:  restartAutoRefresh
         });
 
-        wireButton('eve-clear-log', () => clearAlertLog());
+        updateRefreshCountdown();
 
+        bindSetting('eve-soft-refresh', 'softRefresh', {
+            after: enabled => {
+                // A deliberate re-tick clears the session-level
+                // failure lockout too.
+                if (enabled) {
+                    softRefreshDisabledForSession = false;
+                    softRefreshFailures = 0;
+                }
+            },
+            message: enabled =>
+                'Soft refresh ' +
+                (
+                    enabled
+                        ? 'ENABLED \u{2014} page content swaps in ' +
+                          'place, tracker position preserved.'
+                        : 'DISABLED \u{2014} using full page reloads.'
+                )
+        });
 
+        // writeBack: a rejected value must not stay in the box.
+        bindSetting(
+            'eve-notification-timeout',
+            'notificationTimeoutSeconds',
+            {
+                coerce: raw => {
+                    const value = Number(raw);
+                    return (!Number.isNaN(value) && value >= 0) ? value : 0;
+                },
+                writeBack: true,
+                message: seconds =>
+                    'Notification auto-close set to ' +
+                    `${seconds} seconds (0 = never auto-closes).`
+            }
+        );
+
+        wireButton('eve-show-all',   () => setAllSections('show', true));
+        wireButton('eve-hide-all',   () => setAllSections('show', false));
+        wireButton('eve-watch-all',  () => setAllSections('watch', true));
+        wireButton('eve-watch-none', () => setAllSections('watch', false));
     }
 
 
-    // ============================================================
-    // BUILD SECTION CONTROLS
-    // ============================================================
-    //
-    // Diffs the section set. The old build did list.innerHTML = '' and
-    // rebuilt every checkbox on every mutation tick (~4x/second during
-    // page activity), which thrashes layout and can destroy a checkbox
-    // the user is mid-click on. The set is unchanged almost always, so
-    // the common path is now just syncing checked states.
-    // ============================================================
-
-    let renderedSectionSignature = null;
-
-
     function buildSectionControls(groups) {
-
         const list = document.getElementById('eve-section-list');
 
         if (!list) {
@@ -8389,11 +7429,9 @@
         const signature = sections.join('|');
 
         if (signature === renderedSectionSignature) {
-
             // Same sections - just make sure the checkboxes agree with
             // the settings (e.g. after Show All / No Notifs).
             sections.forEach(section => {
-
                 const row =
                     list.querySelector(
                         `.eve-section-row[data-section="${CSS.escape(section)}"]`
@@ -8404,17 +7442,14 @@
                 }
 
                 const sectionSettings = getSectionSettings(section);
-
                 row.querySelector('.eve-show-checkbox').checked =
                     sectionSettings.show;
 
                 row.querySelector('.eve-watch-checkbox').checked =
                     sectionSettings.watch;
-
             });
 
             return;
-
         }
 
         renderedSectionSignature = signature;
@@ -8422,11 +7457,8 @@
         list.innerHTML = '';
 
         sections.forEach(section => {
-
             const sectionSettings = getSectionSettings(section);
-
             const row = document.createElement('div');
-
             row.className = 'eve-section-row';
             row.dataset.section = section;
 
@@ -8464,39 +7496,27 @@
 
             const showCheckbox = row.querySelector('.eve-show-checkbox');
             const watchCheckbox = row.querySelector('.eve-watch-checkbox');
-
             showCheckbox.checked = sectionSettings.show;
             watchCheckbox.checked = sectionSettings.watch;
-
             showCheckbox.addEventListener('change', () => {
-
                 sectionSettings.show = showCheckbox.checked;
-
                 saveSettings();
-
                 applyVisibility();
-
             });
 
             watchCheckbox.addEventListener('change', () => {
-
                 sectionSettings.watch = watchCheckbox.checked;
-
                 saveSettings();
-
                 log(
                     `Section ${section} notifications ` +
                     (sectionSettings.watch ? 'ON.' : 'OFF.') +
                     ' Transitions are still recorded in the alert log ' +
                     'either way.'
                 );
-
             });
 
             list.appendChild(row);
-
         });
-
     }
 
 
@@ -8505,7 +7525,6 @@
     // ============================================================
 
     function setAllSections(property, value) {
-
         const groups = getEveTableGroups();
 
         [
@@ -8523,7 +7542,6 @@
         buildSectionControls(groups);
 
         applyVisibility(groups);
-
     }
 
 
@@ -8541,43 +7559,29 @@
     // ============================================================
 
     function applyVisibility(groupsIn) {
-
         const groups = groupsIn || getEveTableGroups();
 
         withoutObserver(() => {
-
             groups.forEach(group => {
-
                 const visibility =
                     group.headers.map(header => {
-
                         const visible =
                             getSectionSettings(header.section).show;
 
                         header.element.style.display = visible ? '' : 'none';
-
                         return { column: header.column, visible: visible };
-
                     });
 
                 group.table.querySelectorAll('tbody tr').forEach(row => {
-
                     visibility.forEach(entry => {
-
                         const cell = row.children[entry.column];
-
                         if (cell) {
                             cell.style.display = entry.visible ? '' : 'none';
                         }
-
                     });
-
                 });
-
             });
-
         });
-
     }
 
     // ============================================================
@@ -8585,30 +7589,22 @@
     // ============================================================
 
     function injectCSS() {
-
         const style = document.createElement('style');
 
         style.textContent = `
             /* =====================================================
                TRACKER PANEL
                ===================================================== */
-
             /* =====================================================
                DRAGGABLE / COLLAPSIBLE TRACKER WINDOW
                ===================================================== */
-
-            #eve-tracker-panel.eve-tracker-window {
-                min-width: 300px;
-                max-width: 520px;
-            }
-
+            #eve-tracker-panel.eve-tracker-window { min-width: 300px; max-width: 520px; }
             #eve-tracker-panel .eve-panel-title {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
                 gap: 8px;
             }
-
             #eve-tracker-panel .eve-collapse-btn {
                 flex: 0 0 auto;
                 width: 27px;
@@ -8624,15 +7620,8 @@
                 line-height: 22px;
                 cursor: pointer;
             }
-
-            #eve-tracker-panel .eve-collapse-btn:hover {
-                background: #666;
-            }
-
-            #eve-tracker-panel.eve-tracker-collapsed {
-                width: 340px;
-            }
-
+            #eve-tracker-panel .eve-collapse-btn:hover { background: #666; }
+            #eve-tracker-panel.eve-tracker-collapsed { width: 340px; }
             #eve-tracker-panel {
                 position: fixed;
                 top: 10px;
@@ -8648,10 +7637,8 @@
                 padding: 12px;
                 font-family: Arial, Helvetica, sans-serif;
                 font-size: 13px;
-                box-shadow: 0 4px 15px
-                    rgba(0, 0, 0, .5);
+                box-shadow: 0 4px 15px rgba(0, 0, 0, .5);
             }
-
             .eve-panel-title {
                 display: flex;
                 align-items: center;
@@ -8660,18 +7647,8 @@
                 font-weight: bold;
                 margin-bottom: 7px;
             }
-
-            .eve-title-info {
-                display: flex;
-                flex-direction: column;
-                min-width: 0;
-                flex: 1 1 auto;
-            }
-
-            .eve-title-name {
-                line-height: 1.05;
-            }
-
+            .eve-title-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+            .eve-title-name { line-height: 1.05; }
             .eve-title-meta {
                 margin-top: 3px;
                 font-size: 11px;
@@ -8679,16 +7656,9 @@
                 opacity: .72;
                 white-space: nowrap;
             }
-
-            .eve-version {
-                margin-left: 6px;
-                font-weight: bold;
-                opacity: 1;
-            }
-
+            .eve-version { margin-left: 6px; font-weight: bold; opacity: 1; }
             /* Status badge shown on a collapsed summary line, so
                the section's state is readable without expanding. */
-
             .eve-summary-badge {
                 font-size: 10px;
                 font-weight: bold;
@@ -8697,32 +7667,17 @@
                 margin-left: 6px;
                 vertical-align: middle;
             }
-
-            .eve-badge-on {
-                background: #087f23;
-                color: #fff;
-            }
-
-            .eve-badge-off {
-                background: #7a2020;
-                color: #fff;
-            }
-
+            .eve-badge-on { background: #087f23; color: #fff; }
+            .eve-badge-off { background: #7a2020; color: #fff; }
             /* Final few seconds before a reload \u{2014} warns you that
                the page is about to change under you. */
-
-            .eve-badge-soon {
-                background: #b06a00;
-                color: #fff;
-            }
-
+            .eve-badge-soon { background: #b06a00; color: #fff; }
             /* =====================================================
                DETECTION HEALTH CHIP
                =====================================================
                Visible only while Developer Mode is enabled. It remains
                in the title row so the developer page and collapsed state
                use the same header treatment. */
-
             .eve-health-chip {
                 display: none;
                 flex: 0 0 auto;
@@ -8735,39 +7690,23 @@
                 border-radius: 3px;
                 cursor: help;
             }
-
-            #eve-tracker-panel.eve-developer-enabled .eve-health-chip {
-                display: inline-block;
-            }
-
-            .eve-health-ok {
-                background: #087f23;
-                color: #fff;
-            }
-
-            .eve-health-degraded {
-                background: #b06a00;
-                color: #fff;
-            }
-
+            #eve-tracker-panel.eve-developer-enabled .eve-health-chip { display: inline-block; }
+            .eve-health-ok { background: #087f23; color: #fff; }
+            .eve-health-degraded { background: #b06a00; color: #fff; }
             /* Deliberately the same red as a failure card. If this is
                showing, nothing is being monitored. */
-
             .eve-health-blind {
                 background: #b00000;
                 color: #fff;
                 animation: eve-health-pulse 1.6s ease-in-out infinite;
             }
-
             @keyframes eve-health-pulse {
                 0%, 100% { opacity: 1; }
                 50%      { opacity: .45; }
             }
-
             /* =====================================================
                ALERTS TOOLBAR \u{2014} FILTER + SEARCH
                ===================================================== */
-
             #eve-alert-toolbar {
                 display: flex;
                 flex-direction: column;
@@ -8776,17 +7715,8 @@
                 background: #232323;
                 border-bottom: 1px solid #444;
             }
-
-            .eve-alerts-collapsed #eve-alert-toolbar {
-                display: none;
-            }
-
-            #eve-alert-filters {
-                display: flex;
-                gap: 4px;
-                flex-wrap: wrap;
-            }
-
+            .eve-alerts-collapsed #eve-alert-toolbar { display: none; }
+            #eve-alert-filters { display: flex; gap: 4px; flex-wrap: wrap; }
             .eve-filter-btn {
                 background: #333;
                 color: #ccc;
@@ -8797,29 +7727,19 @@
                 font-weight: bold;
                 cursor: pointer;
             }
-
-            .eve-filter-btn:hover {
-                background: #414141;
-            }
-
+            .eve-filter-btn:hover { background: #414141; }
             .eve-filter-btn.eve-filter-active {
                 background: #0d6efd;
                 border-color: #0d6efd;
                 color: #fff;
             }
-
             /* DEBUG visibility is a modifier, never a category tab. */
-
-            .eve-debug-visibility-toggle {
-                margin-left: 2px;
-            }
-
+            .eve-debug-visibility-toggle { margin-left: 2px; }
             .eve-debug-visibility-toggle.eve-debug-hidden {
                 background: #555;
                 border-color: #777;
                 color: #fff;
             }
-
             #eve-alert-search {
                 width: 100%;
                 box-sizing: border-box;
@@ -8830,34 +7750,29 @@
                 padding: 4px 7px;
                 font-size: 12px;
             }
-
             /* =====================================================
                SESSION SUMMARY
                ===================================================== */
-
-
             /* Small byline directly under the panel title. */
-
-            .eve-byline {
-                font-size: 10px;
-                color: #999;
-                margin-top: -4px;
-                margin-bottom: 6px;
-            }
-
+            .eve-byline { font-size: 10px; color: #999; margin-top: -4px; margin-bottom: 6px; }
             /* Contact footer \u{2014} sits at the very bottom of the
                panel, deliberately small so it takes minimal space. */
-
+            /* Merged from two separate .eve-credit rules. The second
+               one (a later flex layout pass) overrode margin-top,
+               so 2px is the value that was actually in effect. */
             .eve-credit {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 6px;
                 font-size: 10px;
                 color: #999;
                 line-height: 1.4;
-                margin-top: 12px;
+                margin-top: 2px;
                 padding-top: 6px;
                 border-top: 1px solid #444;
                 word-break: break-word;
             }
-
             .eve-section-title {
                 font-weight: bold;
                 border-bottom: 1px solid #555;
@@ -8865,14 +7780,7 @@
                 margin-top: 10px;
                 margin-bottom: 7px;
             }
-
-            .eve-buttons {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 5px;
-                margin-bottom: 8px;
-            }
-
+            .eve-buttons { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
             .eve-buttons button {
                 cursor: pointer;
                 padding: 5px 8px;
@@ -8881,11 +7789,7 @@
                 background: #333;
                 color: white;
             }
-
-            .eve-buttons button:hover {
-                background: #555;
-            }
-
+            .eve-buttons button:hover { background: #555; }
             .eve-refresh-controls {
                 display: flex;
                 align-items: center;
@@ -8894,7 +7798,6 @@
                 padding: 6px 0;
                 flex-wrap: wrap;
             }
-
             .eve-refresh-toggle {
                 display: flex;
                 align-items: center;
@@ -8902,13 +7805,7 @@
                 cursor: pointer;
                 font-weight: bold;
             }
-
-            .eve-refresh-interval {
-                display: flex;
-                align-items: center;
-                gap: 5px;
-            }
-
+            .eve-refresh-interval { display: flex; align-items: center; gap: 5px; }
             .eve-refresh-interval select {
                 padding: 3px 5px;
                 border: 1px solid #777;
@@ -8916,25 +7813,12 @@
                 background: #333;
                 color: white;
             }
-
-            .eve-refresh-status {
-                font-size: 11px;
-                color: #aaa;
-                margin-bottom: 5px;
-            }
-
+            .eve-refresh-status { font-size: 11px; color: #aaa; margin-bottom: 5px; }
             /* =====================================================
                TWO-PAGE UI / SUBTLE DEVELOPER MODE
                ===================================================== */
-
-            .eve-ui-page {
-                width: 100%;
-            }
-
-            .eve-ui-page[hidden] {
-                display: none !important;
-            }
-
+            .eve-ui-page { width: 100%; }
+            .eve-ui-page[hidden] { display: none !important; }
             .eve-page-heading {
                 font-size: 12px;
                 font-weight: bold;
@@ -8944,37 +7828,26 @@
                 margin-bottom: 4px;
                 letter-spacing: 0.2px;
             }
-
             .eve-page-navigation {
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 gap: 5px;
-                /* Always reserve this small amount of space. When
-                   Developer Mode is OFF, the dots are hidden and this
-                   becomes a subtle empty placeholder so the main UI
-                   does not shift when Dev is toggled. */
-                height: 16px;
+                /* Always reserve this small amount of space. When Developer Mode is OFF, the dots are hidden and this becomes a subtle empty placeholder so the main UI does not shift when Dev is toggled. */ height: 16px;
                 margin-top: 4px;
                 user-select: none;
             }
-
-            .eve-page-navigation[hidden] {
-                display: flex !important;
-            }
-
+            .eve-page-navigation[hidden] { display: flex !important; }
             .eve-page-navigation.eve-dev-nav-disabled .eve-page-dot {
                 display: none !important;
                 visibility: hidden;
                 pointer-events: none;
             }
-
             .eve-page-dot[hidden] {
                 display: none !important;
                 visibility: hidden;
                 pointer-events: none;
             }
-
             .eve-page-dot {
                 width: 6px;
                 height: 6px;
@@ -8988,12 +7861,7 @@
                 cursor: pointer;
                 box-shadow: none;
             }
-
-            .eve-page-dot:hover {
-                opacity: 1;
-                background: #888;
-            }
-
+            .eve-page-dot:hover { opacity: 1; background: #888; }
             .eve-page-dot.eve-page-dot-active {
                 width: 7px;
                 height: 7px;
@@ -9002,15 +7870,6 @@
                 background: #bbb;
                 opacity: 1;
             }
-
-            .eve-credit {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 6px;
-                margin-top: 2px;
-            }
-
             .eve-credit-contact {
                 min-width: 0;
                 flex: 1;
@@ -9018,11 +7877,9 @@
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-
             /* Intentionally tiny/subtle. This is not a normal user
                setting; it is simply the entry point to the developer
                page for people who need the under-the-hood tools. */
-
             .eve-developer-footer-toggle {
                 display: inline-flex;
                 align-items: center;
@@ -9036,12 +7893,7 @@
                 opacity: 0.45;
                 transition: opacity 0.15s ease;
             }
-
-            .eve-developer-footer-toggle:hover {
-                opacity: 0.9;
-                color: #aaa;
-            }
-
+            .eve-developer-footer-toggle:hover { opacity: 0.9; color: #aaa; }
             .eve-developer-footer-toggle input {
                 width: 10px;
                 height: 10px;
@@ -9050,24 +7902,12 @@
                 cursor: pointer;
                 accent-color: #777;
             }
-
-            .eve-developer-footer-toggle span {
-                line-height: 1;
-            }
-
+            .eve-developer-footer-toggle span { line-height: 1; }
             /* =====================================================
                COLLAPSIBLE DEBUG MENUS
                ===================================================== */
-
-            .eve-collapse {
-                margin-top: 10px;
-            }
-
-            .eve-collapse-outer {
-                border-top: 1px solid #444;
-                padding-top: 8px;
-            }
-
+            .eve-collapse { margin-top: 10px; }
+            .eve-collapse-outer { border-top: 1px solid #444; padding-top: 8px; }
             .eve-collapse-title {
                 cursor: pointer;
                 font-size: 14px;
@@ -9078,60 +7918,23 @@
                 list-style: none;
                 user-select: none;
             }
-
-            .eve-collapse-title::-webkit-details-marker {
-                display: none;
-            }
-
+            .eve-collapse-title::-webkit-details-marker { display: none; }
             .eve-collapse-title::before {
                 content: '\u{25b8} ';
                 display: inline-block;
                 width: 14px;
             }
-
-            .eve-collapse[open] > .eve-collapse-title::before {
-                content: '\u{25be} ';
-            }
-
-            .eve-collapse-title:hover {
-                background: #333;
-            }
-
-            .eve-collapse-body {
-                padding-left: 8px;
-            }
-
-            .eve-debug-hint {
-                font-size: 11px;
-                color: #999;
-                margin-bottom: 6px;
-                line-height: 1.4;
-            }
-
-            .eve-section-row {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 4px 0;
-            }
-
-            .eve-section-name {
-                font-weight: bold;
-                width: 45px;
-            }
-
-            .eve-section-row label {
-                cursor: pointer;
-            }
-
-            .eve-section-row input {
-                cursor: pointer;
-            }
-
+            .eve-collapse[open] > .eve-collapse-title::before { content: '\u{25be} '; }
+            .eve-collapse-title:hover { background: #333; }
+            .eve-collapse-body { padding-left: 8px; }
+            .eve-debug-hint { font-size: 11px; color: #999; margin-bottom: 6px; line-height: 1.4; }
+            .eve-section-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+            .eve-section-name { font-weight: bold; width: 45px; }
+            .eve-section-row label { cursor: pointer; }
+            .eve-section-row input { cursor: pointer; }
             /* =====================================================
                PERSISTENT ALERT CONTAINER
                ===================================================== */
-
             /* The container is a viewport-bounded flex column: header
                and toolbar take their natural height, the alert list
                takes what is left. The list used to carry a hard
@@ -9141,27 +7944,14 @@
                so the list ran past the bottom of the screen and took
                its scrollbar with it. Dragging the thumb then ran out of
                screen before it ran out of track. */
-
             #eve-alert-container {
                 position: fixed;
                 top: 10px;
                 left: 10px;
                 width: 430px;
                 max-width: calc(100vw - 20px);
-
-                /* Starting value only. syncAlertPanelHeight() overwrites
-                   this with the space actually below the panel, because
-                   the panel is draggable: a viewport-relative cap is
-                   measured from the top of the SCREEN, while the list
-                   starts at the top of the PANEL. Drag the panel down
-                   and the two diverge by exactly the amount that ran
-                   off the bottom of the screen. */
-                max-height: calc(100vh - 20px);
-
-                /* Nothing escapes the box even when the panel is
-                   dragged somewhere with no room left below it. */
-                overflow: hidden;
-
+                /* Starting value only. syncAlertPanelHeight() overwrites this with the space actually below the panel, because the panel is draggable: a viewport-relative cap is measured from the top of the SCREEN, while the list starts at the top of the PANEL. Drag the panel down and the two diverge by exactly the amount that ran off the bottom of the screen. */ max-height: calc(100vh - 20px);
+                /* Nothing escapes the box even when the panel is dragged somewhere with no room left below it. */ overflow: hidden;
                 z-index: 2147483647;
                 display: none;
                 flex-direction: column;
@@ -9170,12 +7960,7 @@
                 border-radius: 8px;
                 font-family: Arial, Helvetica, sans-serif;
             }
-
-            #eve-alert-header,
-            #eve-alert-toolbar {
-                flex: 0 0 auto;
-            }
-
+            #eve-alert-header, #eve-alert-toolbar { flex: 0 0 auto; }
             #eve-alert-header {
                 display: flex;
                 justify-content: space-between;
@@ -9188,28 +7973,10 @@
                 font-size: 15px;
                 font-weight: bold;
             }
-
-            #eve-alert-toggle {
-                cursor: pointer;
-                user-select: none;
-                flex: 1;
-            }
-
-            #eve-alert-caret {
-                display: inline-block;
-                width: 14px;
-            }
-
-            #eve-alert-count {
-                opacity: .8;
-                font-weight: normal;
-            }
-
-            #eve-alert-header-actions {
-                display: flex;
-                gap: 6px;
-            }
-
+            #eve-alert-toggle { cursor: pointer; user-select: none; flex: 1; }
+            #eve-alert-caret { display: inline-block; width: 14px; }
+            #eve-alert-count { opacity: .8; font-weight: normal; }
+            #eve-alert-header-actions { display: flex; gap: 6px; }
             #eve-alert-header-actions button {
                 background: #3a3a3a;
                 color: white;
@@ -9220,19 +7987,10 @@
                 font-weight: bold;
                 cursor: pointer;
             }
-
-            #eve-alert-header-actions button:hover {
-                background: #4a4a4a;
-            }
-
+            #eve-alert-header-actions button:hover { background: #4a4a4a; }
             #eve-alert-body {
                 flex: 1 1 auto;
-
-                /* Without this a flex item refuses to shrink below its
-                   content height, overflow-y never engages, and the
-                   list pushes the container past the viewport again. */
-                min-height: 0;
-
+                /* Without this a flex item refuses to shrink below its content height, overflow-y never engages, and the list pushes the container past the viewport again. */ min-height: 0;
                 overflow-y: auto;
                 overscroll-behavior: contain;
                 padding: 10px;
@@ -9240,102 +7998,59 @@
                 flex-direction: column;
                 gap: 10px;
             }
-
-            .eve-alerts-collapsed #eve-alert-body {
-                display: none;
-            }
-
-            .eve-alerts-collapsed #eve-alert-header {
-                border-radius: 6px;
-            }
-
+            .eve-alerts-collapsed #eve-alert-body { display: none; }
+            .eve-alerts-collapsed #eve-alert-header { border-radius: 6px; }
             /* =====================================================
                ALERT
                ===================================================== */
-
             .eve-alert {
                 position: relative;
                 border-radius: 6px;
                 padding: 8px 10px;
                 color: white;
                 font-family: Arial, Helvetica, sans-serif;
-                box-shadow: 0 3px 12px
-                    rgba(0, 0, 0, .5);
+                box-shadow: 0 3px 12px rgba(0, 0, 0, .5);
                 border: 1px solid rgba(255, 255, 255, .65);
             }
-
-            .eve-alert-clickable {
-                cursor: pointer;
-            }
-
-            .eve-alert-clickable:hover {
-                filter: brightness(1.08);
-            }
-
+            .eve-alert-clickable { cursor: pointer; }
+            .eve-alert-clickable:hover { filter: brightness(1.08); }
             /* =====================================================
                SUCCESS
                ===================================================== */
-
-            .eve-success {
-                background: #087f23;
-            }
-
+            .eve-success { background: #087f23; }
             /* =====================================================
                FAILURE
                ===================================================== */
-
-            .eve-failure {
-                background: #b00000;
-            }
-
+            .eve-failure { background: #b00000; }
             /* =====================================================
                PRE-TEST FAILURE
                ===================================================== */
-
-            .eve-pretest {
-                background: #8b0000;
-            }
-
+            .eve-pretest { background: #8b0000; }
             /* =====================================================
                PRE-TEST PASS
                =====================================================
                Green, because it is a pass - but a distinctly darker
                green than a full TEST PASS, because the server has only
                cleared pre-test and its real test has not reported. */
-
-            .eve-pretest-pass {
-                background: #055c19;
-            }
-
+            .eve-pretest-pass { background: #055c19; }
             /* =====================================================
                SYS_DEKIT  (diagnostic, not a result)
                =====================================================
                Deliberately neither red nor green. A SYS_DEKIT card is
                only visible with DEBUG shown, and when it is, it must
                not read as pass or fail at a glance. */
-
-            .eve-dekit {
-                background: #33383f;
-                border: 1px solid #5a626c;
-            }
-
+            .eve-dekit { background: #33383f; border: 1px solid #5a626c; }
             /* =====================================================
                PHASE PROVENANCE
                =====================================================
                An alert whose PRE-TEST vs TEST label could not be
                verified against the detail page must not look identical
                to one that was. The dashed edge is the tell. */
-
-            .eve-alert-unverified {
-                border-style: dashed;
-                border-color: rgba(255, 255, 255, .9);
-            }
-
+            .eve-alert-unverified { border-style: dashed; border-color: rgba(255, 255, 255, .9); }
             /* Confirmation provenance is diagnostic detail, not
                operator-facing. It is always BUILT (and always written
                to the log and both exports) but only rendered while
                Developer Mode is on. */
-
             .eve-alert-phase-note {
                 display: none;
                 font-size: 11px;
@@ -9343,15 +8058,10 @@
                 margin-bottom: 4px;
                 word-break: break-word;
             }
-
-            body.eve-dev-mode .eve-alert-phase-note {
-                display: block;
-            }
-
+            body.eve-dev-mode .eve-alert-phase-note { display: block; }
             /* =====================================================
                ALERT HEADER
                ===================================================== */
-
             .eve-alert-header {
                 display: flex;
                 justify-content: space-between;
@@ -9360,11 +8070,9 @@
                 font-weight: bold;
                 margin-bottom: 6px;
             }
-
             /* =====================================================
                CLOSE BUTTON
                ===================================================== */
-
             .eve-alert-close {
                 border: none;
                 background: transparent;
@@ -9375,19 +8083,13 @@
                 cursor: pointer;
                 padding: 0 2px;
             }
-
-            .eve-alert-close:hover {
-                opacity: .7;
-            }
-
+            .eve-alert-close:hover { opacity: .7; }
             /* =====================================================
                MESSAGE
                ===================================================== */
-
             /* =====================================================
                CLICK-TO-COPY SERIAL
                ===================================================== */
-
             .eve-alert-serial {
                 display: flex;
                 align-items: center;
@@ -9406,51 +8108,27 @@
                 cursor: pointer;
                 text-align: left;
             }
-
             .eve-alert-serial:hover {
                 background: rgba(0, 0, 0, .45);
                 border-color: rgba(255, 255, 255, .6);
             }
-
-            .eve-alert-serial-value {
-                word-break: break-all;
-            }
-
+            .eve-alert-serial-value { word-break: break-all; }
             .eve-alert-copy-hint {
                 font-size: 11px;
                 opacity: .75;
                 white-space: nowrap;
                 font-family: Arial, Helvetica, sans-serif;
             }
-
-            .eve-alert-serial.eve-copied {
-                background: rgba(255, 255, 255, .25);
-            }
-
-            .eve-alert-serial.eve-copy-failed {
-                background: rgba(0, 0, 0, .6);
-            }
-
+            .eve-alert-serial.eve-copied { background: rgba(255, 255, 255, .25); }
+            .eve-alert-serial.eve-copy-failed { background: rgba(0, 0, 0, .6); }
             /* =====================================================
                LOCATION + STATUS ROWS
                ===================================================== */
-
-            .eve-alert-loc {
-                font-size: 13px;
-                font-weight: bold;
-                margin-bottom: 3px;
-            }
-
-            .eve-alert-status {
-                font-size: 13px;
-                font-weight: bold;
-                margin-bottom: 5px;
-            }
-
+            .eve-alert-loc { font-size: 13px; font-weight: bold; margin-bottom: 3px; }
+            .eve-alert-status { font-size: 13px; font-weight: bold; margin-bottom: 5px; }
             /* =====================================================
                ALERT TIMESTAMP
                ===================================================== */
-
             .eve-alert-time {
                 font-size: 14px;
                 font-weight: bold;
@@ -9458,12 +8136,9 @@
                 padding-top: 4px;
                 border-top: 1px solid rgba(255, 255, 255, .2);
             }
-
-
         `;
 
         document.head.appendChild(style);
-
     }
 
 
@@ -9472,16 +8147,12 @@
     // ============================================================
 
     function initialize() {
-
         // Everything below runs inside an error boundary. A throw here
         // previously left a half-built UI and a silently dead tracker,
         // which for a monitoring tool is the worst failure mode.
         try {
-
             settings = loadSettings();
-
             previousStates = loadPreviousStates();
-
             recentAlerts = loadRecentAlerts();
 
             // Late second pass. The real work is done at
@@ -9490,7 +8161,6 @@
             // which is why the old build's single call here did not
             // reliably stop the page reloading on the server's timer.
             const strippedMeta = stripMetaRefresh(document);
-
             if (strippedMeta) {
                 warn(
                     `Removed ${strippedMeta} page-level meta refresh ` +
@@ -9500,16 +8170,13 @@
             }
 
             debugCompareAfterRefresh();
-
             checkNotificationPermission();
 
             // Before anything reads the log: drop whatever is left
             // from an earlier day so counts, exports and the panel all
             // start the session agreeing.
             checkLogDayRollover();
-
             injectCSS();
-
             if (document.body) {
                 document.body.classList.toggle(
                     'eve-dev-mode',
@@ -9524,29 +8191,13 @@
             // restored cards are styled, and before scan() so newly
             // detected alerts stack above them.
             restorePersistedAlerts();
-
             const groups = getEveTableGroups();
-
             applyVisibility(groups);
-
             scan(groups);
-
             startMasterTick();
-
             observePage();
-
             window.addEventListener('beforeunload', () => {
-
-                savePreviousStates();
-
-                saveRecentAlerts();
-
-                // Anything recorded since the last debounced write
-                // must not be lost on navigation.
-                flushAlertLog();
-
-                debugSnapshotBeforeRefresh('manual-refresh');
-
+                persistBeforeUnload(true);
             });
 
             // ------------------------------------------------
@@ -9564,9 +8215,7 @@
             // this.
 
             document.addEventListener('visibilitychange', () => {
-
                 if (document.hidden) {
-
                     reportHealth(
                         'DEGRADED',
                         'Tab is in the background. Browser timer ' +
@@ -9576,30 +8225,19 @@
                     );
 
                     flushAlertLog();
-
                     return;
-
                 }
 
                 // Back in the foreground: assume everything is stale.
                 blindScans = 0;
-
                 restartAutoRefresh();
-
                 scan();
-
             });
 
             // beforeunload is unreliable on tab discard, mobile and
             // crash. pagehide is the dependable half of the pair.
             window.addEventListener('pagehide', () => {
-
-                savePreviousStates();
-
-                saveRecentAlerts();
-
-                flushAlertLog();
-
+                persistBeforeUnload(false);
             });
 
             log(
@@ -9610,9 +8248,7 @@
             );
 
             startAutoRefresh();
-
         } catch (error) {
-
             fail(
                 'FATAL: the tracker failed to start. The page is NOT ' +
                 'being monitored. Hard-refresh (Ctrl+Shift+R); if it ' +
@@ -9621,9 +8257,7 @@
             );
 
             showFatalBanner(error);
-
         }
-
     }
 
 
@@ -9632,14 +8266,33 @@
     // a tech watches a panel that is not watching anything.
     // ------------------------------------------------------------
 
+    // ------------------------------------------------------------
+    // Everything that must survive a navigation, written from one
+    // place. beforeunload and pagehide are BOTH registered
+    // deliberately: beforeunload is unreliable on tab discard and
+    // crash, pagehide is the dependable half of the pair. They ran
+    // the same three calls from two copied bodies.
+    // ------------------------------------------------------------
+
+    function persistBeforeUnload(takeSnapshot) {
+        savePreviousStates();
+
+        saveRecentAlerts();
+
+        // Anything recorded since the last debounced write must not
+        // be lost on navigation.
+        flushAlertLog();
+
+        if (takeSnapshot) {
+            debugSnapshotBeforeRefresh('manual-refresh');
+        }
+    }
+
+
     function showFatalBanner(error) {
-
         try {
-
             const banner = document.createElement('div');
-
             banner.id = 'eve-tracker-panel';
-
             banner.style.cssText =
                 'position:fixed;top:10px;right:10px;z-index:2147483647;' +
                 'max-width:340px;padding:12px;border-radius:8px;' +
@@ -9652,11 +8305,9 @@
                 `Error: ${error && error.message ? error.message : error}`;
 
             document.body.appendChild(banner);
-
         } catch (bannerError) {
             // Nothing further we can do.
         }
-
     }
 
 
@@ -9673,7 +8324,6 @@
     // ============================================================
 
     function startMasterTick() {
-
         const SCAN_TICKS     = 4;   // scan() every 4s
         const RELATIVE_TICKS = 15;  // relative labels every 15s
         const WATCHDOG_TICKS = 10;  // refresh watchdog every 10s
@@ -9683,11 +8333,8 @@
         let tick = 0;
 
         setInterval(() => {
-
             tick += 1;
-
             updateRefreshCountdown();
-
             if (tick % SCAN_TICKS === 0) {
                 scan();
             }
@@ -9707,9 +8354,7 @@
             if (tick % LOG_DAY_TICKS === 0) {
                 checkLogDayRollover();
             }
-
         }, 1000);
-
     }
 
 
@@ -9733,17 +8378,12 @@
     // ============================================================
 
     function bootstrap() {
-
         let earlyObserver = null;
 
         try {
-
             if (document.documentElement) {
-
                 stripMetaRefresh(document);
-
                 earlyObserver = new MutationObserver(records => {
-
                     // stripMetaRefresh() runs querySelectorAll over the
                     // WHOLE document. Unfiltered, this fired for every
                     // parse mutation on a page of hundreds of table
@@ -9751,11 +8391,8 @@
                     // the browser is trying to render. <meta> only ever
                     // appears in <head>.
                     let sawMeta = false;
-
                     for (const record of records) {
-
                         for (const node of record.addedNodes) {
-
                             if (
                                 node.nodeType === 1 &&
                                 (
@@ -9766,13 +8403,11 @@
                                 sawMeta = true;
                                 break;
                             }
-
                         }
 
                         if (sawMeta) {
                             break;
                         }
-
                     }
 
                     if (!sawMeta) {
@@ -9786,16 +8421,13 @@
                             'parse time.'
                         );
                     }
-
                 });
 
                 earlyObserver.observe(document.documentElement, {
                     childList: true,
                     subtree: true
                 });
-
             }
-
         } catch (error) {
             console.warn(
                 LOG_PREFIX + ' Early meta-refresh guard failed:',
@@ -9804,14 +8436,12 @@
         }
 
         const start = () => {
-
             if (earlyObserver) {
                 earlyObserver.disconnect();
                 earlyObserver = null;
             }
 
             initialize();
-
         };
 
         if (document.readyState === 'loading') {
@@ -9819,10 +8449,8 @@
         } else {
             start();
         }
-
     }
 
 
     bootstrap();
-
 })();
