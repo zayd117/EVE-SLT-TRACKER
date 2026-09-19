@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         EVE SLT Tracker
+// @name         EVE SLT Tracker v0.9.7
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.6
+// @version      0.9.7
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -12,10 +12,119 @@
 // @grant        GM_notification
 // @grant        GM_openInTab
 // @grant        GM_info
+// @grant        GM_xmlhttpRequest
+// @connect      jira.synnex.com
 // @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // ==/UserScript==
 
+// ================================================================
+// v0.9.7 - JIRA, CARD REDESIGN, REFRESH LOCKED ON
+// ================================================================
+//
+// JIRA
+//   * Jira button on every alert card, bottom-right. Opens the MOST
+//     RECENTLY UPDATED ticket for the serial as /browse/<KEY> on its
+//     own - never the list of every ticket that ever mentioned it.
+//   * FAIL / PRE-TEST FAIL cards look the ticket up in the background
+//     (always on) through GM_xmlhttpRequest with the browser's own Jira
+//     login - no credentials stored or sent anywhere else. The card
+//     shows the key and a status-colour dot. Two requests at a time,
+//     one result each (ORDER BY updated DESC, maxResults=1), cached in
+//     sessionStorage so a refresh does not repeat them. Not logged in
+//     -> lookups pause and resume when the tab regains focus.
+//   * Clicking Jira on a card whose ticket is not known yet (PASS
+//     cards, lookup still running, cached result >10 min old) opens
+//     the tab immediately, asks Jira, then sends the tab to the newest
+//     ticket. If Jira cannot be asked it opens a search sorted by
+//     Updated, newest first.
+//   * Desktop toast click opens the Jira ticket by default.
+//   * A FAIL / PRE-TEST FAIL card's ticket is the one raised for THAT
+//     failure (newest created since it) - never the previous failure's,
+//     which is what "newest ticket" gives right after a fail. Two ways
+//     it can be missing, both handled:
+//       not raised yet - the company's Jira bot usually takes 5-10 min
+//         (varies). For 20 min the card says "Ticket pending" ("No
+//         ticket yet" on a pre-test fail) and checks every 30 s from
+//         4-12 min, every minute otherwise; a card click opens a tab
+//         that waits and goes to the ticket once raised; a toast click
+//         opens it by itself once raised.
+//       never raised - common for pre-test fails. After 20 min the card
+//         says "No ticket" and keeps checking every 5 min for 2 h in
+//         case one comes late. A click shows the options: the most
+//         recent existing ticket (marked as older) or a Jira search.
+//   * Alert search also matches the ticket key.
+//   * Jira settings (toast click target, Jira URL) are visible only
+//     with Dev checked.
+//
+// AUTO REFRESH - ALWAYS ON
+//   * Auto refresh and soft refresh are no longer switchable. Every
+//     cycle is a soft refresh; a full page reload happens ONLY when a
+//     soft refresh fails, as the fail-safe. The old switches stored in
+//     settings are ignored and dropped on load.
+//   * Interval: 30s default, can only go faster (20s / 10s). A stored
+//     60s+ value from an older build is reset to 30s.
+//   * No longer a menu: one row with a countdown, a progress bar and
+//     the interval dropdown. Status line, last scan and the
+//     explanation are Dev-only.
+//
+// KEEP AWAKE (tab "falls asleep" / goes blank)
+//   * Cause: Edge Sleeping tabs / Chrome Memory Saver freeze or unload
+//     a background tab. Only the browser's "Always keep these sites
+//     active" list reliably stops it. The tracker now:
+//       - holds a Web Lock (Chromium will not freeze a page holding
+//         one; https pages only),
+//       - drives its 1s tick from a Worker so a hidden tab's timers
+//         are not cut to once a minute (falls back to setInterval),
+//         and the tick fires an overdue refresh the throttled timer
+//         missed,
+//       - detects sleep (document.wasDiscarded, freeze/resume, tick
+//         gaps), refreshes immediately on wake, shows a banner with
+//         the setting to change + "Copy site", and a toast for naps
+//         of a minute or more (max one per 10 min). Baselines survive
+//         in sessionStorage, so changes made while asleep are still
+//         caught - late.
+//   * Dev status line shows lock / tick source / sleep count.
+//
+// DEAD CODE REMOVED
+//   * softRefreshDisabledForSession / softRefreshFailures /
+//     MAX_SOFT_REFRESH_FAILURES / softRefreshEnabled(). Every soft
+//     refresh failure already falls back to location.reload(), which
+//     resets the in-memory counter - so the "3 failures, disable for
+//     the session" branch could never be reached.
+//   * .eve-byline and .eve-refresh-toggle CSS - no element uses them.
+//
+// UI
+//   * Alert cards restyled: dark card, coloured accent edge and status
+//     dot instead of a full red/green fill. Same information, same
+//     order. TEST PASS is mint (#09e68a), TEST FAIL light red (#e60956),
+//     Pre-test FAIL dark red (#910421), pre-test PASS teal, so the four
+//     results read apart at a glance. Alerts window and tracker panel
+//     restyled to match - CSS only, layout rules untouched.
+//   * Refresh row: pulsing live dot, interval dropdown, decimal
+//     countdown ("26.4s", repainted ~10x/s while visible), progress
+//     bar and a Refresh-now button (same soft path as the timer).
+//   * Dev toggle drawn dark and faint - only noticeable if you know
+//     it is there.
+//     Collapsing the panel keeps the countdown visible in its title.
+//   * Filter chips show live counts (All / Fails / Pre-test / Passes).
+//   * "X All" needs a second click within 3s - one stray click used to
+//     wipe every card.
+//   * Search placeholder mentions Jira; Esc clears the search.
+//   * Show / Notifs column headers explain themselves on hover.
+//   * Tracker panel: bulk buttons in one even row; sections as a card
+//     with Show / Notifs column headers and a switch per cell (the
+//     same checkboxes, drawn as switches - wiring unchanged).
+//   * Developer page and Jira settings are flat cards - no fold-out
+//     menus, since both are already behind Dev. With no menus left,
+//     setupMenuStatePersistence() and MENU_STATE_KEY are deleted.
+//   * A new alert re-opens the Alerts window if it was collapsed (only
+//     when the new card is visible). Reloads keep the collapsed state.
+//   * Developer page: "Pre-test fail" test button (dark-red PRE-TEST FAIL
+//     card + toast, DEBUG serial, never logged) replaces Persistence
+//     test.
+//   * Tracker panel scrollbar matches the alert list: thin and dark.
+//
 // ================================================================
 // v0.9.6 - STRUCTURAL PASS (no intended behaviour change)
 // ================================================================
@@ -222,7 +331,7 @@
             GM_info.script.version
         )
             ? GM_info.script.version
-            : '0.9.11';
+            : '0.9.7';
 
     const LOG_PREFIX = '[EVE Tracker]';
 
@@ -239,9 +348,10 @@
     const LOG_DAY_KEY         = 'eveRackTrackerAlertLogDay';
     const ALERTS_COLLAPSED_KEY = 'eveRackTrackerAlertsCollapsed';
     const PANEL_POSITION_KEY  = 'eveRackTrackerPanelPosition';
-    const MENU_STATE_KEY      = 'eveRackTrackerMenuState';
     const DEBUG_SNAPSHOT_KEY  = 'eveRackTrackerDebugSnapshot';
     const ALERT_PANEL_POSITION_KEY = 'eveRackTrackerAlertPanelPosition';
+    const JIRA_CACHE_KEY      = 'eveRackTrackerJiraCache';
+    const HEARTBEAT_KEY       = 'eveRackTrackerHeartbeat';
 
 
     // ============================================================
@@ -318,7 +428,6 @@
     const ALERT_COOLDOWN_MS         = 60000;
     const MAX_RECENT_ALERT_KEYS     = 500;
     const SOFT_REFRESH_TIMEOUT_MS   = 15000;
-    const MAX_SOFT_REFRESH_FAILURES = 3;
     const LOG_WRITE_DEBOUNCE_MS     = 2000;
     const OBSERVER_DEBOUNCE_MS      = 250;
 
@@ -347,6 +456,11 @@
 
     const EVE_HEADER_PATTERN = /^TA\.([^-]+)-EVE(\d+)/i;
 
+    // Auto refresh is always on. 30s is the slowest allowed - the only
+    // choice is to go faster.
+    const REFRESH_INTERVAL_OPTIONS = [30, 20, 10];
+    const DEFAULT_REFRESH_SECONDS  = 30;
+
 
     // ============================================================
     // SETTINGS
@@ -362,13 +476,10 @@
         // happens, so the log can never develop silent holes.
         sections: {},
 
-        autoRefresh: true,
-
-        // true  = re-fetch the page and swap content in place.
-        // false = classic full location.reload().
-        softRefresh: true,
-
-        refreshIntervalSeconds: 60,
+        // Auto refresh and soft refresh are ALWAYS on and are not
+        // settings. Every cycle soft-refreshes; a full reload happens
+        // only when a soft refresh fails. See REFRESH_INTERVAL_OPTIONS.
+        refreshIntervalSeconds: DEFAULT_REFRESH_SECONDS,
 
         // 0 = desktop toast never auto-closes.
         notificationTimeoutSeconds: 0,
@@ -378,7 +489,15 @@
 
         // Gate for the developer page, the debug snapshot/compare
         // machinery, and the diagnostic tools.
-        developerMode: false
+        developerMode: false,
+
+        // Jira. Uses the browser's existing Jira login; nothing is
+        // stored beyond the ticket key/status cache in sessionStorage.
+        // FAIL-card ticket lookup is always on - not a setting.
+        jiraBaseUrl: 'https://jira.synnex.com',
+
+        // What a click on a desktop toast opens: 'jira' | 'detail' | 'both'
+        notificationClickTarget: 'jira'
     };
 
 
@@ -395,17 +514,11 @@
     let autoRefreshDueAt = null;
 
     let softRefreshInFlight = false;
-    let softRefreshFailures = 0;
 
     // Hoisted so autoRefreshWatchdog() can ABORT a hung fetch, not
     // merely clear the flag and leave the request running underneath
     // a second call that could swap tables concurrently.
     let softRefreshController = null;
-
-    // Session-only. Repeated failures must NOT write a permanent
-    // disable into localStorage - the user would never get soft
-    // refresh back without knowing to re-tick the box.
-    let softRefreshDisabledForSession = false;
 
     let pageObserver = null;
     let observerSuppressDepth = 0;
@@ -500,11 +613,6 @@
     }
 
 
-    function softRefreshEnabled() {
-        return settings.softRefresh && !softRefreshDisabledForSession;
-    }
-
-
     // ------------------------------------------------------------
     // Only http(s) URLs are ever opened. detailUrl round-trips
     // through sessionStorage, which the page's own scripts can write,
@@ -558,6 +666,1348 @@
 
 
     // ============================================================
+    // JIRA
+    // ============================================================
+    //
+    // Every alert card gets a Jira button, and a click on a desktop
+    // toast opens Jira (configurable). Which ticket:
+    //
+    //   FAIL / PRE-TEST FAIL -> the ticket raised for THAT failure: the
+    //       newest one CREATED since it. Never the previous failure's,
+    //       which is what "newest ticket" gives right after a fail.
+    //       Two ways it can be missing, and both are normal:
+    //         not raised YET - the company's Jira bot usually raises it
+    //             5-10 min after the failure (sometimes sooner, sometimes
+    //             later). For JIRA_TICKET_EXPECT_MS the card says "Ticket
+    //             pending" ("No ticket yet" for a pre-test fail) and
+    //             checks - every 30 s around the usual time, every minute
+    //             otherwise - and a click waits for it and then opens it.
+    //         never raised  - common for pre-test fails, possible for any.
+    //             After JIRA_TICKET_EXPECT_MS the card says "No ticket";
+    //             it keeps checking every few minutes until
+    //             JIRA_TICKET_LATE_MS in case one turns up late. A click
+    //             shows the options: the most recent existing ticket
+    //             (clearly marked as older) or a Jira search.
+    //       Nothing here raises tickets - it only waits for the bot's.
+    //   anything else -> the most recently UPDATED ticket.
+    //
+    //   ticket known   -> /browse/<KEY>             (that ticket only)
+    //   not known yet  -> ask Jira, then /browse/<KEY>
+    //   cannot ask     -> /issues/?jql=... newest first
+    //
+    // "Asking" is Jira's REST search via GM_xmlhttpRequest carrying the
+    // browser's own Jira cookies. FAIL cards ask in the background so
+    // the key is already on the card. No credentials are stored or sent
+    // anywhere. Not logged in -> the button still works, it opens the
+    // updated-sorted search instead.
+    //
+    // Load on Jira is bounded: failures only, two requests at a time,
+    // results cached in sessionStorage so an auto-refresh does not
+    // repeat them, and a pause after an auth failure.
+    // ============================================================
+
+    const JIRA_DEFAULT_BASE_URL = 'https://jira.synnex.com';
+    const JIRA_FOUND_TTL_MS     = 10 * 60 * 1000;
+    const JIRA_MISS_TTL_MS      = 3 * 60 * 1000;
+    const JIRA_AUTH_PAUSE_MS    = 2 * 60 * 1000;
+    const JIRA_TIMEOUT_MS       = 15000;
+    const JIRA_MAX_CONCURRENT   = 2;
+    const JIRA_MAX_CACHE        = 300;
+    const JIRA_RESOLVE_WAIT_MS  = 6000;   // click -> lookup -> open, max wait
+
+    // A failure's own ticket comes from the company's Jira bot - or not
+    // at all (common for pre-test fails).
+    // The bot usually takes 5-10 min, but it varies either way.
+    const JIRA_TICKET_LEAD_MS   = 5 * 60 * 1000;        // bot may beat this page to it slightly
+    const JIRA_TICKET_USUAL_MIN = 5;                    // usual range, minutes after the fail -
+    const JIRA_TICKET_USUAL_MAX = 10;                   //   shown to the user, and polled hardest
+    const JIRA_TICKET_EXPECT_MS = 20 * 60 * 1000;       // "pending" until this (2x the usual max)
+    const JIRA_TICKET_LATE_MS   = 2 * 60 * 60 * 1000;   // keep checking for a late one until this
+    const JIRA_PEAK_POLL_MS     = 30 * 1000;            // card re-check around the usual time
+    const JIRA_PENDING_POLL_MS  = 60 * 1000;            // card re-check otherwise while expected
+    const JIRA_LATE_POLL_MS     = 5 * 60 * 1000;        // card re-check after that
+    const JIRA_TAB_POLL_MS      = 15 * 1000;            // re-check while someone waits on it
+    const JIRA_KEY_PATTERN      = /^[A-Z][A-Z0-9_]*-\d+$/;
+
+    const JIRA_ICON_SVG =
+        '<svg class="eve-jira-ext" width="12" height="12" viewBox="0 0 24 24" ' +
+        'fill="none" stroke="currentColor" stroke-width="2.4" ' +
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M14 4h6v6"/><path d="M20 4 10 14"/>' +
+        '<path d="M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>' +
+        '</svg>';
+
+    let jiraCache           = null;       // Map, loaded lazily
+    const jiraInFlight      = new Map();  // serial key -> Promise
+    const jiraQueue         = [];
+    let jiraActive          = 0;
+    let jiraAuthPausedUntil = 0;
+    let jiraNeedsLogin      = false;
+    let jiraConnected       = false;
+
+
+    function jiraBaseUrl() {
+        const raw =
+            String(
+                (settings && settings.jiraBaseUrl) || JIRA_DEFAULT_BASE_URL
+            )
+                .trim()
+                .replace(/\/+$/, '');
+
+        // Absolute http(s) only. "jira.example.com" without a scheme
+        // would otherwise resolve RELATIVE to the EVE page.
+        return /^https?:\/\/[^\s/]+/i.test(raw) && safeUrl(raw)
+            ? raw
+            : JIRA_DEFAULT_BASE_URL;
+    }
+
+
+    function jiraSerialKey(serial) {
+        return String(serial || '').trim().toUpperCase();
+    }
+
+
+    function jiraJql(serial) {
+        const escaped =
+            String(serial || '').trim().replace(/["\\]/g, '\\$&');
+
+        return `text ~ "${escaped}"`;
+    }
+
+
+    // ------------------------------------------------------------
+    // Which ticket belongs to a card
+    // ------------------------------------------------------------
+
+    // When the failure behind a card happened (the card's time), or 0
+    // for cards that are not a real failure - passes and DEBUG cards
+    // keep "most recently updated ticket".
+    function jiraFailedAt(record) {
+        if (!record || isDebugData(record)) {
+            return 0;
+        }
+
+        const meta = transitionMeta(record.transition);
+
+        return (meta && meta.failure) ? (Number(record.ts) || 0) : 0;
+    }
+
+
+    // Pre-test fails often never get a ticket, so they are worded as
+    // "no ticket yet" rather than "pending".
+    function jiraIsPretest(record) {
+        return !!record && record.transition === 'PRETEST_FAILURE';
+    }
+
+
+    // Inside the time the bot normally takes to raise the ticket.
+    function jiraExpecting(failedAt) {
+        return !!failedAt && (Date.now() - failedAt) < JIRA_TICKET_EXPECT_MS;
+    }
+
+
+    // Still worth checking for a late ticket.
+    function jiraStillChecking(failedAt) {
+        return !!failedAt && (Date.now() - failedAt) < JIRA_TICKET_LATE_MS;
+    }
+
+
+    // Whole minutes since the failure (at least 0).
+    function jiraMinutesSince(failedAt) {
+        return Math.max(0, Math.floor((Date.now() - failedAt) / 60000));
+    }
+
+
+    // "Tickets usually appear 5-10 min after a fail (sometimes sooner or
+    // later) - this one failed 3 min ago."
+    function jiraUsualText(failedAt) {
+        const minutes = jiraMinutesSince(failedAt);
+
+        return (
+            `Tickets usually appear ${JIRA_TICKET_USUAL_MIN}\u{2013}` +
+            `${JIRA_TICKET_USUAL_MAX} min after a fail (sometimes sooner or ` +
+            'later) \u{2014} this one failed ' +
+            (minutes < 1 ? 'under a minute ago.' : `${minutes} min ago.`)
+        );
+    }
+
+
+    // Cache/queue key: the serial, plus the failure time for a
+    // failure's own ticket.
+    function jiraLookupKey(serial, failedAt) {
+        const id = jiraSerialKey(serial);
+
+        return (id && failedAt) ? `${id}@${failedAt}` : id;
+    }
+
+
+    // A failure's own ticket is the newest CREATED since the failure
+    // (less a small lead, in case the bot beat this page to it).
+    // Relative minutes are evaluated by the Jira server, so neither
+    // clock skew nor the Jira user's time zone matter. Anything else is
+    // the most recently UPDATED ticket.
+    function jiraOrderedJql(serial, failedAt) {
+        if (!failedAt) {
+            return jiraJql(serial) + ' ORDER BY updated DESC';
+        }
+
+        const minutes =
+            Math.max(
+                1,
+                Math.ceil((Date.now() - failedAt + JIRA_TICKET_LEAD_MS) / 60000)
+            );
+
+        return (
+            jiraJql(serial) +
+            ` AND created >= -${minutes}m ORDER BY created DESC`
+        );
+    }
+
+
+    // A search, newest first - for a failure only tickets created since
+    // it, so it can never land on the previous failure's ticket.
+    // Deliberately NOT QuickSearch.jspa - that lands in an unsorted list
+    // of every ticket that ever mentioned the serial.
+    function jiraSearchUrl(serial, failedAt) {
+        return (
+            `${jiraBaseUrl()}/issues/?jql=` +
+            encodeURIComponent(jiraOrderedJql(serial, failedAt || 0))
+        );
+    }
+
+
+    // The ticket on its own - no ?jql=, which would bring the full list
+    // of matching tickets along with it.
+    function jiraIssueUrl(key) {
+        return `${jiraBaseUrl()}/browse/${encodeURIComponent(key)}`;
+    }
+
+
+    function jiraFoundUrl(serial, failedAt) {
+        const hit = jiraCached(serial, failedAt);
+
+        return (
+            hit &&
+            hit.state === 'found' &&
+            JIRA_KEY_PATTERN.test(String(hit.key))
+        )
+            ? jiraIssueUrl(hit.key)
+            : '';
+    }
+
+
+    // The best link for a card right now, without waiting.
+    function jiraUrlFor(serial, failedAt) {
+        return jiraFoundUrl(serial, failedAt || 0) || jiraSearchUrl(serial, failedAt || 0);
+    }
+
+
+    // A ticket that can be opened without asking Jira first. A
+    // failure's own ticket never goes stale - it IS that failure's
+    // ticket. The latest updated one is trusted for its cache TTL only;
+    // after that a newer one may exist.
+    function jiraKnownUrl(serial, failedAt) {
+        if (failedAt) {
+            return jiraFoundUrl(serial, failedAt);
+        }
+
+        return jiraIsFresh(jiraCached(serial, 0)) ? jiraFoundUrl(serial, 0) : '';
+    }
+
+
+    // What a card shows. For a failure with nothing raised yet:
+    // 'waiting' while the bot normally takes, 'noticket' after that.
+    function jiraCardResult(serial, failedAt) {
+        const hit = jiraCached(serial, failedAt || 0);
+
+        if (failedAt && hit && hit.state === 'none') {
+            return { ...hit, state: jiraExpecting(failedAt) ? 'waiting' : 'noticket' };
+        }
+
+        return hit;
+    }
+
+
+    // null if the answer does not come within `ms`.
+    function jiraWithin(promise, ms) {
+        return Promise.race([
+            Promise.resolve(promise).catch(() => null),
+            new Promise(resolve => setTimeout(() => resolve(null), ms))
+        ]);
+    }
+
+
+    // The best link once Jira has been asked (waits at most
+    // JIRA_RESOLVE_WAIT_MS). For a failure with no ticket this is the
+    // since-the-failure search; the card button and the toast click
+    // wait for the ticket instead.
+    async function resolveJiraUrl(serial, failedAt) {
+        const at    = failedAt || 0;
+        const known = jiraKnownUrl(serial, at);
+
+        if (known || !jiraLookupAvailable()) {
+            return known || jiraUrlFor(serial, at);
+        }
+
+        await jiraWithin(lookupJira(serial, false, at), JIRA_RESOLVE_WAIT_MS);
+
+        return jiraUrlFor(serial, at);
+    }
+
+
+    // The most recent ticket that exists for the serial at all - for a
+    // failure with no ticket of its own, that is an OLDER failure's.
+    // Only ever offered as such, never opened as "the" ticket.
+    async function jiraLatestUrl(serial) {
+        return resolveJiraUrl(serial, 0);
+    }
+
+
+    // sessionStorage, not localStorage: the cache is only a shortcut
+    // and should not outlive the tab. The page's own scripts can write
+    // sessionStorage, so entries are shape-checked on load and every
+    // value is only ever written with textContent / encodeURIComponent.
+    function loadJiraCache() {
+        if (!jiraCache) {
+            const saved =
+                readJSON(sessionStorage, JIRA_CACHE_KEY, null, null);
+
+            jiraCache = new Map(
+                Array.isArray(saved)
+                    ? saved.filter(entry =>
+                        Array.isArray(entry) &&
+                        entry.length === 2 &&
+                        typeof entry[0] === 'string' &&
+                        entry[1] &&
+                        typeof entry[1] === 'object'
+                    )
+                    : []
+            );
+        }
+
+        return jiraCache;
+    }
+
+
+    function saveJiraCache() {
+        writeJSON(
+            sessionStorage,
+            JIRA_CACHE_KEY,
+            Array.from(loadJiraCache()),
+            null
+        );
+    }
+
+
+    function jiraCached(serial, failedAt) {
+        return loadJiraCache().get(jiraLookupKey(serial, failedAt || 0)) || null;
+    }
+
+
+    function jiraIsFresh(entry) {
+        if (!entry) {
+            return false;
+        }
+
+        // A failure's "nothing raised yet" is re-asked every poll - the
+        // bot may be about to raise it.
+        const ttl =
+            entry.state === 'found'
+                ? JIRA_FOUND_TTL_MS
+                : (entry.failure ? JIRA_PENDING_POLL_MS : JIRA_MISS_TTL_MS);
+
+        return (Date.now() - Number(entry.at || 0)) < ttl;
+    }
+
+
+    // Only definite answers are cached. An auth failure or a network
+    // error says nothing about the ticket.
+    function storeJiraResult(id, result) {
+        const cache = loadJiraCache();
+
+        cache.delete(id);          // re-insert = most recently used
+        cache.set(id, result);
+
+        while (cache.size > JIRA_MAX_CACHE) {
+            cache.delete(cache.keys().next().value);
+        }
+
+        saveJiraCache();
+    }
+
+
+    // Lookup is always on; it only needs the grant.
+    function jiraLookupAvailable() {
+        return typeof GM_xmlhttpRequest === 'function';
+    }
+
+
+    function parseJiraResponse(response) {
+        const status = Number(response && response.status) || 0;
+
+        if (status === 401 || status === 403) {
+            return { state: 'auth', reason: `HTTP ${status}` };
+        }
+
+        if (status < 200 || status >= 300) {
+            return { state: 'error', reason: `HTTP ${status}` };
+        }
+
+        let data = null;
+
+        try {
+            data = JSON.parse(response.responseText);
+        } catch (error) {
+            data = null;
+        }
+
+        // An SSO redirect ends on a login PAGE served with 200 - HTML,
+        // not JSON. That is "not logged in", not "no ticket".
+        if (!data || !Array.isArray(data.issues)) {
+            return { state: 'auth', reason: 'Jira returned a login page' };
+        }
+
+        const issues =
+            data.issues.filter(issue =>
+                issue && JIRA_KEY_PATTERN.test(String(issue.key))
+            );
+
+        if (!issues.length) {
+            return { state: 'none', count: 0 };
+        }
+
+        const top    = issues[0];
+        const fields = top.fields || {};
+        const status_ = fields.status || {};
+
+        return {
+            state:    'found',
+            key:      String(top.key),
+            status:   String(status_.name || ''),
+            category: String(
+                (status_.statusCategory && status_.statusCategory.key) || ''
+            ).replace(/[^a-z-]/gi, ''),
+            summary:  String(fields.summary || '').slice(0, 200),
+            created:  String(fields.created || '').slice(0, 40),
+            count:    Math.max(Number(data.total) || 0, issues.length)
+        };
+    }
+
+
+    function requestJira(serial, failedAt) {
+        return new Promise(resolve => {
+            const done = result =>
+                resolve({ ...result, at: Date.now(), failure: !!failedAt });
+
+            // One ticket: a failure's own (newest created since it) or
+            // the most recently updated. total still reports how many
+            // matched.
+            const url =
+                `${jiraBaseUrl()}/rest/api/2/search?jql=` +
+                encodeURIComponent(jiraOrderedJql(serial, failedAt || 0)) +
+                '&fields=summary,status,created&maxResults=1';
+
+            try {
+                GM_xmlhttpRequest({
+                    method:    'GET',
+                    url:       url,
+                    headers:   { Accept: 'application/json' },
+                    timeout:   JIRA_TIMEOUT_MS,
+                    onload:    response => done(parseJiraResponse(response)),
+                    onerror:   () => done({ state: 'error', reason: 'network error' }),
+                    ontimeout: () => done({ state: 'error', reason: 'timed out' })
+                });
+            } catch (error) {
+                done({
+                    state: 'error',
+                    reason: String((error && error.message) || error)
+                });
+            }
+        });
+    }
+
+
+    // failedAt: look for that failure's own ticket (0 = latest updated).
+    function lookupJira(serial, force, failedAt) {
+        const at = failedAt || 0;
+        const id = jiraLookupKey(serial, at);
+
+        if (!id || !jiraLookupAvailable()) {
+            return Promise.resolve(null);
+        }
+
+        const cached = jiraCached(serial, at);
+
+        if (!force && jiraIsFresh(cached)) {
+            return Promise.resolve(cached);
+        }
+
+        if (Date.now() < jiraAuthPausedUntil) {
+            return Promise.resolve({ state: 'auth', reason: 'waiting for Jira login' });
+        }
+
+        if (jiraInFlight.has(id)) {
+            return jiraInFlight.get(id);
+        }
+
+        const promise =
+            new Promise(resolve => {
+                jiraQueue.push({
+                    id: id,
+                    serial: String(serial).trim(),
+                    failedAt: at,
+                    resolve: resolve
+                });
+                pumpJiraQueue();
+            })
+                .then(result => {
+                    jiraInFlight.delete(id);
+                    return result;
+                });
+
+        jiraInFlight.set(id, promise);
+
+        return promise;
+    }
+
+
+    function pumpJiraQueue() {
+        while (jiraActive < JIRA_MAX_CONCURRENT && jiraQueue.length) {
+            const job = jiraQueue.shift();
+
+            jiraActive += 1;
+
+            // A queued job can outlive an auth failure discovered by
+            // the request ahead of it. Do not send it.
+            const run =
+                Date.now() < jiraAuthPausedUntil
+                    ? Promise.resolve({
+                        state: 'auth',
+                        reason: 'waiting for Jira login',
+                        at: Date.now()
+                    })
+                    : requestJira(job.serial, job.failedAt);
+
+            run
+                .then(result => {
+                    if (result.state === 'found' || result.state === 'none') {
+                        storeJiraResult(job.id, result);
+                    } else if (result.state === 'auth') {
+                        if (!jiraNeedsLogin) {
+                            log(
+                                'Jira ticket lookup paused \u{2014} this browser is ' +
+                                'not logged in to Jira. Log in once; lookups ' +
+                                'resume when you come back to this tab.'
+                            );
+                        }
+
+                        jiraAuthPausedUntil = Date.now() + JIRA_AUTH_PAUSE_MS;
+                    } else {
+                        devLog(`Jira lookup for ${job.serial} failed:`, result.reason);
+                    }
+
+                    setJiraBadge(result.state);
+                    job.resolve(result);
+                })
+                .catch(error => {
+                    fail('Jira lookup threw:', error);
+                    job.resolve({ state: 'error', reason: 'internal error' });
+                })
+                .finally(() => {
+                    jiraActive -= 1;
+                    pumpJiraQueue();
+                });
+        }
+    }
+
+
+    // Status badge on the Settings > Jira summary line.
+    function setJiraBadge(state) {
+        if (state === 'found' || state === 'none') {
+            jiraConnected  = true;
+            jiraNeedsLogin = false;
+        } else if (state === 'auth') {
+            jiraConnected  = false;
+            jiraNeedsLogin = true;
+        }
+
+        const badge = document.getElementById('eve-jira-badge');
+
+        if (!badge) {
+            return;
+        }
+
+        let text = '';
+        let cls  = '';
+
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            text = 'NO ACCESS';
+            cls  = 'eve-badge-off';
+        } else if (jiraNeedsLogin) {
+            text = 'LOG IN';
+            cls  = 'eve-badge-soon';
+        } else if (jiraConnected) {
+            text = 'CONNECTED';
+            cls  = 'eve-badge-on';
+        }
+
+        setTextIfChanged(badge, text);
+        setClassIfChanged(badge, `eve-summary-badge ${cls}`.trim());
+        badge.style.display = text ? '' : 'none';
+    }
+
+
+    // "2026-09-19T05:12:03.000-0700" -> local clock time, or ''.
+    function jiraTimeText(value) {
+        const time =
+            Date.parse(String(value || '').replace(/([+-]\d\d)(\d\d)$/, '$1:$2'));
+
+        return Number.isFinite(time) ? new Date(time).toLocaleTimeString() : '';
+    }
+
+
+    function paintJiraButton(button, serial, result, loading) {
+        const label    = button.querySelector('.eve-jira-label');
+        const failedAt = Number(button.dataset.failedAt) || 0;
+        const pretest  = button.dataset.pretest === '1';
+
+        let cls  = 'eve-alert-jira';
+        let text = 'Jira';
+        let tip  = `Search Jira for ${serial}`;
+
+        if (loading) {
+            cls += ' eve-jira-loading';
+            tip  = `Looking up ${serial} in Jira\u{2026} (click to search now)`;
+        } else if (
+            result &&
+            result.state === 'found' &&
+            JIRA_KEY_PATTERN.test(String(result.key))
+        ) {
+            const count = Number(result.count) || 1;
+
+            cls += ' eve-jira-found';
+
+            if (result.category) {
+                cls += ` eve-jira-cat-${String(result.category).replace(/[^a-z-]/gi, '')}`;
+            }
+
+            const created = jiraTimeText(result.created);
+
+            text = result.key;
+            tip  =
+                result.key +
+                (result.status ? ` \u{b7} ${result.status}` : '') +
+                (result.summary ? `\n${result.summary}` : '') +
+                (
+                    failedAt
+                        ? `\nRaised for this failure${created ? ` at ${created}` : ''}` +
+                          (count > 1 ? ` (newest of ${count})` : '')
+                        : (
+                            count > 1
+                                ? `\nMost recently updated of ${count} tickets for ${serial}`
+                                : ''
+                        )
+                ) +
+                '\nClick to open in Jira';
+        } else if (result && result.state === 'waiting') {
+            // Not raised yet, inside the time the bot normally takes.
+            cls += ' eve-jira-waiting';
+            text = pretest ? 'No ticket yet' : 'Ticket pending';
+            tip  =
+                (
+                    pretest
+                        ? 'No Jira ticket for this pre-test fail yet. Pre-test ' +
+                          'fails often never get one, but the Jira bot sometimes ' +
+                          'raises one.'
+                        : 'The Jira bot has not raised the ticket for this ' +
+                          'failure yet.'
+                ) +
+                `\n${jiraUsualText(failedAt)}` +
+                '\nChecking regularly \u{2014} click to open it the moment it ' +
+                'exists, or for the latest existing ticket.';
+        } else if (result && result.state === 'noticket') {
+            // Nothing raised in the time the bot normally takes.
+            cls += ' eve-jira-noticket';
+            text = 'No ticket';
+            tip  =
+                `No Jira ticket was raised in the ${jiraMinutesSince(failedAt)} min ` +
+                'since this failure (they usually appear within ' +
+                `${JIRA_TICKET_USUAL_MAX} min)` +
+                (pretest ? ' \u{2014} common for pre-test fails.' : '.') +
+                (
+                    jiraStillChecking(failedAt)
+                        ? ' Still checking every few minutes until ' +
+                          `${new Date(failedAt + JIRA_TICKET_LATE_MS).toLocaleTimeString()} ` +
+                          'in case one is raised late.'
+                        : ''
+                ) +
+                '\nClick for the latest existing ticket or a Jira search.';
+        } else if (result && result.state === 'none') {
+            cls += ' eve-jira-none';
+            tip  =
+                `No Jira ticket mentions ${serial} yet \u{2014} click to ` +
+                'search Jira (newest first)';
+        } else if (result && result.state === 'auth') {
+            cls += ' eve-jira-auth';
+            tip  =
+                'Log in to Jira in this browser to see the ticket here ' +
+                '\u{2014} click to open Jira';
+        } else if (result && result.state === 'error') {
+            tip  =
+                `Jira lookup failed (${result.reason || 'unknown'}) ` +
+                '\u{2014} click to search Jira';
+        }
+
+        setClassIfChanged(button, cls);
+        button.href  = jiraUrlFor(serial, failedAt);
+        button.title = tip;
+
+        if (label) {
+            setTextIfChanged(label, text);
+        }
+    }
+
+
+    function buildJiraButton(serial, record) {
+        const button   = document.createElement('a');
+        const failedAt = jiraFailedAt(record);
+
+        button.className = 'eve-alert-jira';
+        button.target    = '_blank';
+        button.rel       = 'noopener noreferrer';
+        button.dataset.failedAt = failedAt ? String(failedAt) : '';
+        button.dataset.pretest  = jiraIsPretest(record) ? '1' : '';
+        button.setAttribute('aria-label', `Open ${serial} in Jira`);
+
+        button.innerHTML =
+            '<span class="eve-jira-dot" aria-hidden="true"></span>' +
+            '<span class="eve-jira-label">Jira</span>' +
+            JIRA_ICON_SVG;
+
+        // Plain click on a card whose ticket is not known yet: open the
+        // tab NOW (inside the click, so it is not popup-blocked), then
+        // send it to the ticket - or, for a failure with no ticket yet,
+        // let it wait for one and show the options meanwhile.
+        // Ctrl/Shift/middle-click keep normal link behaviour with the
+        // best URL right now.
+        button.addEventListener('click', event => {
+            const at    = Number(button.dataset.failedAt) || 0;
+            const known = jiraKnownUrl(serial, at);
+
+            button.href = known || jiraUrlFor(serial, at);
+
+            if (
+                known ||
+                !jiraLookupAvailable() ||
+                event.ctrlKey || event.metaKey || event.shiftKey || event.altKey
+            ) {
+                return;
+            }
+
+            const tab = window.open('about:blank', '_blank');
+
+            if (!tab) {
+                return;   // blocked - fall through to the search link
+            }
+
+            event.preventDefault();
+
+            try {
+                tab.opener = null;
+            } catch (error) {
+                // Cosmetic only.
+            }
+
+            writeJiraTab(tab, 'Jira\u{2026}', [`Finding the Jira ticket for ${serial}\u{2026}`]);
+
+            // A card that already says "Ticket pending" / "No ticket"
+            // keeps saying it while the tab waits; only a card with
+            // nothing known yet shows the lookup running.
+            const current = jiraCardResult(serial, at);
+
+            if (!current) {
+                paintJiraButton(button, serial, current, true);
+            }
+
+            followJiraInTab(tab, serial, at, button.dataset.pretest === '1').then(() => {
+                if (!button.isConnected) {
+                    return;
+                }
+
+                const shown = jiraCardResult(serial, at);
+                paintJiraButton(button, serial, shown);
+
+                const card = button.closest('.eve-alert');
+                if (card) {
+                    indexJiraKey(card, shown);
+                }
+            });
+        });
+
+        paintJiraButton(button, serial, jiraCardResult(serial, failedAt));
+
+        return button;
+    }
+
+
+    // Text and links for the tab opened on click, while it has no Jira
+    // page yet.
+    function writeJiraTab(tab, title, lines, links) {
+        const list = links || [];
+
+        try {
+            const doc = tab.document;
+
+            doc.title = title;
+            doc.body.style.cssText =
+                'font:14px Segoe UI,Arial,sans-serif;color:#9aa0a6;' +
+                'background:#16171b;padding:28px;line-height:1.6;max-width:760px;';
+
+            // Plain text first; replaced by styled rows if they build.
+            doc.body.textContent =
+                lines.concat(list.map(link => `${link.text}: ${link.href}`)).join('\n');
+
+            const rows = lines.map((line, index) => {
+                const row = doc.createElement('div');
+
+                row.textContent = line;
+
+                if (index === 0) {
+                    row.style.cssText =
+                        'color:#e8eaed;font-size:16px;font-weight:600;margin-bottom:6px;';
+                }
+
+                return row;
+            });
+
+            list.forEach((link, index) => {
+                const anchor = doc.createElement('a');
+
+                anchor.href        = link.href;
+                anchor.textContent = link.text;
+                anchor.style.cssText =
+                    'display:block;margin-top:' + (index ? '6px' : '16px') + ';color:#60a5fa;';
+
+                rows.push(anchor);
+            });
+
+            doc.body.textContent = '';
+            rows.forEach(row => doc.body.appendChild(row));
+        } catch (error) {
+            // Cosmetic only.
+        }
+    }
+
+
+    // Still the blank tab this script opened: not closed, and not taken
+    // somewhere else by the user (a Jira page is cross-origin, so
+    // reading its location throws).
+    function jiraTabIsWaiting(tab) {
+        try {
+            return (
+                !!tab &&
+                !tab.closed &&
+                String(tab.location.href) === 'about:blank'
+            );
+        } catch (error) {
+            return false;
+        }
+    }
+
+
+    // The page a tab shows while a failure has no ticket: whether the
+    // bot is still due or has let the usual time pass, and the ways on
+    // from here. The most recent existing ticket is offered, never
+    // opened by itself - it belongs to an older failure.
+    function writeJiraWaitPage(tab, serial, failedAt, pretest, latest) {
+        const expecting = jiraExpecting(failedAt);
+        const checking  = jiraStillChecking(failedAt);
+        const kind      = pretest ? 'Pre-test fail' : 'Test fail';
+        const minutes   = Math.max(1, Math.round((Date.now() - failedAt) / 60000));
+        const time      = ms => new Date(ms).toLocaleTimeString();
+
+        const heading =
+            expecting
+                ? (
+                    pretest
+                        ? `No Jira ticket for ${serial} yet`
+                        : `Waiting for the Jira ticket for ${serial}`
+                )
+                : `No Jira ticket was raised for ${serial}`;
+
+        const why =
+            expecting
+                ? (
+                    (
+                        pretest
+                            ? 'Pre-test fails often never get a ticket, but the ' +
+                              'Jira bot sometimes raises one. '
+                            : 'The Jira bot has not raised it yet. '
+                    ) +
+                    jiraUsualText(failedAt)
+                )
+                : `Nothing raised in ${minutes} min (tickets usually appear ` +
+                  `within ${JIRA_TICKET_USUAL_MAX} min)` +
+                  (pretest ? ' \u{2014} common for pre-test fails.' : '.');
+
+        const watch =
+            checking
+                ? 'This tab opens it by itself if one is raised (checking until ' +
+                  `${time(failedAt + JIRA_TICKET_LATE_MS)}). Last checked ${time(Date.now())}.`
+                : `No longer checking. Last checked ${time(Date.now())}.`;
+
+        const links = [];
+
+        if (
+            latest &&
+            latest.state === 'found' &&
+            JIRA_KEY_PATTERN.test(String(latest.key))
+        ) {
+            links.push({
+                href: jiraIssueUrl(latest.key),
+                text:
+                    `Open the most recent existing ticket: ${latest.key}` +
+                    (latest.status ? ` (${latest.status})` : '') +
+                    ' \u{2014} raised before this failure'
+            });
+        }
+
+        links.push(
+            {
+                href: jiraSearchUrl(serial, failedAt),
+                text: 'Search Jira: tickets raised since this failure'
+            },
+            {
+                href: jiraSearchUrl(serial, 0),
+                text: `Search Jira: every ticket for ${serial}, newest first`
+            }
+        );
+
+        writeJiraTab(
+            tab,
+            `${expecting ? 'Waiting for Jira' : 'No Jira ticket'} \u{2026} ${serial}`,
+            [heading, `${kind} at ${time(failedAt)}. ${why}`, watch],
+            links
+        );
+    }
+
+
+    // Sends a tab opened on click to the card's ticket. A failure whose
+    // ticket does not exist (yet): the tab says which case it is, offers
+    // the latest existing ticket and searches, and keeps checking - it
+    // goes straight to the failure's ticket if one is raised while it
+    // is open. Stops if the tab is closed or used for something else.
+    async function followJiraInTab(tab, serial, failedAt, pretest) {
+        const go = url => {
+            try {
+                tab.location.replace(url);
+            } catch (error) {
+                tab.location.href = url;
+            }
+        };
+
+        if (!failedAt) {
+            go(await resolveJiraUrl(serial, 0));
+            return;
+        }
+
+        let latest = null;
+
+        for (let first = true; ; first = false) {
+            const own =
+                await jiraWithin(lookupJira(serial, !first, failedAt), JIRA_RESOLVE_WAIT_MS);
+
+            if (!jiraTabIsWaiting(tab)) {
+                return;
+            }
+
+            if (
+                own &&
+                own.state === 'found' &&
+                JIRA_KEY_PATTERN.test(String(own.key))
+            ) {
+                go(jiraIssueUrl(own.key));
+                return;
+            }
+
+            // Not logged in: Jira shows its own login first.
+            if (own && own.state === 'auth') {
+                go(jiraSearchUrl(serial, failedAt));
+                return;
+            }
+
+            // Asked once, for the options on the page.
+            if (!latest) {
+                latest =
+                    (await jiraWithin(lookupJira(serial, false, 0), JIRA_RESOLVE_WAIT_MS)) ||
+                    { state: 'error' };
+
+                if (!jiraTabIsWaiting(tab)) {
+                    return;
+                }
+            }
+
+            writeJiraWaitPage(tab, serial, failedAt, pretest, latest);
+
+            if (!jiraStillChecking(failedAt)) {
+                return;
+            }
+
+            await new Promise(resolve =>
+                setTimeout(
+                    resolve,
+                    jiraExpecting(failedAt) ? JIRA_TAB_POLL_MS : JIRA_PENDING_POLL_MS
+                )
+            );
+
+            if (!jiraTabIsWaiting(tab)) {
+                return;
+            }
+        }
+    }
+
+
+    // The card's search text gains the ticket key, so the alert search
+    // box finds a card by "MFGS-584283" as well as by serial.
+    function indexJiraKey(card, result) {
+        if (card.dataset.searchBase === undefined) {
+            card.dataset.searchBase = card.dataset.search || '';
+        }
+
+        const key =
+            (
+                result &&
+                result.state === 'found' &&
+                JIRA_KEY_PATTERN.test(String(result.key))
+            )
+                ? result.key
+                : '';
+
+        const next =
+            key ? `${card.dataset.searchBase} ${key}` : card.dataset.searchBase;
+
+        if (card.dataset.search !== next) {
+            card.dataset.search = next;
+
+            if (alertSearch) {
+                applyAlertFilter();
+            }
+        }
+    }
+
+
+    function syncJiraForCard(card, record) {
+        const button = card ? card.querySelector('.eve-alert-jira') : null;
+
+        if (!button || !record || !record.serial) {
+            return;
+        }
+
+        // Real failures only: that is where a ticket gets raised. PASS
+        // and DEBUG cards keep the button (it still searches) without
+        // costing Jira a request.
+        const failedAt = jiraFailedAt(record);
+
+        button.dataset.failedAt = failedAt ? String(failedAt) : '';
+        button.dataset.pretest  = jiraIsPretest(record) ? '1' : '';
+
+        const shown = jiraCardResult(record.serial, failedAt);
+
+        paintJiraButton(button, record.serial, shown);
+        indexJiraKey(card, shown);
+
+        if (failedAt && jiraLookupAvailable()) {
+            refreshCardTicket(card, button, record.serial, failedAt, false);
+        } else {
+            clearTimeout(button.__eveJiraPoll);
+        }
+    }
+
+
+    // How long until a card asks again for its failure's ticket:
+    //   every 30 s from a minute before the usual range to two minutes
+    //     after it (4-12 min) - that is when it usually appears,
+    //   every minute for the rest of the expected time (0-4, 12-20 min),
+    //   every 5 min after that in case it comes late (to 2 h),
+    //   then not at all.
+    function jiraPollDelay(failedAt) {
+        const minutes = (Date.now() - failedAt) / 60000;
+
+        if (minutes >= JIRA_TICKET_USUAL_MIN - 1 && minutes < JIRA_TICKET_USUAL_MAX + 2) {
+            return JIRA_PEAK_POLL_MS;
+        }
+
+        if (jiraExpecting(failedAt)) {
+            return JIRA_PENDING_POLL_MS;
+        }
+
+        return jiraStillChecking(failedAt) ? JIRA_LATE_POLL_MS : 0;
+    }
+
+
+    // Background lookup for a FAIL card's own ticket.
+    function refreshCardTicket(card, button, serial, failedAt, force) {
+        clearTimeout(button.__eveJiraPoll);
+
+        const repaint = result => {
+            if (!button.isConnected) {
+                return false;
+            }
+
+            const shown = jiraCardResult(serial, failedAt) || result;
+
+            paintJiraButton(button, serial, shown);
+            indexJiraKey(card, shown);
+
+            return true;
+        };
+
+        const pollAgain = result => {
+            const own   = jiraCached(serial, failedAt);
+            const delay = jiraPollDelay(failedAt);
+
+            const settled =
+                (own && own.state === 'found') ||
+                (result && result.state === 'auth') ||
+                !delay;
+
+            if (!settled) {
+                button.__eveJiraPoll = setTimeout(() => {
+                    if (button.isConnected) {
+                        refreshCardTicket(card, button, serial, failedAt, true);
+                    }
+                }, delay);
+            }
+        };
+
+        if (!force && jiraIsFresh(jiraCached(serial, failedAt))) {
+            pollAgain(null);
+            return;
+        }
+
+        if (!force) {
+            paintJiraButton(button, serial, jiraCardResult(serial, failedAt), true);
+        }
+
+        lookupJira(serial, force, failedAt).then(result => {
+            if (repaint(result)) {
+                pollAgain(result);
+            }
+        });
+    }
+
+
+    function refreshJiraOnCards() {
+        const byId =
+            new Map(loadActiveAlerts().map(record => [record.id, record]));
+
+        document
+            .querySelectorAll('#eve-alert-body .eve-alert[data-alert-id]')
+            .forEach(card => {
+                const record = byId.get(card.dataset.alertId);
+
+                if (record) {
+                    syncJiraForCard(card, record);
+                }
+            });
+
+        setJiraBadge('');
+    }
+
+
+    // Coming back to this tab after logging in to Jira in another one
+    // is the moment to try again - no need to wait out the pause.
+    function onJiraWindowFocus() {
+        if (!jiraNeedsLogin) {
+            return;
+        }
+
+        jiraAuthPausedUntil = 0;
+        jiraNeedsLogin      = false;
+        refreshJiraOnCards();
+    }
+
+
+    // What a desktop-toast click opens. Toast callbacks are not a user
+    // gesture, so everything goes through openFromNotification().
+    // 'both' opens the detail page first so the Jira tab ends up in
+    // front.
+    // failedAt / pretest: the failure behind the toast (0 / false for
+    // anything else).
+    function openNotificationTarget(detailUrl, serial, failedAt, pretest) {
+        const target = (settings && settings.notificationClickTarget) || 'jira';
+
+        const wantJira   = (target === 'jira' || target === 'both') && !!serial;
+        const wantDetail =
+            (target === 'detail' || target === 'both' || !wantJira) && !!detailUrl;
+
+        if (wantDetail) {
+            openFromNotification(detailUrl);
+        }
+
+        if (wantJira) {
+            return openJiraFromToast(serial, failedAt || 0, !!pretest);
+        }
+
+        return Promise.resolve();
+    }
+
+
+    // GM_openInTab needs no user gesture, so the ticket can be looked up
+    // first and opened directly. A toast usually fires BEFORE the bot
+    // has raised the failure's ticket - then it opens by itself once it
+    // exists. Past the time the bot normally takes, there is no ticket
+    // for this failure: the most recent existing one opens, and a toast
+    // says it is an older one.
+    async function openJiraFromToast(serial, failedAt, pretest) {
+        if (!failedAt || !jiraLookupAvailable()) {
+            openFromNotification(await resolveJiraUrl(serial, failedAt));
+            return;
+        }
+
+        const own =
+            jiraFoundUrl(serial, failedAt)
+                ? null
+                : await jiraWithin(lookupJira(serial, false, failedAt), JIRA_RESOLVE_WAIT_MS);
+
+        const ticket = jiraFoundUrl(serial, failedAt);
+
+        if (ticket) {
+            openFromNotification(ticket);
+            return;
+        }
+
+        // Not logged in: Jira shows its own login first.
+        if (own && own.state === 'auth') {
+            openFromNotification(jiraSearchUrl(serial, failedAt));
+            return;
+        }
+
+        if (jiraExpecting(failedAt)) {
+            openJiraWhenRaised(serial, failedAt, pretest);
+            return;
+        }
+
+        await openLatestInstead(serial, failedAt, pretest);
+    }
+
+
+    // No ticket for this failure: open the most recent existing one and
+    // say plainly that it belongs to an earlier failure.
+    function openLatestInstead(serial, failedAt, pretest) {
+        return jiraLatestUrl(serial).then(url => {
+            const latest = jiraCached(serial, 0);
+            const key    = (latest && latest.state === 'found') ? latest.key : '';
+
+            sendDesktopNotification(
+                'No Jira ticket for this failure',
+                `Serial #: ${serial}\n` +
+                    `Nothing raised since the ${pretest ? 'pre-test ' : ''}fail at ` +
+                    `${new Date(failedAt).toLocaleTimeString()}` +
+                    (pretest ? ' (common for pre-test fails)' : '') + '. ' +
+                    (
+                        key
+                            ? `Opened the most recent existing ticket, ${key} \u{2014} an earlier one.`
+                            : 'Opened a Jira search.'
+                    ),
+                null,
+                null
+            );
+
+            openFromNotification(url);
+        });
+    }
+
+
+    const jiraOpenWhenRaised = new Set();   // lookup keys already waiting
+
+    // A toast click is not a user gesture, so no tab can be held open
+    // while the bot is due. Keep checking and open the ticket the moment
+    // it exists (GM_openInTab needs no gesture) - but only within the
+    // time the bot normally takes; a tab popping up an hour later would
+    // be a surprise. After that the card keeps watching instead.
+    function openJiraWhenRaised(serial, failedAt, pretest) {
+        const id = jiraLookupKey(serial, failedAt);
+
+        if (jiraOpenWhenRaised.has(id)) {
+            return;
+        }
+
+        jiraOpenWhenRaised.add(id);
+
+        const until =
+            new Date(failedAt + JIRA_TICKET_EXPECT_MS).toLocaleTimeString();
+
+        log(
+            `No Jira ticket for ${serial} yet \u{2014} it opens by itself if ` +
+            `one is raised by ${until}.`
+        );
+
+        sendDesktopNotification(
+            pretest ? 'No Jira ticket yet' : 'Jira ticket not raised yet',
+            `Serial #: ${serial}\n` +
+                (pretest ? 'Pre-test fails often never get one. ' : '') +
+                `Tickets usually appear ${JIRA_TICKET_USUAL_MIN}\u{2013}` +
+                `${JIRA_TICKET_USUAL_MAX} min after a fail. ` +
+                `It opens by itself if one is raised by ${until}.`,
+            null,
+            null
+        );
+
+        const check = () => {
+            lookupJira(serial, true, failedAt).then(own => {
+                if (
+                    own &&
+                    own.state === 'found' &&
+                    JIRA_KEY_PATTERN.test(String(own.key))
+                ) {
+                    jiraOpenWhenRaised.delete(id);
+                    refreshJiraOnCards();
+                    openFromNotification(jiraIssueUrl(own.key));
+                    return;
+                }
+
+                // Not logged in: Jira shows its own login first.
+                if (own && own.state === 'auth') {
+                    jiraOpenWhenRaised.delete(id);
+                    openFromNotification(jiraSearchUrl(serial, failedAt));
+                    return;
+                }
+
+                if (!jiraExpecting(failedAt)) {
+                    jiraOpenWhenRaised.delete(id);
+                    refreshJiraOnCards();
+
+                    log(
+                        `No Jira ticket was raised for ${serial} within ` +
+                        `${JIRA_TICKET_EXPECT_MS / 60000} min of the failure.`
+                    );
+
+                    sendDesktopNotification(
+                        'No Jira ticket raised',
+                        `Serial #: ${serial}\n` +
+                            `Nothing raised within ${JIRA_TICKET_EXPECT_MS / 60000} min` +
+                            (pretest ? ' (common for pre-test fails)' : '') +
+                            '. The card keeps checking for a late one. ' +
+                            'Click to open the most recent existing ticket.',
+                        null,
+                        () => {
+                            jiraLatestUrl(serial).then(openFromNotification);
+                        }
+                    );
+
+                    return;
+                }
+
+                setTimeout(check, JIRA_TAB_POLL_MS);
+            });
+        };
+
+        setTimeout(check, JIRA_TAB_POLL_MS);
+    }
+
+
+    // ============================================================
     // LOAD / SAVE SETTINGS
     // ============================================================
 
@@ -575,11 +2025,23 @@
             }
 
             delete parsed.hideTestResults;
+
+            // v0.9.7: these are no longer switchable. Older builds
+            // stored them; drop them so they cannot come back.
+            delete parsed.autoRefresh;
+            delete parsed.softRefresh;
+            delete parsed.jiraLookup;
+
             if (typeof parsed.developerMode !== 'boolean') {
                 parsed.developerMode = defaultSettings.developerMode;
             }
 
             const merged = { ...defaultSettings, ...parsed };
+
+            // An older build allowed 60s-10min. Anything outside the
+            // allowed set goes back to the 30s default.
+            merged.refreshIntervalSeconds =
+                coerceRefreshInterval(merged.refreshIntervalSeconds);
 
             // Shallow spread would replace this wholesale; make sure
             // it is always a usable object.
@@ -594,6 +2056,15 @@
         }
 
         return { ...defaultSettings, sections: {} };
+    }
+
+
+    function coerceRefreshInterval(value) {
+        const seconds = Number(value);
+
+        return REFRESH_INTERVAL_OPTIONS.indexOf(seconds) !== -1
+            ? seconds
+            : DEFAULT_REFRESH_SECONDS;
     }
 
 
@@ -840,42 +2311,62 @@
     // AUTO REFRESH
     // ============================================================
 
+    // Always on, always soft. performSoftRefresh() is the only place a
+    // full reload can happen, and only as the fail-safe when the soft
+    // refresh itself fails.
     function startAutoRefresh() {
-        if (
-            !settings.autoRefresh ||
-            !settings.refreshIntervalSeconds ||
-            settings.refreshIntervalSeconds <= 0
-        ) {
-            log('Auto refresh: OFF');
-            autoRefreshDueAt = null;
-            updateRefreshCountdown();
-            return;
-        }
+        const seconds = coerceRefreshInterval(settings.refreshIntervalSeconds);
 
-        const seconds = Number(settings.refreshIntervalSeconds);
-
-        log(`Auto refresh: ON (${seconds}s)`);
+        // Per-cycle, so devLog: at 10s a plain log would be 6 lines a
+        // minute of noise.
+        devLog(`Auto refresh: next soft refresh in ${seconds}s`);
 
         autoRefreshDueAt = Date.now() + (seconds * 1000);
 
         updateRefreshCountdown();
 
-        autoRefreshTimer = setTimeout(() => {
+        autoRefreshTimer = setTimeout(fireAutoRefresh, seconds * 1000);
+    }
+
+
+    // The one place a scheduled refresh fires - from its own timer, or
+    // from the master tick when a background tab's timer was throttled
+    // past its due time. Clearing autoRefreshTimer first makes a second
+    // caller a no-op.
+    function fireAutoRefresh() {
+        if (!autoRefreshTimer) {
+            return;
+        }
+
+        clearTimeout(autoRefreshTimer);
+        autoRefreshTimer = null;
+
+        // performSoftRefresh() guarantees the callback runs on every
+        // exit path, including the early "already in flight" return.
+        // Nothing here reschedules on its own, so a missed callback
+        // used to kill auto refresh for the life of the tab.
+        performSoftRefresh(restartAutoRefresh);
+    }
+
+
+    // Manual refresh from the panel: the same soft path as the timer
+    // (in-flight guard, hard-reload fail-safe, reschedule on every exit),
+    // just without waiting out the countdown.
+    function refreshNow() {
+        if (softRefreshInFlight) {
+            return;
+        }
+
+        if (autoRefreshTimer) {
+            clearTimeout(autoRefreshTimer);
             autoRefreshTimer = null;
-            if (softRefreshEnabled()) {
-                // performSoftRefresh() guarantees the callback runs on
-                // every exit path, including the early "already in
-                // flight" return. Nothing here reschedules on its own,
-                // so a missed callback used to kill auto refresh for
-                // the life of the tab.
-                performSoftRefresh(restartAutoRefresh);
-            } else {
-                savePreviousStates();
-                debugSnapshotBeforeRefresh('auto-refresh');
-                flushAlertLog();
-                location.reload();
-            }
-        }, seconds * 1000);
+        }
+
+        autoRefreshDueAt = Date.now();
+        updateRefreshCountdown();
+
+        log('Manual refresh.');
+        performSoftRefresh(restartAutoRefresh);
     }
 
 
@@ -903,7 +2394,7 @@
     // ============================================================
 
     function autoRefreshWatchdog() {
-        if (!settings.autoRefresh || !autoRefreshDueAt) {
+        if (!autoRefreshDueAt) {
             return;
         }
 
@@ -912,7 +2403,7 @@
         const graceMs =
             Math.max(
                 30000,
-                Number(settings.refreshIntervalSeconds || 60) * 1000
+                coerceRefreshInterval(settings.refreshIntervalSeconds) * 1000
             ) + SOFT_REFRESH_TIMEOUT_MS;
 
         if (overdueMs <= graceMs) {
@@ -949,8 +2440,8 @@
 
     // updateRefreshCountdown() runs once a SECOND for the life of the
     // tab and used to rewrite textContent and className unconditionally
-    // - including on #eve-refresh-status, which sits inside a collapsed
-    // <details> most of the time. The last written value is kept on the
+    // - including on #eve-refresh-status, which is Dev-only and hidden
+    // most of the time. The last written value is kept on the
     // node itself, so replacing the element invalidates the memo for
     // free.
 
@@ -970,36 +2461,79 @@
     }
 
 
+    // Fills toward the next refresh. Jumps back (no transition) when a
+    // new cycle starts instead of animating backwards.
+    function setRefreshProgress(fill, percent) {
+        if (!fill) {
+            return;
+        }
+
+        const pct = Math.min(100, Math.max(0, percent));
+        const width = `${pct.toFixed(1)}%`;
+
+        if (fill.__eveWidth === width) {
+            return;
+        }
+
+        fill.style.transition =
+            pct < (fill.__evePct || 0) ? 'none' : '';
+        fill.style.width = width;
+        fill.__eveWidth = width;
+        fill.__evePct = pct;
+    }
+
+
     function updateRefreshCountdown() {
         const badge  = document.getElementById('eve-refresh-badge');
         const status = document.getElementById('eve-refresh-status');
+        const mini   = document.getElementById('eve-refresh-mini');
 
         if (!badge && !status) {
             return;
         }
 
-        if (!settings.autoRefresh || !autoRefreshDueAt) {
-            setTextIfChanged(badge, 'OFF');
-            setClassIfChanged(badge, 'eve-summary-badge eve-badge-off');
-            setTextIfChanged(status, 'OFF');
+        const fill = document.getElementById('eve-refresh-progress-fill');
+
+        // Only before the first schedule - auto refresh cannot be off.
+        if (!autoRefreshDueAt) {
+            setTextIfChanged(badge, '\u{2026}');
+            setClassIfChanged(badge, 'eve-summary-badge eve-badge-on');
+            setTextIfChanged(mini, '\u{2026}');
+            setTextIfChanged(status, 'Starting\u{2026}');
+            setRefreshProgress(fill, 0);
             return;
         }
 
+        // Float seconds, one decimal ("26.4s"). Intervals are 30s at
+        // most, so the minutes branch only shows for a timer that a
+        // background tab starved.
         const remaining =
-            Math.max(
-                0,
-                Math.ceil((autoRefreshDueAt - Date.now()) / 1000)
-            );
+            Math.max(0, autoRefreshDueAt - Date.now()) / 1000;
 
         const label =
             remaining >= 60
                 ? `${Math.floor(remaining / 60)}m ` +
-                  `${String(remaining % 60).padStart(2, '0')}s`
-                : `${remaining}s`;
+                  `${String(Math.floor(remaining % 60)).padStart(2, '0')}s`
+                : `${remaining.toFixed(1)}s`;
 
         setTextIfChanged(
             badge,
-            remaining > 0 ? `ON \u{b7} ${label}` : 'refreshing\u{2026}'
+            remaining > 0 ? label : 'refreshing\u{2026}'
+        );
+
+        // Collapsed-title copy: same time, same colour.
+        setTextIfChanged(mini, remaining > 0 ? label : '\u{21bb}');
+        setClassIfChanged(
+            mini,
+            'eve-summary-badge ' +
+            (remaining <= 5 ? 'eve-badge-soon' : 'eve-badge-on')
+        );
+
+        const total = coerceRefreshInterval(settings.refreshIntervalSeconds);
+
+        setRefreshProgress(
+            fill,
+            remaining > 0 ? (1 - (remaining / total)) * 100 : 100
         );
 
         setClassIfChanged(
@@ -1011,7 +2545,7 @@
         setTextIfChanged(
             status,
             remaining > 0
-                ? `ON \u{2022} Every ${settings.refreshIntervalSeconds}s \u{2022} ` +
+                ? `Every ${settings.refreshIntervalSeconds}s \u{2022} ` +
                   `next refresh in ${label}`
                 : 'Refreshing now\u{2026}'
         );
@@ -1131,7 +2665,6 @@
             const swapped =
                 swapEveTables(newGroups.map(g => g.table), doc);
 
-            softRefreshFailures = 0;
             log(
                 `Soft refresh OK \u{2014} ${swapped} table(s) updated, ` +
                 `${previousStates.size} states tracked. Panel position ` +
@@ -1140,30 +2673,20 @@
 
             finish();
         } catch (error) {
-            softRefreshFailures += 1;
             const reason =
                 (error && error.name === 'AbortError')
                     ? `timed out after ${SOFT_REFRESH_TIMEOUT_MS / 1000}s`
                     : (error && error.message ? error.message : error);
 
+            // The fail-safe: this cycle falls back to a full reload.
+            // The next cycle tries soft refresh again. (The old
+            // "3 failures -> hard reloads for the session" counter was
+            // unreachable: this reload resets it every time.)
             warn(
-                'Soft refresh failed ' +
-                `(${softRefreshFailures}/${MAX_SOFT_REFRESH_FAILURES}):`,
+                'Soft refresh failed \u{2014} full page reload as ' +
+                'fail-safe:',
                 reason
             );
-
-            if (softRefreshFailures >= MAX_SOFT_REFRESH_FAILURES) {
-                // SESSION ONLY. The old build called saveSettings()
-                // here, which wrote the disable to localStorage and
-                // meant the user silently never got soft refresh back.
-                softRefreshDisabledForSession = true;
-                warn(
-                    'Soft refresh disabled for THIS SESSION after ' +
-                    'repeated failures - using full page reloads. It ' +
-                    'is re-enabled automatically the next time the tab ' +
-                    'is opened; your saved setting is unchanged.'
-                );
-            }
 
             debugSnapshotBeforeRefresh('soft-refresh-fallback');
             flushAlertLog();
@@ -3531,8 +5054,13 @@
                 tail
             ].join('\n'),
             getTransitionIcon(record.transition),
-            record.detailUrl
-                ? () => openFromNotification(record.detailUrl)
+            (record.detailUrl || record.serial)
+                ? () => openNotificationTarget(
+                    record.detailUrl,
+                    record.serial,
+                    jiraFailedAt(record),
+                    jiraIsPretest(record)
+                )
                 : null
         );
     }
@@ -3659,8 +5187,13 @@
                                 : ''
                         ),
                     getTransitionIcon(item.transition),
-                    (item.info && item.info.detailUrl)
-                        ? () => openFromNotification(item.info.detailUrl)
+                    (item.info && (item.info.detailUrl || item.info.serial))
+                        ? () => openNotificationTarget(
+                            item.info.detailUrl,
+                            item.info.serial,
+                            jiraFailedAt(item.record),
+                            jiraIsPretest(item.record)
+                        )
                         : null
                 );
 
@@ -3852,7 +5385,8 @@
     function sendTestNotification(type) {
         const transitionByType = {
             success: 'TEST_SUCCESS',
-            failure: 'TEST_FAILURE'
+            failure: 'TEST_FAILURE',
+            pretest: 'PRETEST_FAILURE'
         };
 
         const transition = transitionByType[type];
@@ -5365,6 +6899,8 @@
 
         renderAlertElement(record, true);
 
+        revealNewAlert(record.id);
+
         return record;
     }
 
@@ -5533,6 +7069,10 @@
 
         applyCardState(card, record, record.detailUrl);
 
+        // A card that only became a failure on confirmation starts its
+        // ticket lookup here.
+        syncJiraForCard(card, record);
+
         const titleEl = card.querySelector('.eve-alert-header span');
 
         if (titleEl) {
@@ -5577,8 +7117,12 @@
         if (!noteEl) {
             noteEl = document.createElement('div');
             noteEl.className = 'eve-alert-phase-note';
-            const timeEl = card.querySelector('.eve-alert-time');
-            if (timeEl) {
+            // The time now sits inside .eve-alert-footer, which is the
+            // direct child to insert before.
+            const timeEl =
+                card.querySelector('.eve-alert-footer') ||
+                card.querySelector('.eve-alert-time');
+            if (timeEl && timeEl.parentNode === card) {
                 card.insertBefore(noteEl, timeEl);
             } else {
                 card.appendChild(noteEl);
@@ -5782,14 +7326,26 @@
                     : ''
             }
 
-            <div
-                class="eve-alert-time"
-                data-ts="${ts}"
-            >
-                ${escapeHtml(formatRelativeTime(ts))}
+            <div class="eve-alert-footer">
+
+                <div
+                    class="eve-alert-time"
+                    data-ts="${ts}"
+                >
+                    ${escapeHtml(formatRelativeTime(ts))}
+                </div>
+
             </div>
 
         `;
+
+        // Jira button, bottom-right. Built as a real link so middle-
+        // click and Ctrl+click open it in a background tab as usual.
+        if (record.serial) {
+            alert
+                .querySelector('.eve-alert-footer')
+                .appendChild(buildJiraButton(record.serial, record));
+        }
 
         // ----------------------------------------------------
         // CLICK ALERT BODY -> OPEN SERVER DETAIL
@@ -5803,7 +7359,8 @@
             alert.addEventListener('click', event => {
                 if (
                     event.target.closest('.eve-alert-serial') ||
-                    event.target.closest('.eve-alert-close')
+                    event.target.closest('.eve-alert-close') ||
+                    event.target.closest('.eve-alert-jira')
                 ) {
                     return;
                 }
@@ -5840,6 +7397,8 @@
         // thing visible without scrolling.
         container.insertBefore(alert, container.firstChild);
 
+        syncJiraForCard(alert, record);
+
         if (shouldStore) {
             storeAlert(record);
         }
@@ -5851,6 +7410,58 @@
     // ============================================================
     // ALERT CONTAINER
     // ============================================================
+
+    // Collapse state of the Alerts window: class, caret and the saved
+    // choice move together, whoever changes it.
+    function setAlertsCollapsed(collapsed) {
+        const container = document.getElementById('eve-alert-container');
+
+        if (!container) {
+            return;
+        }
+
+        container.classList.toggle('eve-alerts-collapsed', collapsed);
+
+        const caret = document.getElementById('eve-alert-caret');
+
+        if (caret) {
+            caret.textContent = collapsed ? '\u{25b8}' : '\u{25be}';
+        }
+
+        try {
+            sessionStorage.setItem(ALERTS_COLLAPSED_KEY, collapsed ? '1' : '0');
+        } catch (error) {
+            // Non-fatal: collapse state just will not persist.
+        }
+    }
+
+
+    // A NEW alert always opens a collapsed Alerts window - closed, it
+    // used to swallow new cards silently. Only when the new card is
+    // actually shown: a DEBUG/diagnostic card hidden with Dev off, or
+    // one outside the active filter/search, leaves it closed. Cards
+    // restored after a reload never come through here, so a reload
+    // keeps the window the way the user left it.
+    function revealNewAlert(alertId) {
+        const container = document.getElementById('eve-alert-container');
+
+        if (
+            !container ||
+            !container.classList.contains('eve-alerts-collapsed')
+        ) {
+            return;
+        }
+
+        const card = Array.prototype.find.call(
+            container.querySelectorAll('.eve-alert'),
+            el => el.dataset.alertId === alertId
+        );
+
+        if (card && card.style.display !== 'none') {
+            setAlertsCollapsed(false);
+        }
+    }
+
 
     function getAlertContainer() {
         const existing = document.getElementById('eve-alert-body');
@@ -5899,16 +7510,16 @@
                 <div id="eve-alert-filters">
 
                     <button class="eve-filter-btn eve-filter-category eve-filter-active"
-                            data-filter="all">All</button>
+                            data-filter="all">All<span class="eve-chip-count"></span></button>
 
                     <button class="eve-filter-btn eve-filter-category"
-                            data-filter="TEST_FAILURE">Fails</button>
+                            data-filter="TEST_FAILURE">Fails<span class="eve-chip-count"></span></button>
 
                     <button class="eve-filter-btn eve-filter-category"
-                            data-filter="PRETEST_FAILURE">Pre-test</button>
+                            data-filter="PRETEST_FAILURE">Pre-test<span class="eve-chip-count"></span></button>
 
                     <button class="eve-filter-btn eve-filter-category"
-                            data-filter="TEST_SUCCESS">Passes</button>
+                            data-filter="TEST_SUCCESS">Passes<span class="eve-chip-count"></span></button>
 
                     <button class="eve-filter-btn eve-debug-visibility-toggle"
                             id="eve-alert-visibility-toggle"
@@ -5922,7 +7533,7 @@
                 <input
                     type="search"
                     id="eve-alert-search"
-                    placeholder="Search serial or location\u{2026}"
+                    placeholder="Search serial, location or Jira\u{2026}"
                 >
 
             </div>
@@ -5944,34 +7555,17 @@
         // COLLAPSE / EXPAND
         // ----------------------------------------------------
 
-        const caret = document.getElementById('eve-alert-caret');
-
         document
             .getElementById('eve-alert-toggle')
             .addEventListener('click', () => {
-                const collapsed =
-                    container.classList.toggle('eve-alerts-collapsed');
-
-                if (caret) {
-                    caret.textContent = collapsed ? '\u{25b8}' : '\u{25be}';
-                }
-
-                try {
-                    sessionStorage.setItem(
-                        ALERTS_COLLAPSED_KEY,
-                        collapsed ? '1' : '0'
-                    );
-                } catch (error) {
-                    // Non-fatal: collapse state just will not persist.
-                }
+                setAlertsCollapsed(
+                    !container.classList.contains('eve-alerts-collapsed')
+                );
             });
 
         try {
             if (sessionStorage.getItem(ALERTS_COLLAPSED_KEY) === '1') {
-                container.classList.add('eve-alerts-collapsed');
-                if (caret) {
-                    caret.textContent = '\u{25b8}';
-                }
+                setAlertsCollapsed(true);
             }
         } catch (error) {
             // Non-fatal.
@@ -5981,9 +7575,28 @@
         // DISMISS ALL
         // ----------------------------------------------------
 
-        document
-            .getElementById('eve-alert-dismiss-all')
-            .addEventListener('click', () => {
+        // Two clicks within 3s. One stray click used to wipe every card
+        // on screen with no way back.
+        const dismissAll = document.getElementById('eve-alert-dismiss-all');
+
+        let dismissArmedTimer = null;
+
+        const disarmDismissAll = () => {
+            clearTimeout(dismissArmedTimer);
+            dismissArmedTimer = null;
+            dismissAll.classList.remove('eve-confirm');
+            dismissAll.textContent = '\u{2715} All';
+        };
+
+        dismissAll.addEventListener('click', () => {
+                if (!dismissArmedTimer) {
+                    dismissAll.classList.add('eve-confirm');
+                    dismissAll.textContent = '\u{2715} Sure?';
+                    dismissArmedTimer = setTimeout(disarmDismissAll, 3000);
+                    return;
+                }
+
+                disarmDismissAll();
                 clearStoredAlerts();
                 body
                     .querySelectorAll('.eve-alert')
@@ -6034,6 +7647,15 @@
             searchInput.addEventListener('input', () => {
                 alertSearch = searchInput.value.trim().toLowerCase();
                 applyAlertFilter();
+            });
+
+            searchInput.addEventListener('keydown', event => {
+                if (event.key === 'Escape' && searchInput.value) {
+                    event.preventDefault();
+                    searchInput.value = '';
+                    alertSearch = '';
+                    applyAlertFilter();
+                }
             });
         }
 
@@ -6371,6 +7993,17 @@
 
         let visible = 0;
 
+        // Per-chip counts (ignoring the active filter and the search, so
+        // every chip always says how many it WOULD show).
+        const chips =
+            document.querySelectorAll('#eve-alert-filters .eve-filter-category');
+
+        const chipCounts = {};
+
+        chips.forEach(chip => {
+            chipCounts[chip.dataset.filter] = 0;
+        });
+
         // Loop invariants. Both depend only on state that is fixed
         // for the whole call, so they are computed once instead of
         // once per card.
@@ -6380,7 +8013,10 @@
         const allowedTransitions =
             FILTER_TRANSITION_GROUPS[alertFilter] || [alertFilter];
 
-        const showDebug = !!settings.showDebug;
+        // Dev-only control. With Dev off, DEBUG/test and SYS_DEKIT
+        // diagnostic cards stay hidden (still logged and exported),
+        // since the button that would reveal them is hidden too.
+        const showDebug = !!settings.developerMode && !!settings.showDebug;
 
         cards.forEach(card => {
             const matchesType =
@@ -6400,6 +8036,18 @@
                     card.dataset.diagnostic !== '1'
                 );
 
+            if (matchesDebugVisibility) {
+                Object.keys(chipCounts).forEach(key => {
+                    if (
+                        key === 'all' ||
+                        (FILTER_TRANSITION_GROUPS[key] || [key])
+                            .indexOf(card.dataset.transition) !== -1
+                    ) {
+                        chipCounts[key] += 1;
+                    }
+                });
+            }
+
             const show =
                 matchesType && matchesSearch && matchesDebugVisibility;
 
@@ -6407,6 +8055,13 @@
             if (show) {
                 visible += 1;
             }
+        });
+
+        chips.forEach(chip => {
+            const countSpan = chip.querySelector('.eve-chip-count');
+            const count = chipCounts[chip.dataset.filter];
+
+            setTextIfChanged(countSpan, count ? String(count) : '');
         });
 
         const countEl = document.getElementById('eve-alert-count');
@@ -6640,39 +8295,6 @@
 
 
     // ============================================================
-    // COLLAPSIBLE MENU STATE PERSISTENCE
-    // ============================================================
-
-    function setupMenuStatePersistence(panel) {
-        if (!panel) {
-            return;
-        }
-
-        const open =
-            readJSON(localStorage, MENU_STATE_KEY, null, null) || {};
-
-        panel
-            .querySelectorAll('details.eve-collapse')
-            .forEach((details, index) => {
-                const key = 'menu' + index;
-                if (open[key]) {
-                    details.open = true;
-                }
-
-                details.addEventListener('toggle', () => {
-                    // `open` is the only writer of this key in this
-                    // tab (@noframes, one page), so the previous
-                    // read-parse-modify-write on every single toggle
-                    // was defending against a concurrent writer that
-                    // cannot exist.
-                    open[key] = details.open;
-                    writeJSON(localStorage, MENU_STATE_KEY, open, null);
-                });
-            });
-    }
-
-
-    // ============================================================
     // TRACKER WINDOW UX  (drag / collapse / snap)
     // ============================================================
     //
@@ -6852,8 +8474,6 @@
 
         setupTrackerWindowUX(panel);
 
-        setupMenuStatePersistence(panel);
-
         buildSectionControls();
 
         wireTrackerSettings();
@@ -6878,13 +8498,7 @@
             runNotificationDiagnostic();
         });
 
-        wireButton('eve-debug-persistence', () => {
-            savePreviousStates();
-            debugSnapshotBeforeRefresh('manual-button');
-            flushAlertLog();
-            log('Reloading page now to test persistence...');
-            location.reload();
-        });
+        wireButton('eve-debug-pretest', () => sendTestNotification('pretest'));
 
         wireButton('eve-clear-log', () => clearAlertLog());
     }
@@ -6922,6 +8536,10 @@
                     </div>
                 </div>
 
+                <span id="eve-refresh-mini"
+                      class="eve-summary-badge eve-badge-on"
+                      title="Next refresh (panel collapsed)"></span>
+
                 <span id="eve-health-chip"
                       class="eve-health-chip eve-health-ok"
                       title="Detection is healthy.">OK</span>
@@ -6931,114 +8549,186 @@
             <div id="eve-ui-page-main"
                  class="eve-ui-page eve-ui-page-active">
 
+                <div id="eve-sleep-banner" class="eve-sleep-banner" role="status" hidden>
+
+                    <span class="eve-sleep-icon" aria-hidden="true">\u{23f0}</span>
+
+                    <div class="eve-sleep-text">
+                        <div class="eve-sleep-title"></div>
+                        <div class="eve-sleep-when"></div>
+                        <div class="eve-sleep-how"></div>
+                    </div>
+
+                    <div class="eve-sleep-actions">
+                        <button type="button" class="eve-sleep-close" title="Dismiss" aria-label="Dismiss">\u{d7}</button>
+                        <button type="button" class="eve-sleep-copy" title="Copy this site's address to paste into the browser setting">Copy site</button>
+                    </div>
+
+                </div>
+
                 <div class="eve-section-title">
 
                     Tracker Controls
 
                 </div>
 
-                <div class="eve-buttons">
+                <div class="eve-buttons eve-bulk-buttons">
 
-                    <button id="eve-show-all">
+                    <button id="eve-show-all" title="Show every section on the page">
                         Show All
                     </button>
 
-                    <button id="eve-hide-all">
+                    <button id="eve-hide-all" title="Hide every section on the page">
                         Hide All
                     </button>
 
-                    <button id="eve-watch-all">
+                    <button id="eve-watch-all" title="Notifications ON for every section">
                         All Notifs
                     </button>
 
-                    <button id="eve-watch-none">
+                    <button id="eve-watch-none" title="Notifications OFF for every section">
                         No Notifs
                     </button>
 
                 </div>
 
-                <div id="eve-section-list"></div>
+                <div class="eve-section-card">
+
+                    <div class="eve-section-head" aria-hidden="true">
+                        <span>Section</span>
+                        <span title="Show or hide this section on the rack page">Show</span>
+                        <span title="Desktop notifications for this section (results are logged either way)">Notifs</span>
+                    </div>
+
+                    <div id="eve-section-list"></div>
+
+                </div>
 
 
-                <details class="eve-collapse eve-collapse-outer">
+                <!-- Auto refresh: always on, so no menu - one row with
+                     the countdown and the interval. -->
+                <div class="eve-refresh-card">
 
-                    <summary class="eve-collapse-title">
-                        \u{1f504} Auto Refresh
+                    <div class="eve-refresh-row">
+
+                        <span class="eve-refresh-label">
+                            <span class="eve-live-dot" aria-hidden="true"></span>
+                            Auto refresh
+                        </span>
+
+                        <select id="eve-refresh-interval" title="Refresh interval">
+
+                            <option value="30">Every 30s</option>
+                            <option value="20">Every 20s</option>
+                            <option value="10">Every 10s</option>
+
+                        </select>
+
                         <span
-                            class="eve-summary-badge"
+                            class="eve-summary-badge eve-badge-on"
                             id="eve-refresh-badge"
+                            title="Time until the next refresh"
                         ></span>
-                    </summary>
 
-                    <div class="eve-collapse-body">
-
-                        <div class="eve-refresh-controls">
-
-                            <label class="eve-refresh-toggle">
-
-                                <input
-                                    type="checkbox"
-                                    id="eve-auto-refresh"
-                                >
-
-                                <span>
-                                    Auto Refresh
-                                </span>
-
-                            </label>
-
-                            <label class="eve-refresh-interval">
-
-                                Every
-
-                                <select id="eve-refresh-interval">
-
-                                    <option value="30">30 seconds</option>
-                                    <option value="60">60 seconds</option>
-                                    <option value="120">2 minutes</option>
-                                    <option value="300">5 minutes</option>
-                                    <option value="600">10 minutes</option>
-
-                                </select>
-
-                            </label>
-
-                        </div>
-
-                        <div class="eve-refresh-status"
-                             id="eve-refresh-status">
-                        </div>
-
-                        <div class="eve-refresh-status"
-                             id="eve-last-scan">
-                        </div>
-
-                        <label class="eve-refresh-toggle">
-
-                            <input
-                                type="checkbox"
-                                id="eve-soft-refresh"
-                            >
-
-                            <span>
-                                Soft refresh (keeps position &amp; alerts)
-                            </span>
-
-                        </label>
-
-                        <div class="eve-debug-hint">
-
-                            Soft refresh reloads the data in the
-                            background instead of reloading the whole
-                            page, so the tracker window stays where you
-                            put it. Falls back to a full reload
-                            automatically if it fails.
-
-                        </div>
+                        <button type="button"
+                                id="eve-refresh-now"
+                                class="eve-icon-btn"
+                                title="Refresh now"
+                                aria-label="Refresh now">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.2"
+                                 stroke-linecap="round" stroke-linejoin="round"
+                                 aria-hidden="true">
+                                <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                                <path d="M21 3v6h-6"/>
+                            </svg>
+                        </button>
 
                     </div>
 
-                </details>
+                    <div class="eve-refresh-progress" aria-hidden="true">
+                        <span id="eve-refresh-progress-fill"></span>
+                    </div>
+
+                </div>
+
+                <!-- Refresh internals: Dev only. -->
+                <div class="eve-dev-group eve-dev-only">
+
+                    <div class="eve-dev-label">Refresh diagnostics</div>
+
+                    <div class="eve-refresh-status"
+                         id="eve-refresh-status">
+                    </div>
+
+                    <div class="eve-refresh-status"
+                         id="eve-last-scan">
+                    </div>
+
+                    <div class="eve-refresh-status"
+                         id="eve-keepalive-status">
+                    </div>
+
+                    <div class="eve-debug-hint">
+
+                        Soft refresh reloads the data in the background;
+                        a full page reload only happens if that fails.
+
+                    </div>
+
+                </div>
+
+
+                <div class="eve-dev-group eve-dev-only">
+
+                    <div class="eve-dev-label">
+
+                        Jira
+
+                        <span
+                            class="eve-summary-badge"
+                            id="eve-jira-badge"
+                            style="display:none"
+                        ></span>
+
+                    </div>
+
+                    <label class="eve-dev-row" for="eve-notification-click">
+
+                        <span>Toast click opens</span>
+
+                        <select id="eve-notification-click" class="eve-dev-input">
+
+                            <option value="jira">Jira ticket</option>
+                            <option value="detail">Server detail</option>
+                            <option value="both">Both</option>
+
+                        </select>
+
+                    </label>
+
+                    <label class="eve-dev-row" for="eve-jira-base-url">
+
+                        <span>Jira URL</span>
+
+                        <input
+                            type="url"
+                            id="eve-jira-base-url"
+                            class="eve-dev-input eve-jira-url"
+                            spellcheck="false"
+                        >
+
+                    </label>
+
+                    <div class="eve-debug-hint">
+
+                        Card Jira buttons open the most recently updated
+                        ticket for the serial, using this browser's Jira
+                        login. Nothing is stored or sent anywhere else.
+
+                    </div>
+
+                </div>
 
             </div>
 
@@ -7051,93 +8741,89 @@
                  class="eve-ui-page"
                  hidden>
 
-                <div class="eve-page-heading">
+                <div class="eve-section-title">
 
-                    Developer / Diagnostics
+                    Developer
 
                 </div>
 
-                <details
-                    id="eve-debug-tools"
-                    class="eve-collapse eve-collapse-outer"
-                    open
-                >
+                <div class="eve-dev-group">
 
-                    <summary class="eve-collapse-title">
-                        \u{1f6e0} Debug Tools
-                    </summary>
+                    <div class="eve-dev-label">Test notifications</div>
 
-                    <div class="eve-collapse-body">
+                    <div class="eve-dev-grid">
 
-                        <details class="eve-collapse" open>
+                        <button id="eve-debug-success"
+                                class="eve-dev-btn"
+                                title="Card + desktop toast for a fake PASS (DEBUG serial, never logged)">
+                            <span class="eve-dot eve-dot-pass" aria-hidden="true"></span>
+                            Test pass
+                        </button>
 
-                            <summary class="eve-collapse-title">
-                                Debug / Test Notifications
-                            </summary>
+                        <button id="eve-debug-failure"
+                                class="eve-dev-btn"
+                                title="Card + desktop toast for a fake FAIL (DEBUG serial, never logged)">
+                            <span class="eve-dot eve-dot-fail" aria-hidden="true"></span>
+                            Test fail
+                        </button>
 
-                            <div class="eve-collapse-body">
+                        <button id="eve-debug-notify-diagnostic"
+                                class="eve-dev-btn"
+                                title="Sends 5 toasts with different options over ~10s - watch the desktop and the console">
+                            Diagnose toasts
+                        </button>
 
-                                <div class="eve-buttons">
-
-                                    <button id="eve-debug-success">
-                                        \u{1f7e2} Test Success
-                                    </button>
-
-                                    <button id="eve-debug-failure">
-                                        \u{274c} Test Failure
-                                    </button>
-
-                                    <button id="eve-debug-persistence">
-                                        \u{1f4be} Refresh &amp; Compare (Persistence Test)
-                                    </button>
-
-                                    <button id="eve-debug-notify-diagnostic">
-                                        \u{1f6a8} Diagnose Desktop Toasts (5 tests)
-                                    </button>
-
-                                    <button id="eve-clear-log">
-                                        \u{1f5d1} Clear Alert Log
-                                    </button>
-
-                                </div>
-
-                                <div class="eve-debug-hint">
-
-                                    Clearing the log permanently deletes
-                                    the saved alert history. Export it
-                                    first if you need the record.
-
-                                </div>
-
-                                <div class="eve-debug-hint">
-
-                                    Desktop notification duration: 0 = stays until you
-                                    close it manually. Any other number = seconds before
-                                    it auto-dismisses.
-
-                                </div>
-
-                                <div class="eve-buttons">
-
-                                    <label for="eve-notification-timeout"
-                                           style="display:flex;align-items:center;gap:6px;">
-                                        Auto-close after (seconds, 0 = never):
-                                        <input type="number"
-                                               id="eve-notification-timeout"
-                                               min="0"
-                                               step="1"
-                                               style="width:70px;">
-                                    </label>
-
-                                </div>
-
-                            </div>
-
-                        </details>
+                        <button id="eve-debug-pretest"
+                                class="eve-dev-btn"
+                                title="Card + desktop toast for a fake PRE-TEST FAIL (DEBUG serial, never logged)">
+                            <span class="eve-dot eve-dot-pretest" aria-hidden="true"></span>
+                            Pre-test fail
+                        </button>
 
                     </div>
 
-                </details>
+                </div>
+
+                <div class="eve-dev-group">
+
+                    <div class="eve-dev-label">Desktop toasts</div>
+
+                    <label class="eve-dev-row" for="eve-notification-timeout">
+
+                        <span>Auto-close after</span>
+
+                        <span class="eve-dev-inline">
+                            <input type="number"
+                                   id="eve-notification-timeout"
+                                   class="eve-dev-input eve-dev-number"
+                                   min="0"
+                                   step="1">
+                            <span class="eve-dev-unit">sec</span>
+                        </span>
+
+                    </label>
+
+                    <div class="eve-debug-hint">0 = stays until you close it.</div>
+
+                </div>
+
+                <div class="eve-dev-group">
+
+                    <div class="eve-dev-label">Alert log</div>
+
+                    <div class="eve-dev-row">
+
+                        <span class="eve-dev-note">Deletes today's saved history. Export first.</span>
+
+                        <button id="eve-clear-log"
+                                class="eve-dev-btn eve-danger-btn"
+                                title="Permanently delete today's alert log (asks first)">
+                            Clear log
+                        </button>
+
+                    </div>
+
+                </div>
 
             </div>
 
@@ -7219,7 +8905,6 @@
 
         const mainPage  = document.getElementById('eve-ui-page-main');
         const debugPage = document.getElementById('eve-ui-page-debug');
-        const debugTools = document.getElementById('eve-debug-tools');
 
         const pageNavigation =
             document.getElementById('eve-page-navigation');
@@ -7306,10 +8991,6 @@
                 dot.tabIndex = enabled ? 0 : -1;
             });
 
-            if (debugTools) {
-                debugTools.hidden = !enabled;
-            }
-
             if (!enabled) {
                 developerPage = 0;
             }
@@ -7335,6 +9016,9 @@
                 // Enabling always starts on the normal page.
                 developerPage = 0;
                 applyDeveloperModeUI();
+
+                // DEBUG visibility depends on Dev mode.
+                applyAlertFilter();
                 log(
                     'Developer Mode ' +
                     (
@@ -7355,37 +9039,15 @@
     // ------------------------------------------------------------
 
     function wireTrackerSettings() {
-        // Applied immediately - cancels any pending reload if turned
-        // off, reschedules if turned on.
-        bindSetting('eve-auto-refresh', 'autoRefresh', {
-            after: restartAutoRefresh
-        });
-
+        // Applied immediately - reschedules the pending refresh.
         bindSetting('eve-refresh-interval', 'refreshIntervalSeconds', {
-            coerce: Number,
-            after:  restartAutoRefresh
+            coerce: coerceRefreshInterval,
+            writeBack: true,
+            after:  restartAutoRefresh,
+            message: seconds => `Auto refresh interval set to ${seconds}s.`
         });
 
         updateRefreshCountdown();
-
-        bindSetting('eve-soft-refresh', 'softRefresh', {
-            after: enabled => {
-                // A deliberate re-tick clears the session-level
-                // failure lockout too.
-                if (enabled) {
-                    softRefreshDisabledForSession = false;
-                    softRefreshFailures = 0;
-                }
-            },
-            message: enabled =>
-                'Soft refresh ' +
-                (
-                    enabled
-                        ? 'ENABLED \u{2014} page content swaps in ' +
-                          'place, tracker position preserved.'
-                        : 'DISABLED \u{2014} using full page reloads.'
-                )
-        });
 
         // writeBack: a rejected value must not stay in the box.
         bindSetting(
@@ -7402,6 +9064,38 @@
                     `${seconds} seconds (0 = never auto-closes).`
             }
         );
+
+        bindSetting('eve-notification-click', 'notificationClickTarget', {
+            coerce: raw =>
+                ['jira', 'detail', 'both'].indexOf(raw) !== -1 ? raw : 'jira',
+            message: target =>
+                `Desktop notification click now opens: ${target}.`
+        });
+
+        // writeBack: a rejected URL snaps back to the working one.
+        bindSetting('eve-jira-base-url', 'jiraBaseUrl', {
+            coerce: raw => {
+                const value = String(raw || '').trim().replace(/\/+$/, '');
+                return /^https?:\/\/[^\s/]+/i.test(value)
+                    ? value
+                    : JIRA_DEFAULT_BASE_URL;
+            },
+            writeBack: true,
+            after: () => {
+                // Keys from another Jira mean nothing here.
+                loadJiraCache().clear();
+                saveJiraCache();
+                jiraAuthPausedUntil = 0;
+                jiraNeedsLogin      = false;
+                jiraConnected       = false;
+                refreshJiraOnCards();
+            },
+            message: url => `Jira URL set to ${url}.`
+        });
+
+        setJiraBadge('');
+
+        wireButton('eve-refresh-now', refreshNow);
 
         wireButton('eve-show-all',   () => setAllSections('show', true));
         wireButton('eve-hide-all',   () => setAllSections('show', false));
@@ -7470,25 +9164,23 @@
 
                 </span>
 
-                <label>
+                <label class="eve-switch" title="Show ${escapeHtml(section)} on the page">
 
                     <input
                         type="checkbox"
                         class="eve-show-checkbox"
+                        aria-label="Show ${escapeHtml(section)}"
                     >
-
-                    Show
 
                 </label>
 
-                <label>
+                <label class="eve-switch" title="Desktop notifications for ${escapeHtml(section)}">
 
                     <input
                         type="checkbox"
                         class="eve-watch-checkbox"
+                        aria-label="Notifications for ${escapeHtml(section)}"
                     >
-
-                    Notifs
 
                 </label>
 
@@ -7593,6 +9285,20 @@
 
         style.textContent = `
             /* =====================================================
+               THEME TOKENS (v0.9.7)
+               ===================================================== */
+            #eve-tracker-panel, #eve-alert-container {
+                --eve-font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+                --eve-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+                --eve-text: #e8eaed;
+                --eve-muted: #9aa0a6;
+                --eve-line: rgba(255, 255, 255, .08);
+                --eve-line-strong: rgba(255, 255, 255, .14);
+                --eve-control: rgba(255, 255, 255, .06);
+                --eve-control-hover: rgba(255, 255, 255, .11);
+                --eve-blue: #3b82f6;
+            }
+            /* =====================================================
                TRACKER PANEL
                ===================================================== */
             /* =====================================================
@@ -7611,16 +9317,16 @@
                 height: 25px;
                 padding: 0;
                 margin: 0;
-                border: 1px solid #666;
-                border-radius: 5px;
-                background: #444;
-                color: white;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                background: var(--eve-control);
+                color: var(--eve-text);
                 font-size: 18px;
                 font-weight: bold;
                 line-height: 22px;
                 cursor: pointer;
             }
-            #eve-tracker-panel .eve-collapse-btn:hover { background: #666; }
+            #eve-tracker-panel .eve-collapse-btn:hover { background: var(--eve-control-hover); }
             #eve-tracker-panel.eve-tracker-collapsed { width: 340px; }
             #eve-tracker-panel {
                 position: fixed;
@@ -7629,22 +9335,25 @@
                 width: 340px;
                 max-height: 90vh;
                 overflow-y: auto;
+                scrollbar-width: thin;
+                scrollbar-color: rgba(255, 255, 255, .18) transparent;
                 z-index: 2147483646;
-                background: #222;
-                color: white;
-                border: 2px solid #555;
-                border-radius: 8px;
+                background: #16171b;
+                color: var(--eve-text);
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 12px;
                 padding: 12px;
-                font-family: Arial, Helvetica, sans-serif;
+                font-family: var(--eve-font);
                 font-size: 13px;
-                box-shadow: 0 4px 15px rgba(0, 0, 0, .5);
+                box-shadow: 0 12px 40px rgba(0, 0, 0, .45), 0 1px 0 rgba(255, 255, 255, .04) inset;
             }
             .eve-panel-title {
                 display: flex;
                 align-items: center;
                 gap: 8px;
-                font-size: 19px;
-                font-weight: bold;
+                font-size: 18px;
+                font-weight: 700;
+                letter-spacing: -.01em;
                 margin-bottom: 7px;
             }
             .eve-title-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
@@ -7661,9 +9370,10 @@
                the section's state is readable without expanding. */
             .eve-summary-badge {
                 font-size: 10px;
-                font-weight: bold;
-                padding: 2px 6px;
-                border-radius: 3px;
+                font-weight: 700;
+                letter-spacing: .03em;
+                padding: 2px 7px;
+                border-radius: 999px;
                 margin-left: 6px;
                 vertical-align: middle;
             }
@@ -7711,50 +9421,88 @@
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
-                padding: 7px 10px;
-                background: #232323;
-                border-bottom: 1px solid #444;
+                padding: 8px 10px;
+                background: #17181c;
+                border-bottom: 1px solid var(--eve-line);
             }
             .eve-alerts-collapsed #eve-alert-toolbar { display: none; }
             #eve-alert-filters { display: flex; gap: 4px; flex-wrap: wrap; }
             .eve-filter-btn {
-                background: #333;
-                color: #ccc;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 3px 9px;
+                background: var(--eve-control);
+                color: #c4c7cc;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 999px;
+                padding: 3px 10px;
+                font-family: var(--eve-font);
                 font-size: 11px;
-                font-weight: bold;
+                font-weight: 600;
                 cursor: pointer;
+                transition: background .12s, border-color .12s, color .12s;
             }
-            .eve-filter-btn:hover { background: #414141; }
+            .eve-filter-btn:hover { background: var(--eve-control-hover); color: #fff; }
             .eve-filter-btn.eve-filter-active {
-                background: #0d6efd;
-                border-color: #0d6efd;
+                background: var(--eve-blue);
+                border-color: var(--eve-blue);
                 color: #fff;
             }
+            /* Same height with or without a count. */
+            .eve-filter-btn {
+                display: inline-flex;
+                align-items: center;
+                height: 24px;
+                box-sizing: border-box;
+            }
+            .eve-chip-count {
+                display: inline-block;
+                min-width: 8px;
+                margin-left: 6px;
+                padding: 0 6px;
+                border-radius: 999px;
+                background: rgba(255, 255, 255, .12);
+                font-size: 10px;
+                line-height: 16px;
+                text-align: center;
+                font-variant-numeric: tabular-nums;
+            }
+            .eve-chip-count:empty { display: none; }
+            .eve-filter-btn[data-filter="TEST_FAILURE"] .eve-chip-count { background: rgba(230, 9, 86, .3); color: #ffc2d6; }
+            .eve-filter-btn[data-filter="PRETEST_FAILURE"] .eve-chip-count { background: rgba(145, 4, 33, .75); color: #f4b6c2; }
+            .eve-filter-btn[data-filter="TEST_SUCCESS"] .eve-chip-count { background: rgba(9, 230, 138, .22); color: #b3f9da; }
+            .eve-filter-btn.eve-filter-active .eve-chip-count { background: rgba(255, 255, 255, .25); color: #fff; }
             /* DEBUG visibility is a modifier, never a category tab. */
             .eve-debug-visibility-toggle { margin-left: 2px; }
+            /* Dev-only controls: the Jira settings menu (panel) and the
+               DEBUG toggle (alerts window, a separate element - hence
+               the body class). */
+            #eve-tracker-panel:not(.eve-developer-enabled) .eve-dev-only,
+            body:not(.eve-dev-mode) .eve-debug-visibility-toggle { display: none !important; }
             .eve-debug-visibility-toggle.eve-debug-hidden {
-                background: #555;
-                border-color: #777;
+                background: rgba(255, 255, 255, .16);
+                border-color: rgba(255, 255, 255, .28);
                 color: #fff;
             }
             #eve-alert-search {
                 width: 100%;
                 box-sizing: border-box;
-                background: #1b1b1b;
-                color: #eee;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 7px;
+                background: #0f1013;
+                color: var(--eve-text);
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 8px;
+                padding: 6px 10px;
+                font-family: var(--eve-font);
                 font-size: 12px;
+                outline: none;
+                transition: border-color .12s, box-shadow .12s;
+            }
+            #eve-alert-search::placeholder { color: #6b7078; }
+            #eve-alert-search:focus {
+                border-color: var(--eve-blue);
+                box-shadow: 0 0 0 3px rgba(59, 130, 246, .2);
             }
             /* =====================================================
                SESSION SUMMARY
                ===================================================== */
             /* Small byline directly under the panel title. */
-            .eve-byline { font-size: 10px; color: #999; margin-top: -4px; margin-bottom: 6px; }
             /* Contact footer \u{2014} sits at the very bottom of the
                panel, deliberately small so it takes minimal space. */
             /* Merged from two separate .eve-credit rules. The second
@@ -7770,64 +9518,276 @@
                 line-height: 1.4;
                 margin-top: 2px;
                 padding-top: 6px;
-                border-top: 1px solid #444;
+                border-top: 1px solid var(--eve-line);
                 word-break: break-word;
             }
             .eve-section-title {
-                font-weight: bold;
-                border-bottom: 1px solid #555;
-                padding-bottom: 5px;
-                margin-top: 10px;
-                margin-bottom: 7px;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: .08em;
+                text-transform: uppercase;
+                color: var(--eve-muted);
+                margin-top: 12px;
+                margin-bottom: 8px;
             }
             .eve-buttons { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+            /* Main-page bulk actions: one even row. */
+            .eve-buttons.eve-bulk-buttons {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                gap: 6px;
+                margin-bottom: 10px;
+            }
+            .eve-buttons.eve-bulk-buttons button {
+                padding: 6px 4px;
+                font-size: 11.5px;
+                white-space: nowrap;
+            }
             .eve-buttons button {
                 cursor: pointer;
-                padding: 5px 8px;
-                border: 1px solid #777;
-                border-radius: 4px;
-                background: #333;
-                color: white;
+                padding: 5px 10px;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                background: var(--eve-control);
+                color: var(--eve-text);
+                font-family: var(--eve-font);
+                font-size: 12px;
+                font-weight: 600;
+                transition: background .12s, border-color .12s;
             }
-            .eve-buttons button:hover { background: #555; }
-            .eve-refresh-controls {
+            .eve-buttons button:hover { background: var(--eve-control-hover); border-color: rgba(255, 255, 255, .22); }
+            /* Auto refresh row: label, countdown, interval, progress. */
+            .eve-refresh-card {
+                margin-top: 10px;
+                background: rgba(255, 255, 255, .03);
+                border: 1px solid var(--eve-line);
+                border-radius: 10px;
+                overflow: hidden;
+            }
+            .eve-refresh-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 8px 8px 11px;
+            }
+            .eve-refresh-label {
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+                flex: 0 1 auto;
+                min-width: 0;
+                font-size: 13px;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            /* Pulses once a second: the timer is alive. */
+            .eve-live-dot {
+                flex: 0 0 auto;
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: #22c55e;
+                box-shadow: 0 0 0 3px rgba(34, 197, 94, .18);
+                animation: eve-live 2s ease-in-out infinite;
+            }
+            @keyframes eve-live {
+                0%, 100% { opacity: 1; }
+                50%      { opacity: .35; }
+            }
+            .eve-icon-btn {
+                flex: 0 0 auto;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 28px;
+                height: 28px;
+                padding: 0;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                background: var(--eve-control);
+                color: var(--eve-muted);
+                cursor: pointer;
+                transition: background .12s, color .12s;
+            }
+            .eve-icon-btn:hover { background: var(--eve-control-hover); color: var(--eve-text); }
+            .eve-icon-btn:active svg { transform: rotate(90deg); }
+            .eve-icon-btn svg { transition: transform .2s ease; }
+            /* Countdown copy in the title - only while collapsed. */
+            #eve-refresh-mini { display: none; margin-left: auto; font-variant-numeric: tabular-nums; }
+            #eve-tracker-panel.eve-tracker-collapsed #eve-refresh-mini { display: inline-block; }
+            #eve-tracker-panel.eve-tracker-collapsed.eve-developer-enabled .eve-health-chip { margin-left: 6px; }
+            /* Pushed right; wide enough that "28.4s" never jiggles. */
+            #eve-refresh-badge {
+                flex: 0 0 auto;
+                margin-left: auto;
+                min-width: 58px;
+                padding: 3px 8px;
+                box-sizing: border-box;
+                text-align: center;
+                font-size: 11px;
+                font-variant-numeric: tabular-nums;
+            }
+            #eve-refresh-interval {
+                flex: 0 0 auto;
+                padding: 4px 6px;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                background: #0f1013;
+                color: var(--eve-text);
+                font-family: var(--eve-font);
+                font-size: 12px;
+                cursor: pointer;
+            }
+            #eve-refresh-interval:focus { outline: none; border-color: var(--eve-blue); }
+            .eve-refresh-progress { height: 2px; background: rgba(255, 255, 255, .05); }
+            #eve-refresh-progress-fill {
+                display: block;
+                width: 0;
+                height: 100%;
+                background: linear-gradient(90deg, #16a34a, #4ade80);
+                transition: width .2s linear;
+            }
+            /* Shown after the browser put this tab to sleep. */
+            .eve-sleep-banner {
+                display: flex;
+                align-items: flex-start;
+                gap: 10px;
+                margin-top: 10px;
+                padding: 9px 10px;
+                border-radius: 10px;
+                border: 1px solid rgba(245, 158, 11, .45);
+                background: rgba(245, 158, 11, .1);
+                font-size: 12px;
+                line-height: 1.4;
+            }
+            .eve-sleep-banner[hidden] { display: none; }
+            .eve-sleep-icon { flex: 0 0 auto; font-size: 16px; line-height: 1.2; }
+            .eve-sleep-text { flex: 1 1 auto; min-width: 0; }
+            .eve-sleep-title { font-weight: 700; color: #fcd34d; }
+            .eve-sleep-when { color: var(--eve-muted); }
+            .eve-sleep-how { margin-top: 3px; color: var(--eve-text); }
+            .eve-sleep-actions {
+                flex: 0 0 auto;
+                display: flex;
+                flex-direction: column;
+                align-items: flex-end;
+                gap: 6px;
+            }
+            .eve-sleep-close {
+                padding: 0;
+                border: 0;
+                background: transparent;
+                color: #fcd34d;
+                font-size: 16px;
+                line-height: 1;
+                cursor: pointer;
+            }
+            .eve-sleep-copy {
+                padding: 3px 8px;
+                border: 1px solid rgba(245, 158, 11, .5);
+                border-radius: 6px;
+                background: rgba(245, 158, 11, .15);
+                color: #fde68a;
+                font-family: var(--eve-font);
+                font-size: 11px;
+                font-weight: 600;
+                white-space: nowrap;
+                cursor: pointer;
+            }
+            .eve-sleep-copy:hover { background: rgba(245, 158, 11, .28); }
+            .eve-refresh-status {
+                font-family: var(--eve-mono);
+                font-size: 10.5px;
+                color: var(--eve-muted);
+                margin-bottom: 4px;
+                font-variant-numeric: tabular-nums;
+            }
+            .eve-refresh-status:empty { display: none; }
+            /* =====================================================
+               DEV GROUPS (Developer page + Dev-only Jira settings)
+               =====================================================
+               Flat cards - both areas are already behind the Dev
+               switch, so nothing folds. */
+            .eve-dev-group {
+                margin-top: 10px;
+                padding: 10px;
+                border: 1px solid var(--eve-line);
+                border-radius: 10px;
+                background: rgba(255, 255, 255, .03);
+            }
+            .eve-dev-label {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 8px;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: .08em;
+                text-transform: uppercase;
+                color: var(--eve-muted);
+            }
+            .eve-dev-label .eve-summary-badge { margin-left: 0; letter-spacing: .03em; }
+            .eve-dev-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 6px;
+            }
+            .eve-dev-row {
                 display: flex;
                 align-items: center;
                 justify-content: space-between;
-                gap: 8px;
-                padding: 6px 0;
-                flex-wrap: wrap;
+                gap: 10px;
+                padding: 3px 0;
+                font-size: 12.5px;
             }
-            .eve-refresh-toggle {
-                display: flex;
+            .eve-dev-row + .eve-debug-hint { margin: 6px 0 0; }
+            .eve-dev-group > .eve-debug-hint:last-child { margin-bottom: 0; }
+            .eve-dev-inline { display: inline-flex; align-items: center; gap: 6px; }
+            .eve-dev-unit { color: var(--eve-muted); font-size: 11px; }
+            .eve-dev-note { color: var(--eve-muted); font-size: 11px; line-height: 1.35; }
+            .eve-dev-btn {
+                display: inline-flex;
                 align-items: center;
-                gap: 5px;
+                justify-content: center;
+                gap: 7px;
+                padding: 7px 10px;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                background: var(--eve-control);
+                color: var(--eve-text);
+                font-family: var(--eve-font);
+                font-size: 12px;
+                font-weight: 600;
+                white-space: nowrap;
                 cursor: pointer;
-                font-weight: bold;
+                transition: background .12s, border-color .12s;
             }
-            .eve-refresh-interval { display: flex; align-items: center; gap: 5px; }
-            .eve-refresh-interval select {
-                padding: 3px 5px;
-                border: 1px solid #777;
-                border-radius: 4px;
-                background: #333;
-                color: white;
+            .eve-dev-btn:hover { background: var(--eve-control-hover); border-color: rgba(255, 255, 255, .22); }
+            .eve-danger-btn { flex: 0 0 auto; border-color: rgba(239, 68, 68, .45); background: rgba(239, 68, 68, .1); color: #fca5a5; }
+            .eve-danger-btn:hover { background: rgba(239, 68, 68, .22); border-color: rgba(239, 68, 68, .7); color: #fff; }
+            .eve-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; }
+            .eve-dot-pass { background: #09e68a; }
+            .eve-dot-fail { background: #e60956; }
+            .eve-dot-pretest { background: #c2334f; }
+            .eve-dev-input {
+                flex: 0 1 auto;
+                min-width: 0;
+                padding: 4px 8px;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                background: #0f1013;
+                color: var(--eve-text);
+                font-family: var(--eve-font);
+                font-size: 12px;
             }
-            .eve-refresh-status { font-size: 11px; color: #aaa; margin-bottom: 5px; }
+            .eve-dev-input:focus { outline: none; border-color: var(--eve-blue); }
+            .eve-dev-number { width: 64px; text-align: right; }
+            .eve-jira-url { flex: 1 1 auto; max-width: 210px; font-family: var(--eve-mono); font-size: 11px; }
             /* =====================================================
                TWO-PAGE UI / SUBTLE DEVELOPER MODE
                ===================================================== */
             .eve-ui-page { width: 100%; }
             .eve-ui-page[hidden] { display: none !important; }
-            .eve-page-heading {
-                font-size: 12px;
-                font-weight: bold;
-                color: #aaa;
-                padding: 2px 4px 6px;
-                border-bottom: 1px solid #444;
-                margin-bottom: 4px;
-                letter-spacing: 0.2px;
-            }
             .eve-page-navigation {
                 display: flex;
                 align-items: center;
@@ -7885,53 +9845,92 @@
                 align-items: center;
                 gap: 2px;
                 flex: 0 0 auto;
-                color: #666;
+                color: #4a4d53;
                 font-size: 8px;
                 font-weight: normal;
                 cursor: pointer;
                 user-select: none;
-                opacity: 0.45;
+                opacity: 0.35;
                 transition: opacity 0.15s ease;
             }
-            .eve-developer-footer-toggle:hover { opacity: 0.9; color: #aaa; }
+            .eve-developer-footer-toggle:hover { opacity: 0.8; color: #6b7078; }
+            /* Drawn dark on purpose - no bright native checkbox. Only
+               someone who knows it is there should notice it. */
             .eve-developer-footer-toggle input {
-                width: 10px;
-                height: 10px;
+                -webkit-appearance: none;
+                appearance: none;
+                width: 9px;
+                height: 9px;
                 margin: 0;
                 padding: 0;
+                border: 1px solid rgba(255, 255, 255, .14);
+                border-radius: 2px;
+                background: transparent;
                 cursor: pointer;
-                accent-color: #777;
+            }
+            .eve-developer-footer-toggle input:checked {
+                background: #3f4247;
+                border-color: rgba(255, 255, 255, .24);
             }
             .eve-developer-footer-toggle span { line-height: 1; }
-            /* =====================================================
-               COLLAPSIBLE DEBUG MENUS
-               ===================================================== */
-            .eve-collapse { margin-top: 10px; }
-            .eve-collapse-outer { border-top: 1px solid #444; padding-top: 8px; }
-            .eve-collapse-title {
+            .eve-debug-hint { font-size: 11px; color: var(--eve-muted); margin-bottom: 6px; line-height: 1.45; }
+            /* Section list: one card, column headers, a switch per cell. */
+            .eve-section-card {
+                background: rgba(255, 255, 255, .03);
+                border: 1px solid var(--eve-line);
+                border-radius: 10px;
+                padding: 0 10px;
+            }
+            .eve-section-card:has(#eve-section-list:empty) { display: none; }
+            .eve-section-head, .eve-section-row {
+                display: grid;
+                grid-template-columns: 1fr 54px 54px;
+                align-items: center;
+                justify-items: center;
+            }
+            .eve-section-head {
+                padding: 8px 0 6px;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: .08em;
+                text-transform: uppercase;
+                color: var(--eve-muted);
+                border-bottom: 1px solid var(--eve-line);
+            }
+            .eve-section-head span:first-child, .eve-section-name { justify-self: start; }
+            .eve-section-row { padding: 6px 0; }
+            .eve-section-row + .eve-section-row { border-top: 1px solid rgba(255, 255, 255, .05); }
+            .eve-section-name { font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+            /* The checkbox itself drawn as a switch - same input, same
+               change events, nothing in the wiring changes. */
+            .eve-switch { display: inline-flex; cursor: pointer; }
+            .eve-switch input {
+                -webkit-appearance: none;
+                appearance: none;
+                position: relative;
+                width: 30px;
+                height: 18px;
+                margin: 0;
+                border-radius: 999px;
+                background: rgba(255, 255, 255, .16);
                 cursor: pointer;
-                font-size: 14px;
-                font-weight: bold;
-                color: #ddd;
-                padding: 6px 4px;
-                border-radius: 4px;
-                list-style: none;
-                user-select: none;
+                transition: background .15s ease;
             }
-            .eve-collapse-title::-webkit-details-marker { display: none; }
-            .eve-collapse-title::before {
-                content: '\u{25b8} ';
-                display: inline-block;
+            .eve-switch input::before {
+                content: '';
+                position: absolute;
+                top: 2px;
+                left: 2px;
                 width: 14px;
+                height: 14px;
+                border-radius: 50%;
+                background: #fff;
+                box-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+                transition: transform .15s ease;
             }
-            .eve-collapse[open] > .eve-collapse-title::before { content: '\u{25be} '; }
-            .eve-collapse-title:hover { background: #333; }
-            .eve-collapse-body { padding-left: 8px; }
-            .eve-debug-hint { font-size: 11px; color: #999; margin-bottom: 6px; line-height: 1.4; }
-            .eve-section-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
-            .eve-section-name { font-weight: bold; width: 45px; }
-            .eve-section-row label { cursor: pointer; }
-            .eve-section-row input { cursor: pointer; }
+            .eve-switch input:checked { background: var(--eve-blue); }
+            .eve-switch input:checked::before { transform: translateX(12px); }
+            .eve-switch input:focus-visible { outline: 2px solid var(--eve-blue); outline-offset: 2px; }
             /* =====================================================
                PERSISTENT ALERT CONTAINER
                ===================================================== */
@@ -7955,10 +9954,11 @@
                 z-index: 2147483647;
                 display: none;
                 flex-direction: column;
-                background: #1b1b1b;
-                border: 2px solid #555;
-                border-radius: 8px;
-                font-family: Arial, Helvetica, sans-serif;
+                background: #141518;
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 12px;
+                font-family: var(--eve-font);
+                box-shadow: 0 16px 48px rgba(0, 0, 0, .5);
             }
             #eve-alert-header, #eve-alert-toolbar { flex: 0 0 auto; }
             #eve-alert-header {
@@ -7966,28 +9966,37 @@
                 justify-content: space-between;
                 align-items: center;
                 gap: 8px;
-                padding: 8px 10px;
-                background: #2a2a2a;
-                border-radius: 6px 6px 0 0;
-                color: white;
-                font-size: 15px;
-                font-weight: bold;
+                padding: 9px 12px;
+                background: #1b1c20;
+                border-bottom: 1px solid var(--eve-line);
+                border-radius: 11px 11px 0 0;
+                color: var(--eve-text);
+                font-size: 14px;
+                font-weight: 700;
+                letter-spacing: -.005em;
             }
             #eve-alert-toggle { cursor: pointer; user-select: none; flex: 1; }
             #eve-alert-caret { display: inline-block; width: 14px; }
-            #eve-alert-count { opacity: .8; font-weight: normal; }
+            #eve-alert-count { color: var(--eve-muted); font-weight: 500; font-variant-numeric: tabular-nums; }
             #eve-alert-header-actions { display: flex; gap: 6px; }
             #eve-alert-header-actions button {
-                background: #3a3a3a;
-                color: white;
-                border: 1px solid #666;
-                border-radius: 4px;
-                padding: 4px 8px;
+                background: var(--eve-control);
+                color: var(--eve-text);
+                border: 1px solid var(--eve-line-strong);
+                border-radius: 7px;
+                padding: 4px 9px;
+                font-family: var(--eve-font);
                 font-size: 12px;
-                font-weight: bold;
+                font-weight: 600;
                 cursor: pointer;
+                transition: background .12s;
             }
-            #eve-alert-header-actions button:hover { background: #4a4a4a; }
+            #eve-alert-header-actions button:hover { background: var(--eve-control-hover); }
+            #eve-alert-header-actions button.eve-confirm {
+                background: #b91c1c;
+                border-color: #ef4444;
+                color: #fff;
+            }
             #eve-alert-body {
                 flex: 1 1 auto;
                 /* Without this a flex item refuses to shrink below its content height, overflow-y never engages, and the list pushes the container past the viewport again. */ min-height: 0;
@@ -7996,97 +10005,140 @@
                 padding: 10px;
                 display: flex;
                 flex-direction: column;
-                gap: 10px;
+                gap: 8px;
+                scrollbar-width: thin;
+                scrollbar-color: rgba(255, 255, 255, .18) transparent;
             }
+            /* One thin dark scrollbar for the alert list and the tracker
+               panel (older Chromium reads these; newer reads the
+               scrollbar-width / scrollbar-color on each element). */
+            #eve-alert-body::-webkit-scrollbar,
+            #eve-tracker-panel::-webkit-scrollbar { width: 8px; }
+            #eve-alert-body::-webkit-scrollbar-track,
+            #eve-tracker-panel::-webkit-scrollbar-track { background: transparent; }
+            #eve-alert-body::-webkit-scrollbar-thumb,
+            #eve-tracker-panel::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .16); border-radius: 8px; }
+            #eve-alert-body::-webkit-scrollbar-thumb:hover,
+            #eve-tracker-panel::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, .28); }
             .eve-alerts-collapsed #eve-alert-body { display: none; }
-            .eve-alerts-collapsed #eve-alert-header { border-radius: 6px; }
+            .eve-alerts-collapsed #eve-alert-header { border-radius: 11px; border-bottom: 0; }
             /* =====================================================
-               ALERT
-               ===================================================== */
+               ALERT CARD (v0.9.7)
+               =====================================================
+               Dark card, coloured accent edge + status dot. Each result
+               sets --eve-accent / --eve-accent-rgb; everything else on
+               the card derives from those two. */
             .eve-alert {
+                --eve-accent: #e60956;
+                --eve-accent-rgb: 230, 9, 86;
                 position: relative;
-                border-radius: 6px;
-                padding: 8px 10px;
-                color: white;
-                font-family: Arial, Helvetica, sans-serif;
-                box-shadow: 0 3px 12px rgba(0, 0, 0, .5);
-                border: 1px solid rgba(255, 255, 255, .65);
+                border-radius: 10px;
+                padding: 10px 12px 9px 15px;
+                color: var(--eve-text);
+                font-family: var(--eve-font);
+                background:
+                    linear-gradient(120deg, rgba(var(--eve-accent-rgb), .13) 0%, rgba(var(--eve-accent-rgb), .03) 55%, rgba(0, 0, 0, 0) 100%),
+                    #1c1d22;
+                border: 1px solid rgba(var(--eve-accent-rgb), .26);
+                box-shadow:
+                    inset 3px 0 0 var(--eve-accent),
+                    0 1px 2px rgba(0, 0, 0, .35),
+                    0 6px 16px rgba(0, 0, 0, .22);
+                transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+                animation: eve-card-in .18s ease-out;
+            }
+            @keyframes eve-card-in {
+                from { opacity: 0; transform: translateY(-4px); }
+                to   { opacity: 1; transform: none; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+                .eve-alert, .eve-live-dot { animation: none; transition: none; }
             }
             .eve-alert-clickable { cursor: pointer; }
-            .eve-alert-clickable:hover { filter: brightness(1.08); }
+            .eve-alert-clickable:hover {
+                border-color: rgba(var(--eve-accent-rgb), .55);
+                box-shadow:
+                    inset 3px 0 0 var(--eve-accent),
+                    0 2px 4px rgba(0, 0, 0, .35),
+                    0 10px 24px rgba(0, 0, 0, .3);
+            }
             /* =====================================================
-               SUCCESS
+               RESULT COLOURS
                ===================================================== */
-            .eve-success { background: #087f23; }
-            /* =====================================================
-               FAILURE
-               ===================================================== */
-            .eve-failure { background: #b00000; }
-            /* =====================================================
-               PRE-TEST FAILURE
-               ===================================================== */
-            .eve-pretest { background: #8b0000; }
-            /* =====================================================
-               PRE-TEST PASS
-               =====================================================
-               Green, because it is a pass - but a distinctly darker
-               green than a full TEST PASS, because the server has only
-               cleared pre-test and its real test has not reported. */
-            .eve-pretest-pass { background: #055c19; }
-            /* =====================================================
-               SYS_DEKIT  (diagnostic, not a result)
-               =====================================================
-               Deliberately neither red nor green. A SYS_DEKIT card is
-               only visible with DEBUG shown, and when it is, it must
-               not read as pass or fail at a glance. */
-            .eve-dekit { background: #33383f; border: 1px solid #5a626c; }
+            /* TEST PASS mint, TEST FAIL light red / fuchsia, PRE-TEST
+               FAIL dark red. Pre-test FAIL's title and dot use a lighter
+               tone of the same red - #910421 as text would be unreadable
+               on the dark card. Pre-test PASS gets its own hue (teal). */
+            .eve-success      { --eve-accent: #09e68a; --eve-accent-rgb: 9, 230, 138; }
+            .eve-failure      { --eve-accent: #e60956; --eve-accent-rgb: 230, 9, 86; }
+            .eve-pretest      { --eve-accent: #910421; --eve-accent-rgb: 145, 4, 33; --eve-accent-text: #c2334f; }
+            .eve-pretest-pass { --eve-accent: #14b8a6; --eve-accent-rgb: 20, 184, 166; }
+            /* SYS_DEKIT (diagnostic, not a result): deliberately neither
+               red nor green, and quieter than either. */
+            .eve-dekit        { --eve-accent: #94a3b8; --eve-accent-rgb: 148, 163, 184; }
+            .eve-dekit .eve-alert-header span { color: #cbd5e1; }
             /* =====================================================
                PHASE PROVENANCE
                =====================================================
-               An alert whose PRE-TEST vs TEST label could not be
-               verified against the detail page must not look identical
-               to one that was. The dashed edge is the tell. */
-            .eve-alert-unverified { border-style: dashed; border-color: rgba(255, 255, 255, .9); }
-            /* Confirmation provenance is diagnostic detail, not
-               operator-facing. It is always BUILT (and always written
-               to the log and both exports) but only rendered while
-               Developer Mode is on. */
+               A label that could not be verified against the detail
+               page must not look identical to one that was. The dashed
+               edge is the tell. */
+            .eve-alert-unverified { border-style: dashed; border-color: rgba(var(--eve-accent-rgb), .7); }
+            /* Diagnostic detail - built and exported always, rendered
+               only in Developer Mode. */
             .eve-alert-phase-note {
                 display: none;
                 font-size: 11px;
-                opacity: .9;
-                margin-bottom: 4px;
+                color: var(--eve-muted);
+                margin-bottom: 6px;
                 word-break: break-word;
             }
             body.eve-dev-mode .eve-alert-phase-note { display: block; }
             /* =====================================================
-               ALERT HEADER
+               HEADER + CLOSE
                ===================================================== */
             .eve-alert-header {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                font-size: 16px;
-                font-weight: bold;
-                margin-bottom: 6px;
+                gap: 8px;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: .03em;
+                margin-bottom: 8px;
             }
-            /* =====================================================
-               CLOSE BUTTON
-               ===================================================== */
+            .eve-alert-header span {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                color: var(--eve-accent-text, var(--eve-accent));
+                min-width: 0;
+            }
+            .eve-alert-header span::before {
+                content: '';
+                flex: 0 0 auto;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--eve-accent-text, var(--eve-accent));
+                box-shadow: 0 0 0 3px rgba(var(--eve-accent-rgb), .2);
+            }
             .eve-alert-close {
+                flex: 0 0 auto;
+                width: 24px;
+                height: 24px;
                 border: none;
+                border-radius: 6px;
                 background: transparent;
-                color: white;
-                font-size: 20px;
-                font-weight: bold;
-                line-height: 16px;
+                color: var(--eve-muted);
+                font-size: 18px;
+                font-weight: 400;
+                line-height: 22px;
                 cursor: pointer;
-                padding: 0 2px;
+                padding: 0;
+                transition: background .12s, color .12s;
             }
-            .eve-alert-close:hover { opacity: .7; }
-            /* =====================================================
-               MESSAGE
-               ===================================================== */
+            .eve-alert-close:hover { background: rgba(255, 255, 255, .1); color: #fff; }
             /* =====================================================
                CLICK-TO-COPY SERIAL
                ===================================================== */
@@ -8096,46 +10148,121 @@
                 justify-content: space-between;
                 gap: 8px;
                 width: 100%;
+                box-sizing: border-box;
                 background: rgba(0, 0, 0, .28);
-                border: 1px solid rgba(255, 255, 255, .3);
-                border-radius: 4px;
-                color: white;
-                font-family: Consolas, "Courier New", monospace;
-                font-size: 15px;
-                font-weight: bold;
-                padding: 5px 8px;
-                margin-bottom: 5px;
+                border: 1px solid var(--eve-line);
+                border-radius: 8px;
+                color: #f5f6f7;
+                font-family: var(--eve-mono);
+                font-size: 16px;
+                font-weight: 600;
+                letter-spacing: .05em;
+                padding: 7px 8px 7px 10px;
+                margin-bottom: 8px;
                 cursor: pointer;
                 text-align: left;
+                transition: background .12s, border-color .12s;
             }
             .eve-alert-serial:hover {
-                background: rgba(0, 0, 0, .45);
-                border-color: rgba(255, 255, 255, .6);
+                background: rgba(0, 0, 0, .4);
+                border-color: var(--eve-line-strong);
             }
             .eve-alert-serial-value { word-break: break-all; }
             .eve-alert-copy-hint {
+                flex: 0 0 auto;
+                font-family: var(--eve-font);
                 font-size: 11px;
-                opacity: .75;
+                font-weight: 600;
+                letter-spacing: 0;
+                color: var(--eve-muted);
                 white-space: nowrap;
-                font-family: Arial, Helvetica, sans-serif;
+                padding: 2px 8px;
+                border-radius: 999px;
+                background: rgba(255, 255, 255, .06);
             }
-            .eve-alert-serial.eve-copied { background: rgba(255, 255, 255, .25); }
-            .eve-alert-serial.eve-copy-failed { background: rgba(0, 0, 0, .6); }
+            .eve-alert-serial:hover .eve-alert-copy-hint { color: var(--eve-text); background: rgba(255, 255, 255, .1); }
+            .eve-alert-serial.eve-copied { border-color: rgba(34, 197, 94, .5); }
+            .eve-alert-serial.eve-copied .eve-alert-copy-hint { color: #86efac; background: rgba(34, 197, 94, .16); }
+            .eve-alert-serial.eve-copy-failed { border-color: rgba(239, 68, 68, .5); }
+            .eve-alert-serial.eve-copy-failed .eve-alert-copy-hint { color: #fca5a5; background: rgba(239, 68, 68, .16); }
             /* =====================================================
                LOCATION + STATUS ROWS
                ===================================================== */
-            .eve-alert-loc { font-size: 13px; font-weight: bold; margin-bottom: 3px; }
-            .eve-alert-status { font-size: 13px; font-weight: bold; margin-bottom: 5px; }
+            .eve-alert-loc { font-size: 12.5px; font-weight: 600; color: #d7dade; margin-bottom: 3px; }
+            .eve-alert-status { font-size: 12px; font-weight: 500; color: var(--eve-muted); margin-bottom: 8px; }
             /* =====================================================
-               ALERT TIMESTAMP
+               FOOTER: TIMESTAMP + JIRA
                ===================================================== */
-            .eve-alert-time {
-                font-size: 14px;
-                font-weight: bold;
-                opacity: .95;
-                padding-top: 4px;
-                border-top: 1px solid rgba(255, 255, 255, .2);
+            .eve-alert-footer {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                padding-top: 8px;
+                border-top: 1px solid var(--eve-line);
             }
+            .eve-alert-time {
+                min-width: 0;
+                font-size: 12px;
+                font-weight: 500;
+                color: var(--eve-muted);
+                font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .eve-alert-jira {
+                flex: 0 0 auto;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                height: 26px;
+                box-sizing: border-box;
+                padding: 0 10px 0 9px;
+                border-radius: 999px;
+                border: 1px solid rgba(76, 154, 255, .45);
+                background: rgba(38, 132, 255, .12);
+                color: #a9cbff;
+                font-family: var(--eve-font);
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: .02em;
+                line-height: 1;
+                text-decoration: none;
+                white-space: nowrap;
+                cursor: pointer;
+                transition: background .12s, border-color .12s, color .12s;
+            }
+            .eve-alert-jira:hover { background: #0c66e4; border-color: #0c66e4; color: #fff; text-decoration: none; }
+            .eve-alert-jira:focus-visible { outline: 2px solid #4c9aff; outline-offset: 2px; }
+            .eve-jira-ext { flex: 0 0 auto; opacity: .85; }
+            .eve-jira-dot {
+                flex: 0 0 auto;
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: currentColor;
+                opacity: .5;
+            }
+            .eve-jira-found .eve-jira-label { font-family: var(--eve-mono); font-weight: 600; letter-spacing: 0; }
+            /* Ticket status colour (Jira status category). */
+            .eve-jira-cat-new .eve-jira-dot { background: #8c9bab; opacity: 1; }
+            .eve-jira-cat-indeterminate .eve-jira-dot { background: #579dff; opacity: 1; }
+            .eve-jira-cat-done .eve-jira-dot { background: #4bce97; opacity: 1; }
+            .eve-jira-loading .eve-jira-dot { animation: eve-jira-pulse 1s ease-in-out infinite; }
+            @keyframes eve-jira-pulse {
+                0%, 100% { opacity: .25; }
+                50%      { opacity: 1; }
+            }
+            .eve-jira-none { color: #c4c7cc; border-color: var(--eve-line-strong); background: var(--eve-control); }
+            .eve-jira-auth { color: #fcd34d; border-color: rgba(245, 158, 11, .5); background: rgba(245, 158, 11, .1); }
+            .eve-jira-auth .eve-jira-dot { background: #f59e0b; opacity: 1; }
+            /* Failure's ticket not raised yet (the bot is due). */
+            .eve-jira-waiting { color: #d6d9de; border-color: rgba(245, 158, 11, .45); background: rgba(245, 158, 11, .08); }
+            .eve-jira-waiting .eve-jira-dot { background: #f59e0b; opacity: 1; animation: eve-jira-pulse 1.6s ease-in-out infinite; }
+            /* Nothing raised in the time the bot normally takes. */
+            .eve-jira-noticket { color: #b8bcc3; border-color: var(--eve-line-strong); background: var(--eve-control); }
+            .eve-jira-noticket .eve-jira-dot { background: #6b7280; opacity: 1; }
         `;
 
         document.head.appendChild(style);
@@ -8191,10 +10318,14 @@
             // restored cards are styled, and before scan() so newly
             // detected alerts stack above them.
             restorePersistedAlerts();
+            window.addEventListener('focus', onJiraWindowFocus);
             const groups = getEveTableGroups();
             applyVisibility(groups);
             scan(groups);
             startMasterTick();
+            startCountdownAnimation();
+            holdKeepAliveLock();
+            wireSleepDetection();
             observePage();
             window.addEventListener('beforeunload', () => {
                 persistBeforeUnload(true);
@@ -8312,6 +10443,345 @@
 
 
     // ============================================================
+    // KEEP AWAKE + SLEEP DETECTION
+    // ============================================================
+    //
+    // Edge "Sleeping tabs" and Chrome "Memory Saver" put a background
+    // tab to sleep: FROZEN (no JavaScript runs at all) or DISCARDED
+    // (the page is unloaded - it goes blank and reloads when clicked).
+    // While asleep the tracker cannot see anything and no toast can
+    // fire. That is a browser decision; the only guaranteed fix is the
+    // browser's own "Always keep these sites active" list. What the
+    // tracker does about it:
+    //
+    //   1. Holds a Web Lock. Chromium does not freeze a page that holds
+    //      one (performance_manager freezing opt-out). Secure pages
+    //      (https) only - the API does not exist on plain http.
+    //   2. Drives the master tick from a Worker. Page timers in a tab
+    //      hidden 5+ minutes are cut to once a minute; worker timers
+    //      are the usual way around that. Best effort: falls back to
+    //      setInterval if the worker cannot start.
+    //   3. Detects sleep - document.wasDiscarded on load, the Page
+    //      Lifecycle freeze/resume events, and gaps in the tick - then
+    //      refreshes immediately and says so, with the exact setting
+    //      that stops it. Baselines live in sessionStorage, which
+    //      survives a discard, so whatever changed while asleep is
+    //      still caught - just late.
+    // ============================================================
+
+    const HEARTBEAT_EVERY_TICKS   = 5;        // sessionStorage write cadence
+    const SLEEP_GAP_MS            = 120000;   // tick silence that means "was asleep"
+    const SLEEP_BANNER_MIN_MS     = 30000;    // shorter naps are not worth a banner
+    const SLEEP_TOAST_MIN_MS      = 60000;
+    const SLEEP_TOAST_INTERVAL_MS = 600000;   // at most one sleep toast per 10 min
+
+    const keepAwake = {
+        lock: 'not tried',
+        ticker: 'not started'
+    };
+
+    let lastTickAt       = 0;
+    let frozenAt         = 0;
+    let sleepCount       = 0;
+    let lastSleep        = null;   // { kind, from, to }
+    let lastSleepToastAt = 0;
+
+
+    function writeHeartbeat(now) {
+        try {
+            sessionStorage.setItem(HEARTBEAT_KEY, String(now || Date.now()));
+        } catch (error) {
+            // Non-fatal: only the "asleep since" time is lost.
+        }
+    }
+
+
+    function readHeartbeat() {
+        try {
+            return Number(sessionStorage.getItem(HEARTBEAT_KEY)) || 0;
+        } catch (error) {
+            return 0;
+        }
+    }
+
+
+    function holdKeepAliveLock() {
+        if (!navigator.locks || typeof navigator.locks.request !== 'function') {
+            keepAwake.lock =
+                window.isSecureContext
+                    ? 'unsupported'
+                    : 'unavailable (page is not https)';
+            renderKeepAwakeStatus();
+            return;
+        }
+
+        // Shared, so several EVE tabs can all hold it at once. The
+        // callback's promise never settles: the lock is held for the
+        // life of the page.
+        navigator.locks
+            .request('eve-slt-tracker-keepalive', { mode: 'shared' }, () => {
+                keepAwake.lock = 'held';
+                renderKeepAwakeStatus();
+                return new Promise(() => {});
+            })
+            .catch(error => {
+                keepAwake.lock = 'failed';
+                renderKeepAwakeStatus();
+                devLog('Keep-alive Web Lock failed:', error);
+            });
+    }
+
+
+    // Starts onTick once a second from a Worker if possible, otherwise
+    // from setInterval. Never both.
+    function startTicker(onTick) {
+        let fallbackStarted = false;
+        let workerAlive = false;
+        let worker = null;
+
+        const fallback = reason => {
+            if (fallbackStarted || workerAlive) {
+                return;
+            }
+
+            fallbackStarted = true;
+
+            if (worker) {
+                try { worker.terminate(); } catch (error) { /* already gone */ }
+            }
+
+            keepAwake.ticker = `page timer (${reason})`;
+            renderKeepAwakeStatus();
+            devLog(`Master tick on setInterval: ${reason}.`);
+            setInterval(onTick, 1000);
+        };
+
+        try {
+            const source = 'setInterval(function () { postMessage(0); }, 1000);';
+            const url =
+                URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+
+            worker = new Worker(url);
+
+            worker.onmessage = () => {
+                if (fallbackStarted) {
+                    return;
+                }
+
+                if (!workerAlive) {
+                    workerAlive = true;
+                    keepAwake.ticker = 'worker';
+                    renderKeepAwakeStatus();
+                }
+
+                onTick();
+            };
+
+            worker.onerror = event => {
+                if (event && event.preventDefault) {
+                    event.preventDefault();
+                }
+
+                fallback('worker blocked');
+            };
+        } catch (error) {
+            fallback('worker unavailable');
+            return;
+        }
+
+        // A worker that never speaks (CSP, extension sandbox) must not
+        // leave the tracker without a tick.
+        setTimeout(() => {
+            if (!workerAlive) {
+                fallback('worker silent');
+            }
+        }, 3000);
+    }
+
+
+    function formatSleep(ms) {
+        return ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : formatDuration(ms);
+    }
+
+
+    function sleepFixPath() {
+        return /Edg\//.test(navigator.userAgent)
+            ? 'Edge Settings \u{203a} System and performance \u{203a} Performance'
+            : 'Chrome Settings \u{203a} Performance';
+    }
+
+
+    // kind: 'discarded' (page was unloaded and reloaded), 'frozen'
+    // (resume event), 'paused' (tick gap - timers starved or frozen).
+    function noteWake(kind, fromTs, toTs, refresh) {
+        const sleptMs = fromTs ? Math.max(0, toTs - fromTs) : 0;
+
+        sleepCount += 1;
+        lastSleep = { kind: kind, from: fromTs, to: toTs };
+
+        warn(
+            `Tab was ${kind === 'discarded' ? 'put to sleep and unloaded' : 'asleep'}` +
+            (sleptMs ? ` for ${formatSleep(sleptMs)}` : '') +
+            ' - nothing was tracked meanwhile. Catching up now. Keep this ' +
+            `site awake: ${sleepFixPath()} \u{203a} "Always keep these sites active".`
+        );
+
+        if (refresh) {
+            refreshNow();
+        }
+
+        // Unknown duration (no heartbeat) still gets the banner after
+        // a discard: the page going blank is the thing to fix.
+        if (!sleptMs ? kind === 'discarded' : sleptMs >= SLEEP_BANNER_MIN_MS) {
+            showSleepBanner(sleptMs, fromTs, toTs);
+        }
+
+        if (
+            sleptMs >= SLEEP_TOAST_MIN_MS &&
+            Date.now() - lastSleepToastAt > SLEEP_TOAST_INTERVAL_MS
+        ) {
+            lastSleepToastAt = Date.now();
+
+            sendDesktopNotification(
+                'EVE TRACKER WAS ASLEEP \u{23f0}',
+                `The EVE tab was asleep for ${formatSleep(sleptMs)} - results ` +
+                'from that time were caught up late.\n' +
+                'Keep it awake: add this site to "Always keep these sites active".',
+                ICON_FAIL,
+                null
+            );
+        }
+
+        renderKeepAwakeStatus();
+    }
+
+
+    function showSleepBanner(sleptMs, fromTs, toTs) {
+        const banner = document.getElementById('eve-sleep-banner');
+
+        if (!banner) {
+            return;
+        }
+
+        const time = ts => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+        banner.querySelector('.eve-sleep-title').textContent =
+            sleptMs
+                ? `Tab was asleep ${formatSleep(sleptMs)}`
+                : 'Tab was put to sleep by the browser';
+
+        banner.querySelector('.eve-sleep-when').textContent =
+            sleptMs
+                ? `${time(fromTs)} \u{2013} ${time(toTs)} \u{b7} caught up on wake`
+                : 'Caught up on wake';
+
+        banner.querySelector('.eve-sleep-how').textContent =
+            `Stop it: ${sleepFixPath()} \u{203a} Always keep these sites active \u{203a} Add`;
+
+        banner.hidden = false;
+    }
+
+
+    function renderKeepAwakeStatus() {
+        const el = document.getElementById('eve-keepalive-status');
+
+        if (!el) {
+            return;
+        }
+
+        const sleeps =
+            sleepCount
+                ? `${sleepCount}` +
+                  (
+                      lastSleep && lastSleep.from
+                          ? ` (last ${formatSleep(lastSleep.to - lastSleep.from)}, ${lastSleep.kind})`
+                          : ` (last: ${lastSleep ? lastSleep.kind : '?'})`
+                  )
+                : '0';
+
+        setTextIfChanged(
+            el,
+            `Keep-awake: lock ${keepAwake.lock} \u{2022} tick ${keepAwake.ticker} ` +
+            `\u{2022} sleeps ${sleeps}`
+        );
+    }
+
+
+    function wireSleepDetection() {
+        // Page Lifecycle API (Chromium). 'freeze' is the last chance to
+        // run; 'resume' is the first after.
+        document.addEventListener('freeze', () => {
+            frozenAt = Date.now();
+            writeHeartbeat(frozenAt);
+            savePreviousStates();
+            flushAlertLog();
+        });
+
+        document.addEventListener('resume', () => {
+            const from = frozenAt || lastTickAt;
+            frozenAt = 0;
+            lastTickAt = Date.now();
+            noteWake('frozen', from, lastTickAt, true);
+        });
+
+        // This load IS the wake-up: the page is already fresh, so no
+        // refresh - just report it.
+        if (document.wasDiscarded) {
+            const last = readHeartbeat();
+            noteWake('discarded', last, Date.now(), false);
+        }
+
+        const banner = document.getElementById('eve-sleep-banner');
+
+        if (banner) {
+            banner.querySelector('.eve-sleep-close').addEventListener('click', () => {
+                banner.hidden = true;
+            });
+
+            banner.querySelector('.eve-sleep-copy').addEventListener('click', event => {
+                const button = event.currentTarget;
+                const site = location.origin;
+                const done = ok => {
+                    button.textContent = ok ? '\u{2713} Copied' : site;
+                    setTimeout(() => { button.textContent = 'Copy site'; }, 2000);
+                };
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(site).then(() => done(true), () => done(false));
+                } else {
+                    done(false);
+                }
+            });
+        }
+
+        renderKeepAwakeStatus();
+    }
+
+
+    // The 1s tick is too coarse for a decimal countdown. While the tab
+    // is visible, animation frames (capped at ~10/s) repaint it;
+    // hidden tabs get no frames, and the tick keeps it current.
+    function startCountdownAnimation() {
+        if (typeof requestAnimationFrame !== 'function') {
+            return;
+        }
+
+        let lastPaint = 0;
+
+        const frame = time => {
+            if (time - lastPaint >= 100) {
+                lastPaint = time;
+                updateRefreshCountdown();
+            }
+
+            requestAnimationFrame(frame);
+        };
+
+        requestAnimationFrame(frame);
+    }
+
+
+    // ============================================================
     // MASTER TICK
     // ============================================================
     //
@@ -8332,9 +10802,31 @@
 
         let tick = 0;
 
-        setInterval(() => {
+        startTicker(() => {
+            const now = Date.now();
+
+            // A long silence between ticks means the page was frozen or
+            // its timers starved. Catch up now rather than wait out
+            // the rest of the countdown.
+            if (lastTickAt && now - lastTickAt > SLEEP_GAP_MS && !frozenAt) {
+                noteWake('paused', lastTickAt, now, true);
+            }
+
+            lastTickAt = now;
+
+            // A background tab's own refresh timer can be throttled far
+            // past its due time; the tick fires it instead.
+            if (autoRefreshTimer && autoRefreshDueAt && now > autoRefreshDueAt + 2000) {
+                fireAutoRefresh();
+            }
+
             tick += 1;
             updateRefreshCountdown();
+
+            if (tick % HEARTBEAT_EVERY_TICKS === 0) {
+                writeHeartbeat(now);
+            }
+
             if (tick % SCAN_TICKS === 0) {
                 scan();
             }
@@ -8354,7 +10846,7 @@
             if (tick % LOG_DAY_TICKS === 0) {
                 checkLogDayRollover();
             }
-        }, 1000);
+        });
     }
 
 
