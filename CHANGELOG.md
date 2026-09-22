@@ -8,6 +8,18 @@ userscript header increases, so every entry below corresponds to a version
 that was actually shipped. The script itself carries no change notes; they
 all live here.
 
+## [0.9.8] - 2026-09-22
+
+### Changed
+- Moved all code comments (JS, CSS, HTML) out of the userscript into
+  [docs/CODE_NOTES.md](docs/CODE_NOTES.md), one heading per
+  `// ===== SECTION =====` marker. The script itself carries only code, a
+  4-line banner, and one-line section markers. No behavior change: identical
+  syntax tree, 135 automated checks pass, UI pixel-identical.
+- Fixed repo layout so CI, the release workflow, and the bug report form
+  actually run: workflows moved to `.github/workflows/`, the issue template
+  to `.github/ISSUE_TEMPLATE/`, and helper scripts to `scripts/`.
+
 ## [0.9.7] - 2026-09-22
 
 Several rounds of changes were made under this one version number, so
