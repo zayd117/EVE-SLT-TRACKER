@@ -17,7 +17,7 @@ body:
       description: >
         The `[EVE Tracker] EVE SLT Tracker vX.Y.Z running` banner in the
         console, or the version shown in the Tampermonkey dashboard.
-      placeholder: "0.9.1"
+      placeholder: "0.9.7"
     validations:
       required: true
 
@@ -62,11 +62,11 @@ body:
   - type: textarea
     id: health
     attributes:
-      label: Health Check output
+      label: Refresh diagnostics
       description: >
-        Enable the small `Dev` checkbox in the tracker panel footer, switch to
-        the Developer page, and click "Health Check". Paste the table here.
-        This is the single most useful thing you can attach.
+        Tick the small `Dev` checkbox in the tracker panel footer. Under
+        "Refresh diagnostics" the panel shows three lines (refresh status,
+        last scan, keep-awake). Paste them here.
       render: text
 
   - type: checkboxes
