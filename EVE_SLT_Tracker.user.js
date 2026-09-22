@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker v0.9.7
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.7
+// @version      0.9.8
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
