@@ -1,0 +1,399 @@
+==============================================================================
+EVE SLT TRACKER v0.9.7 - SENIOR CODE REVIEW
+Security / Reliability / Memory / Performance
+==============================================================================
+Reviewed:  EVE_SLT_Tracker.user.js (v0.9.7 working copy, ~11,770 lines)
+           (the fully commented source; after this review the script was slimmed
+            to ~6,900 lines and its comments moved to docs/CODE_NOTES.md)
+Date:      2026-09-22
+Method:    Full read of every subsystem; each suspected bug reproduced with a
+           failing jsdom test BEFORE it was fixed, then re-tested after.
+           Evidence column below names the test. 135 automated checks across
+           6 suites pass on the delivered file (listed in section 12).
+
+Legend:    CONFIRMED = reproduced by a test.   LIKELY = mechanism is clear
+           from the code, not reproduced.   CONCERN = worth watching.
+           FIXED = changed in the delivered file.   REC = recommendation only.
+
+
+------------------------------------------------------------------------------
+1. EXECUTIVE SUMMARY
+------------------------------------------------------------------------------
+What it does
+  A Tampermonkey userscript on the EVE SLT rack page. It re-fetches the page
+  in the background (soft refresh), reads cell colours per rack slot, detects
+  result transitions, confirms phase/result from each server's detail page,
+  and raises in-page cards + desktop toasts. It keeps a per-shift audit log
+  (TXT/CSV export), looks up Jira tickets for failures, and defends itself
+  against tab sleep.
+
+Architecture
+  One IIFE, no third-party dependencies. State in memory, mirrored to
+  sessionStorage (per tab: baselines, cards, cooldowns, Jira cache) and
+  localStorage (shared: settings, audit log, panel positions). One 1 s
+  master tick (Worker-driven) fans out to scan / watchdog / time labels /
+  rollover. Network: same-origin fetch (rack page, detail pages) and
+  GM_xmlhttpRequest (Jira, @connect-restricted).
+
+Major strengths
+  * Defensive by design: every collection has a cap, every request a
+    timeout, bounded concurrency (Jira 2, detail pages 4), single-flight
+    soft refresh with a watchdog, prune guard against baseline wipes.
+  * XSS discipline is good: every innerHTML interpolation is escaped, URLs
+    go through safeUrl(), Jira keys are pattern-checked, DOMParser never
+    executes fetched scripts.
+  * Inline comments record WHY (field failures, constraints) - rare and
+    valuable. No dead functions or constants (checked mechanically).
+
+Most important issues (all FIXED)
+  1. A network blip killed the tracker silently (hard reload -> browser
+     error page -> script gone).                                     HIGH
+  2. Two EVE tabs overwrote each other's audit-log entries.          HIGH
+  3. CSV export allowed spreadsheet formula injection.               MEDIUM
+  4. Alert cards on screen grew without limit in a long-lived tab.   MEDIUM
+  5. An aborted Jira request could jam all Jira lookups.             LOW
+
+Biggest remaining opportunities (REC, section 11)
+  * Batch Jira polling (one query per cycle instead of one per card).
+  * Health as a set of active conditions instead of one overwritable state.
+  * One owner per rack across duplicate tabs (no double toasts/entries).
+  * Put the 135-check test harness in the repo and run it on release.
+
+
+------------------------------------------------------------------------------
+2. CRITICAL / HIGH FINDINGS
+------------------------------------------------------------------------------
+No CRITICAL (security-exploitable or certain data loss in normal use).
+
+H1  Network failure turned into a silent, permanent monitoring stop.  FIXED
+    Location   performSoftRefresh() catch block
+    Problem    EVERY soft-refresh failure called location.reload(). When the
+               failure is the network itself (VPN drop, server restart,
+               Wi-Fi blip, request timeout), the reload cannot load the page
+               either: the browser shows its own error page
+               (chrome-error://), where Tampermonkey does not inject. The
+               panel, the scans, the toasts - all gone, with no alert, until
+               a person notices and reloads. At 3 AM that can be hours.
+    Evidence   run7 "network failure / timeout / HTTP 503: NO hard reload"
+               failed on the original (reloads=1,2,3).
+    Fix        Classify the failure:
+                 network error, timeout, HTTP 5xx/408/429 -> keep the page,
+                   health DEGRADED (one toast, rate-limited), retry every
+                   cycle; scan() may not report OK while the page is stale;
+                   first good refresh logs recovery and clears it.
+                 401/403, login redirect, no EVE tables -> reload as before,
+                   so the login page is visible.
+               Subtle case handled: a session-expired redirect to an SSO
+               host on another domain fails fetch with the SAME TypeError as
+               an outage (CORS). An opaque no-cors HEAD probe tells them
+               apart - server reachable -> session -> reload.
+               (run7 "SSO redirect ... hard reload so login shows").
+    Worth it   Yes. ~60 lines; closes the one failure mode that makes the
+               tracker look fine while monitoring nothing.
+
+H2  Several EVE tabs silently erased each other's audit-log entries.  FIXED
+    Location   flushAlertLog() / the in-memory alertLogCache
+    Problem    Each tab loads the shared localStorage log once, appends its
+               own events in memory, and wrote its WHOLE array back. The
+               last tab to write erased every entry other tabs added since
+               it loaded. The code expects several tabs (the keep-awake Web
+               Lock is deliberately "shared, so several EVE tabs can hold
+               it"). Also: a Clear in one tab was undone by the next write
+               from another.
+    Evidence   run7 "tab 2 write keeps tab 1 entry" -> only "B1" survived;
+               "clear in tab 1 is not undone" -> cleared entry came back.
+    Fix        Write = merge with storage. Entries this tab added/changed
+               (tracked by id) win; everything else comes from storage, so
+               other tabs' entries AND their newer updates survive. This
+               tab's retention floor and a shared "cleared at" marker are
+               re-applied on every write, so pruned/cleared entries cannot
+               be written back. Export and clear-log sync first.
+               Cost: one JSON.parse of the stored log per debounced write
+               (<= every 2 s) - negligible at <= 2000 entries.
+    Worth it   Yes for an audit log. Note: the SAME rack open in two tabs
+               now shows up as duplicate entries instead of lost ones - see
+               M-REC1.
+
+
+------------------------------------------------------------------------------
+3. SECURITY FINDINGS
+------------------------------------------------------------------------------
+Trust boundary: the EVE page's own scripts (and anyone who can run script on
+that origin) can read/write the same localStorage and sessionStorage the
+tracker uses. Stored data is therefore untrusted input. The code mostly
+treats it that way already.
+
+S1  CSV formula injection in the log export.            MEDIUM   FIXED
+    Location   csvEscape() / buildAlertLogCsv()
+    Attack     Serial, server type, operation, taskset and taskcase come from
+               the rack and detail pages. A value such as
+               =HYPERLINK("http://evil","Click") or a DDE payload lands in a
+               cell Excel evaluates when the exported CSV is opened - a
+               click-through or data-exfil vector on the supervisor's PC.
+    Evidence   run7 "CSV: formula-looking cells neutralised" failed on the
+               original (raw =HYPERLINK( in the output).
+    Fix        Cells starting with = + - @ TAB CR get a leading apostrophe
+               (OWASP guidance). Numeric columns are unaffected.
+
+S2  Jira base URL is read from page-writable storage.   LOW      REC
+    Location   jiraBaseUrl() <- settings.jiraBaseUrl (localStorage)
+    Attack     Script on the EVE origin can set jiraBaseUrl to another host.
+               Card links and toast clicks then open that host (phishing
+               with a trusted-looking button). Background lookups are
+               limited by @connect (Tampermonkey blocks or prompts).
+               Requires code execution on the EVE origin already.
+    Mitigate   Accept only the @connect host (jira.synnex.com) in
+               jiraBaseUrl(); keep the setting for scheme/path only. One line.
+
+S3  Diagnostic exposed on unsafeWindow.                 LOW      accepted
+    eveNotifyDiagnostic() is gated on developerMode, which page script can
+    also set. Worst case: five toasts. Already documented in the code.
+
+Checked, no issue found
+  * innerHTML sinks (6): every interpolation escaped or constant.
+  * URLs opened/fetched: safeUrl() http(s)-only; Jira keys pattern-checked;
+    encodeURIComponent on JQL and keys.
+  * JQL built from serials: quotes/backslashes escaped; runs with the
+    user's own Jira permissions only.
+  * Fetched HTML: DOMParser does not run scripts; swapped-in tables are the
+    same content the page itself serves (no new surface).
+  * Detail-page fetch uses credentials:'same-origin' - a cross-origin link
+    gets no cookies.
+  * No secrets, tokens or credentials anywhere; logs contain serials only.
+  * Every network call has a timeout (soft refresh 15 s, detail 10 s,
+    Jira 15 s, probe 5 s).
+
+
+------------------------------------------------------------------------------
+4. MEMORY & RESOURCE FINDINGS
+------------------------------------------------------------------------------
+R1  Rendered alert cards grew without bound.            MEDIUM   FIXED
+    Retention  Cards leave the DOM only when dismissed. Soft refresh never
+               reloads the page, so a tab left open across shifts gains one
+               card (~40 nodes, listeners, a Jira poll timer for fails) per
+               event indefinitely; applyAlertFilter(), the 15 s time-label
+               tick and Jira polling walk all of them. Storage already kept
+               only 50, so anything past 50 never survived a reload anyway.
+    Evidence   run7 "rendered cards capped" -> 230 cards on the original.
+    Fix        MAX_RENDERED_ALERTS = 200; oldest (bottom) cards leave the
+               screen. Storage and the audit log are untouched.
+
+R2  Aborted Jira request held a queue slot forever.     LOW      FIXED
+    Retention  GM_xmlhttpRequest had onload/onerror/ontimeout but no
+               onabort. An aborted request never resolved: jiraActive never
+               decremented and jiraInFlight kept the promise. With
+               JIRA_MAX_CONCURRENT = 2, two aborts stall every lookup.
+    Evidence   run7 "aborted Jira request resolves" -> HUNG on the original.
+    Fix        onabort -> settle as an error.
+
+Bounded (verified) - no action needed
+  previousStates      rack slots; pruned with a readability guard
+  recentAlerts        <= 500 + 60 s TTL
+  phaseConfirmCache   <= 400 + TTL sweep
+  jiraCache           <= 300 (sessionStorage, LRU)
+  alert log           <= 2000 + one-shift retention
+  stored cards        <= 50;  rendered cards <= 200 (new)
+  phase fetch queue   drains at 4 parallel, 10 s timeout each
+  Jira queue          drains at 2 parallel, 15 s timeout each
+  jiraOpenWhenRaised  entries end by 20 min
+  Global listeners    registered once; drag listeners added/removed per drag
+  Worker              one; its Blob URL is never revoked (a few bytes - fine)
+  Per-card Jira timer fires once more after dismissal, sees !isConnected,
+                      stops - not a leak
+
+
+------------------------------------------------------------------------------
+5. PERFORMANCE FINDINGS
+------------------------------------------------------------------------------
+No hot-path problem at realistic scale (hundreds of slots). Measured shape:
+
+P1  Jira polling scales per card.                       MEDIUM   REC
+    Each FAIL card polls Jira on its own: every 30 s at minutes 4-12, every
+    60 s to 20 min, every 5 min to 2 h. A 50-server batch failure means up
+    to ~100 requests/min for several minutes through a 2-slot queue, and
+    load on the company Jira. Better: one poll cycle that builds a single
+    JQL for all waiting serials (text ~ "A" OR text ~ "B" ... ORDER BY
+    created DESC, maxResults ~ 2 x count) and fans the answers out to the
+    cards. Medium effort; worth it if batches of fails are common.
+
+P2  The page observer sees the tracker's own UI churn.  LOW      REC
+    MutationObserver watches document.body (subtree, attributes). The
+    countdown text and progress bar change ~10x/s while visible, so the
+    callback runs ~10-20x/s, filtering each record with closest(). Cheap
+    (microseconds) but constant. Observing only the EVE tables' parent
+    would remove it.
+
+P3  Repeated sessionStorage round-trips per event.      LOW      REC
+    updateStoredAlert() parses and re-writes the whole card array 4-6 times
+    per event (<= 50 records). Not measurable today; a single in-memory
+    copy written on a debounce would remove it.
+
+P4  Per-cycle console line.                             LOW      FIXED
+    "Soft refresh OK" was a plain log every cycle (8,640 lines/day at 10 s),
+    contradicting startAutoRefresh()'s own devLog reasoning. Now Dev-only.
+
+Not a problem
+  * scan() is O(slots) every 4 s plus on real page changes - fine.
+  * Soft refresh downloads + parses the full page each cycle - inherent to
+    the approach; conditional GET (ETag / Last-Modified) only helps if the
+    PHP page sends those headers (OPTIONAL, check first).
+  * The countdown's requestAnimationFrame loop pauses in hidden tabs.
+
+
+------------------------------------------------------------------------------
+6. RELIABILITY & ERROR HANDLING
+------------------------------------------------------------------------------
+  * H1 above was the main one.                                   FIXED
+  * M-REC2  Health is ONE state that scan() resets to OK every 4 s whenever
+    slots read cleanly. So DEGRADED from a refused colspan table, slot-
+    mapping disagreement or failing phase confirmation flips back to OK
+    within seconds while the condition persists (the toast fires once).
+    I made soft-refresh staleness immune to this; the general fix is a set
+    of active conditions, each set and cleared by its own source, OK only
+    when the set is empty.                                       REC (MEDIUM)
+  * Alert-log write failure (quota) is console-only; nobody on the floor
+    reads the console. With one-shift retention a quota hit is unlikely,
+    but routing it to reportHealth() would make it visible.      REC (LOW)
+  * Empty catch blocks are all UI-cosmetic or explicitly non-fatal and
+    commented - acceptable.
+  * No retry storms: soft refresh retries once per cycle; Jira pauses 2 min
+    after an auth failure; detail fetches are once per event.
+  * Watchdog abort vs. finally: verified safe - the aborted fetch settles
+    long before the next cycle can start.
+
+
+------------------------------------------------------------------------------
+7. ASYNC / CONCURRENCY
+------------------------------------------------------------------------------
+  * Bounded everywhere (see section 4). Single-flight soft refresh with a
+    guaranteed onDone() on every exit - verified on all new exit paths.
+  * M-REC1  Duplicate tabs of the SAME rack each detect the same
+    transitions: two toasts per event and (after H2) two log entries.
+    Before H2 the duplicates were hidden by one tab erasing the other.
+    Fix: one owner per rack URL - navigator.locks.request(rackUrl,
+    {mode:'exclusive', ifAvailable:true}); the tab that gets it notifies
+    and logs, others show "another tab is tracking this rack". Different
+    racks in different tabs keep working independently.        REC (MEDIUM)
+  * Settings are last-writer-wins across tabs (whole object saved): a
+    Show/Notifs change in tab A can be reverted by tab B's next save.
+    Fix: re-read and merge on save, or listen to the 'storage' event.
+                                                                REC (LOW)
+
+
+------------------------------------------------------------------------------
+8. HARDCODING & CONFIGURATION
+------------------------------------------------------------------------------
+  Value                          Kind             Verdict
+  jira.synnex.com                environment      OK: setting + @connect
+                                                  (tighten per S2)
+  GitHub issue / update URLs     constant         OK
+  Shift times (SHIFTS)           business rule    OK: one table, one place
+  Refresh 30/20/10 s             business rule    OK
+  Timeouts, caps, poll cadences  true constants   OK: named, commented
+  Colour aliases                 page contract    OK: one table
+  Nothing needs moving to configuration. Adding settings for these would
+  add surface without a user who needs it.
+
+
+------------------------------------------------------------------------------
+9. REDUNDANCY
+------------------------------------------------------------------------------
+  * Two panel-drag implementations - differ in six documented ways;
+    merging would need several flags. Keep.
+  * Jira URL helpers (jiraFoundUrl, jiraKnownUrl, jiraUrlFor,
+    jiraSearchUrl, jiraListUrl, resolveJiraUrl, resolveJiraListUrl) - each
+    encodes a distinct rule; could be folded into two with an options
+    object, but they are small and tested. LOW, optional.
+  * Diagnostic calls GM_notification directly instead of the central
+    sender - deliberate (it isolates variables). Keep.
+  * Mechanical check: 251 functions, 97 constants, none unused.
+
+
+------------------------------------------------------------------------------
+10. DEPENDENCIES
+------------------------------------------------------------------------------
+  None beyond Tampermonkey grants. Each grant is used:
+    GM_notification      desktop toasts (core feature)
+    GM_openInTab         toast clicks (no user gesture -> window.open blocked)
+    GM_info              version string
+    GM_xmlhttpRequest    Jira lookups with the user's Jira cookies
+  @connect is limited to jira.synnex.com. @noframes and @run-at
+  document-start are both required (meta-refresh kill). Nothing to remove.
+
+
+------------------------------------------------------------------------------
+11. BETTER WAYS TO DO THE SAME THING (design review)
+------------------------------------------------------------------------------
+  Subsystem        If built today                         Worth it?
+  Jira tickets     One batched poll per cycle (P1)         Yes if fail
+                                                           batches common
+  Health           Set of conditions, not one state        Yes, medium
+                   (M-REC2)                                effort
+  Multi-tab        Web Lock per rack URL (M-REC1)          Yes, small
+  Page watching    Observe the tables' parent (P2)         Optional
+  Distribution     Keep one file. A build step could       Optional; the
+                   strip comments (~2,500 lines), but      comments are
+                   they are the team's memory and the      worth their
+                   parse cost is trivial                   weight
+  Soft refresh     Correct approach for a server-          -
+                   rendered PHP page; keep
+
+
+------------------------------------------------------------------------------
+12. TESTING
+------------------------------------------------------------------------------
+No automated tests exist in the repo. This review built a jsdom harness that
+loads the real script unmodified (one test hook appended at runtime):
+
+  Suite   Checks   Covers
+  run     17       Jira no-ticket page, URL builders, toast paths
+  run3    24       Dev-only DEBUG, JIRAlerts, no-ticket buttons, re-draws
+  run4     9       45-min card dimming, restore, repaint survival
+  run5    39       Shift windows (midnight, 9 PM rollover, DST), exports
+  run6    23       Section counts, pill colours, split-fail summary toast
+  run7    23       THIS REVIEW: outage vs session reload, SSO probe, two-
+                   tab log merge/clear/export, CSV injection, card cap,
+                   Jira onabort
+  Total   135      All pass on the delivered file.
+
+  Recommend adding these to the repo (tests/ + one GitHub Actions job,
+  node + jsdom) and running them before each release. Highest-value missing
+  coverage: phase confirmation against saved real detail-page HTML, and
+  swapPageBody()'s fallback path.
+
+
+------------------------------------------------------------------------------
+13. PRIORITY LIST
+------------------------------------------------------------------------------
+  CRITICAL   none
+  HIGH       H1 outage -> silent monitoring stop ................ FIXED
+             H2 multi-tab audit-log loss ........................ FIXED
+  MEDIUM     S1 CSV formula injection ........................... FIXED
+             R1 unbounded rendered cards ........................ FIXED
+             M-REC1 one owner per rack across tabs .............. REC
+             M-REC2 health as a set of conditions ............... REC
+             P1 batched Jira polling ............................ REC
+  LOW        R2 Jira onabort .................................... FIXED
+             P4 per-cycle console line .......................... FIXED
+             S2 pin Jira host ................................... REC
+             settings last-writer-wins across tabs .............. REC
+             log write failure not visible ...................... REC
+             P2 observer scope, P3 storage round-trips .......... REC
+  OPTIONAL   Jira helper consolidation, comment-stripped build,
+             conditional GET for soft refresh
+
+
+------------------------------------------------------------------------------
+14. WHAT CHANGED IN THE DELIVERED FILE
+------------------------------------------------------------------------------
+  Still v0.9.7 (as requested). The header's v0.9.7 notes gain a
+  "REVIEW FIXES" block. Behaviour changes a tester can notice:
+  * During a network outage the page stays up (stale) with a DEGRADED
+    toast instead of turning into a browser error page.
+  * With several EVE tabs open, the log keeps every tab's entries, and
+    exports include them all.
+  * The JIRAlerts list shows at most the newest 200 cards.
+  * A CSV cell that began with = + - @ now begins with an apostrophe.
+  Reminder: Tampermonkey only auto-updates when @version increases, so
+  this build reaches testers only if reinstalled by hand.
+==============================================================================
