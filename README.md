@@ -1,18 +1,32 @@
 # EVE SLT Tracker
 
 A Tampermonkey userscript that watches an EVE SLT rack page for server cells
-changing colour and raises an alert when a colour change represents a real test
-result. Alerts appear as an in-page card and a Windows desktop toast, and every
-real transition is written to a permanent audit log that exports to `.txt` or
-`.csv`.
+changing colour and raises an alert when a colour change is a real test result.
+Each result is confirmed on the server's own detail page, shown as an in-page
+card and a Windows desktop toast, linked to its Jira ticket, and written to a
+per-shift audit log that exports to `.txt` or `.csv`.
 
-Only these three transitions are tracked; everything else is ignored:
+| Rack colour change | Alert |
+|---|---|
+| Light blue, light green or dark green -> Red | **Fail** - pre-test or test, read from the detail page |
+| Light green -> Dark green | **Pass** |
 
-| From | To | Result |
-|---|---|---|
-| Light blue | Red | Pre-test fail |
-| Light green | Red | Test fail |
-| Light green | Dark green | Test pass |
+Colour only says *that* a result happened. Whether it was a pre-test or a test,
+and whether it passed, comes from the server's detail page. SYS_DEKIT runs are
+recorded as diagnostics, never as failures.
+
+**What you get**
+
+- **JIRAlerts** window: one card per result, newest on top, filter chips with
+  counts, search by serial, location or Jira key. Cards older than 45 min dim.
+- **Jira** button on every card. Fail cards find the ticket raised for that
+  failure (the Jira bot usually takes 5-10 min) and show its key and status.
+  With no ticket, one click gives the two useful searches.
+- **Section counts**: live test / fail / pass numbers beside each section you
+  have switched on.
+- **Per-shift log**: pick Day, Swing or Graveyard; exports never mix shifts.
+- **Keeps working**: soft refresh in the background, survives network blips,
+  detects when the browser put the tab to sleep and catches up.
 
 ---
 
@@ -20,15 +34,16 @@ Only these three transitions are tracked; everything else is ignored:
 
 1. Install **Tampermonkey** ([Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) / [Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd) / [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/))
 2. **[Click here to install the tracker](../../raw/main/EVE_SLT_Tracker.user.js)**
-3. Tampermonkey opens an install page — click **Install**
+3. Tampermonkey opens an install page - click **Install**
 4. Open the EVE SLT rack page. The tracker panel appears in the top-right.
-
-That's it. No copy-pasting.
+5. In the panel, check **Log shift** is set to your shift.
 
 ### Updates
 
 Tampermonkey checks this repo for a new version automatically (by default once a
-day, and on browser start). When one is published you get an update prompt.
+day, and on browser start) and offers an update whenever `@version` goes up.
+A change published under the same version number is **not** offered - reinstall
+from step 2 to get it.
 
 To check immediately: Tampermonkey icon -> **Dashboard** -> **Utilities** ->
 **Check for userscript updates**.
@@ -36,61 +51,109 @@ To check immediately: Tampermonkey icon -> **Dashboard** -> **Utilities** ->
 To see which version you are running: Tampermonkey **Dashboard**, or open the
 browser console (F12) on the rack page and look for the `[EVE Tracker]` banner.
 
+### Keep the tab awake
+
+Edge "Sleeping tabs" (and Chrome "Memory Saver") pause background tabs, and a
+paused tab cannot alert anyone. The tracker detects this and catches up when it
+wakes, but only the browser can stop it happening:
+
+- **Edge:** `edge://settings/system` -> **Performance** -> **Never put these
+  sites to sleep** -> **Add** the EVE site. No admin rights needed.
+- **For every PC at once:** ask IT to set the Edge policy
+  `SleepingTabsBlockedForUrls` to the EVE host.
+- **Laptops:** Windows Settings -> System -> Power -> set sleep to **Never**
+  while plugged in. If the PC sleeps, nothing in the browser runs.
+
 ---
 
 ## Configuration
 
-Two things must be set for a given deployment. Both live in the userscript
-header at the top of `EVE_SLT_Tracker.user.js`:
+Two things are set per deployment, in the header of `EVE_SLT_Tracker.user.js`:
 
 | Directive | What to set |
 |---|---|
 | `@match` | The URL pattern of your EVE SLT rack page |
 | `@updateURL` / `@downloadURL` | The raw URL of this file in your fork |
 
-Everything else is configured in the UI and persists per browser profile:
-auto-refresh interval, soft vs hard refresh, per-section show/notify flags,
-desktop toast duration, and Developer Mode.
+Everything else is set in the panel and saved per browser profile:
+
+| Setting | Where |
+|---|---|
+| Auto-refresh interval (30 s / 20 s / 10 s) | Main panel |
+| Log shift (Day / Swing / Graveyard) | Main panel |
+| Show and Notifs per rack section | Main panel |
+| Developer mode (DEBUG cards, diagnostics) | Tiny **Dev** checkbox, panel footer |
+| Toast auto-close, toast click target, Jira URL | Visible with **Dev** on |
 
 ---
 
 ## Reporting a bug
 
-Open an [issue](../../issues/new/choose). The bug report template asks for the
-four things that actually make a report actionable:
+Open an [issue](../../issues/new/choose). The bug report form asks for:
 
 1. The tracker version (console banner or Tampermonkey dashboard)
 2. What you expected
 3. What actually happened
 4. Any red text from the browser console (F12 -> Console)
 
-Every line the tracker prints is prefixed with `[EVE Tracker]`, so you can filter
-the console on that string.
+Every line the tracker prints starts with `[EVE Tracker]`, so you can filter
+the console on that string. With **Dev** on, the panel also shows three
+**Refresh diagnostics** lines (refresh status, last scan, keep-awake) - paste
+those too.
 
-There is also a **Health Check** button on the Developer page (enable the small
-`Dev` checkbox in the panel footer) that dumps a table of the tracker's internal
-state to the console. Paste that into the issue.
+---
+
+## Documentation
+
+| File | What is in it |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | Every change, per version |
+| [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Why the code is the way it is. Each `// ===== SECTION =====` marker in the script has a matching heading here. |
+| [docs/reviews/](docs/reviews/) | Code reviews |
+
+The script itself carries no change notes or long comments - they live here, so
+the file users install stays small.
 
 ---
 
 ## Development
 
 ```bash
-git clone <this repo>
-cd eve-slt-tracker
+git clone https://github.com/zayd117/EVE-SLT-TRACKER.git
+cd EVE-SLT-TRACKER
 
-# syntax check (matches what CI runs)
+# syntax check + header check (what CI runs)
 node --check EVE_SLT_Tracker.user.js
+node scripts/validate-header.mjs EVE_SLT_Tracker.user.js
 
 # cut a release: bumps @version, updates CHANGELOG, tags, pushes
 ./scripts/release.sh patch "Fix flap protection swallowing swapped-server failures"
 ```
 
+When you change code, update the matching section of `docs/CODE_NOTES.md` in
+the same commit.
+
+### Repository layout
+
+```text
+EVE_SLT_Tracker.user.js        the userscript (what users install)
+CHANGELOG.md                   change history
+docs/CODE_NOTES.md             design notes, one heading per script section
+docs/reviews/                  code reviews
+scripts/release.sh             cut a release
+scripts/validate-header.mjs    checks the ==UserScript== header
+scripts/check-version-bump.mjs fails a PR that changes the script without a bump
+.github/workflows/ci.yml       runs the checks on every push and PR
+.github/workflows/release.yml  publishes a GitHub Release for each v* tag
+.github/ISSUE_TEMPLATE/        bug report form
+```
+
 ### Branch model
 
 - `main` is the release channel. Whatever is on `main` is what users download.
-- Work on a branch, open a PR, merge. CI blocks a merge that does not bump
-  `@version` or that fails the syntax check.
+- Work on a branch, open a PR, merge. CI flags a PR that changes the script
+  without bumping `@version`, or that fails the syntax, header or plain-ASCII
+  checks.
 - `./scripts/release.sh` tags the commit; the release workflow then publishes a
   GitHub Release with the changelog entry attached.
 
@@ -110,15 +173,20 @@ Reload the rack page to pick up local edits.
 
 ## Privacy
 
-This script stores nothing off-machine. It has no analytics, no telemetry and no
-outbound requests other than re-fetching the page you are already on.
+Nothing leaves your browser except these requests, all made with sessions you
+are already logged in to:
 
-- **Credentials are never stored.** The tracker uses the browser session you are
-  already authenticated with.
-- All state lives in your own browser: `localStorage` (settings, audit log,
-  panel position) and `sessionStorage` (rack baselines, undismissed alerts, flap
-  cooldowns).
-- The exported `.txt` / `.csv` files are written locally by your browser.
+- the rack page itself, re-fetched on each refresh;
+- a server's detail page on the same site, once per detected result, to read
+  its phase and pass/fail;
+- Jira's search API at `jira.synnex.com`, with your existing Jira login, to find
+  the ticket for a serial. Only the serial number is sent.
+
+No credentials are stored. There are no analytics and no telemetry. All state
+lives in your own browser: `localStorage` (settings, audit log, panel position)
+and `sessionStorage` (rack baselines, undismissed alerts, flap cooldowns, Jira
+lookup cache). Exported `.txt` / `.csv` files are written locally by your
+browser.
 
 ---
 
