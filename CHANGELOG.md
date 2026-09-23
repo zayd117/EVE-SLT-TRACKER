@@ -8,6 +8,40 @@ userscript header increases, so every entry below corresponds to a version
 that was actually shipped. The script itself carries no change notes; they
 all live here.
 
+## [0.9.9] - 2026-09-23
+
+### Changed
+- Clicking an alert card (anywhere but the serial, close or Jira button) now
+  opens the card's server in TestView instead of the Server Detail page. The
+  script looks up the serial's latest SLT test through TestView's own list API
+  and goes straight to its test-detail page (`/slt/testdetail/<id>`). If no
+  test is found or the lookup fails, it falls back to the TestView SLT list
+  with the serial typed into the SN search and Query pressed.
+  Cards without a serial still open Server Detail.
+- The "Toast click opens" setting option "Server detail" is now
+  "TestView search" and opens the same TestView query. Saved settings carry
+  over unchanged.
+- The script now also runs on the TestView `/slt/list` page, only to perform
+  that lookup / auto-query. New grants: `GM_setValue`, `GM_getValue`,
+  `GM_deleteValue` (hand the serial to the TestView tab).
+
+### Security
+- The TestView helper acts only on the TestView site itself; the host-agnostic
+  `@match` would otherwise let an unrelated `/slt/list` page receive a clicked
+  serial.
+
+### Fixed
+- `@name` no longer carries a stale version number (was "v0.9.7").
+- The version fallback used when `GM_info` is unavailable was still 0.9.7.
+- Stale version references: docs/CODE_NOTES.md header and the bug-report
+  template placeholder now say 0.9.9.
+
+### Documentation
+- README: card click / TestView behaviour and the TestView API request in the
+  Privacy section.
+- docs/CODE_NOTES.md: new TESTVIEW section, including why the first builds of
+  this feature failed (see "What finally fixed it").
+
 ## [0.9.8] - 2026-09-22
 
 ### Changed
