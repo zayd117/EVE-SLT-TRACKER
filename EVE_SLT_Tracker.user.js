@@ -1,18 +1,22 @@
 // ==UserScript==
-// @name         EVE SLT Tracker v0.9.7
+// @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.8
+// @version      0.9.9
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
 // @supportURL   https://github.com/zayd117/EVE-SLT-TRACKER/issues
 // @match        *://*/out/out.eveslt.php*
+// @match        *://*/slt/list*
 // @run-at       document-start
 // @noframes
 // @grant        GM_notification
 // @grant        GM_openInTab
 // @grant        GM_info
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
 // @connect      jira.synnex.com
 // @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
@@ -30,7 +34,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '0.9.7';
+      : '0.9.9';
   const LOG_PREFIX = '[EVE Tracker]';
 
   // ===== STORAGE KEYS =====
@@ -218,6 +222,446 @@
       return;
     }
     window.open(target, '_blank', 'noopener,noreferrer');
+  }
+
+  // ===== TESTVIEW =====
+  const TESTVIEW_LIST_URL = 'https://testview-eve-fmt.hyvesolutions.org/slt/list';
+  const TESTVIEW_HASH_PARAM = 'eveSn';
+  const TESTVIEW_HANDOFF_KEY = 'eveTestViewHandoff';
+  const TESTVIEW_HANDOFF_TTL_MS = 2 * 60 * 1000;
+  const TESTVIEW_WAIT_MS = 20000;
+  const TESTVIEW_POLL_MS = 250;
+  const TESTVIEW_API_PATH = '/api/v1/server_level_tests/view';
+  const TESTVIEW_DETAIL_PATH = '/slt/testdetail/';
+  const TESTVIEW_LOOKUP_TIMEOUT_MS = 8000;
+  const TESTVIEW_KEY_MS = 40;
+  const TESTVIEW_COMMIT_MS = 700;
+  const TESTVIEW_QUIET_MS = 1000;
+  const TESTVIEW_LOAD_CAP_MS = 30000;
+  const TESTVIEW_RESULT_WAIT_MS = 3000;
+  const TESTVIEW_SETTLE_MS = 250;
+  const TESTVIEW_MAX_TRIES = 3;
+
+  function buildTestViewUrl(serial) {
+    return `${TESTVIEW_LIST_URL}#${TESTVIEW_HASH_PARAM}=${encodeURIComponent(serial)}`;
+  }
+
+  function openTestView(serial, opener) {
+    try {
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(TESTVIEW_HANDOFF_KEY, JSON.stringify({ serial, ts: Date.now() }));
+      }
+    } catch (error) {}
+    opener(buildTestViewUrl(serial));
+  }
+
+  function readTestViewSerial() {
+    const match = String(window.location.hash || '').match(
+      new RegExp(`[#&]${TESTVIEW_HASH_PARAM}=([^&]+)`)
+    );
+    let handoff = null;
+    try {
+      if (typeof GM_getValue === 'function') {
+        handoff = JSON.parse(GM_getValue(TESTVIEW_HANDOFF_KEY, 'null'));
+      }
+      if (typeof GM_deleteValue === 'function') {
+        GM_deleteValue(TESTVIEW_HANDOFF_KEY);
+      }
+    } catch (error) {}
+    if (match) {
+      try {
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+      } catch (error) {}
+      try {
+        return decodeURIComponent(match[1]).trim();
+      } catch (error) {
+        return '';
+      }
+    }
+    if (
+      handoff &&
+      typeof handoff.serial === 'string' &&
+      Date.now() - (Number(handoff.ts) || 0) < TESTVIEW_HANDOFF_TTL_MS
+    ) {
+      return handoff.serial.trim();
+    }
+    return '';
+  }
+
+  function findTestViewSnInput() {
+    const byId = document.getElementById('server_sn');
+    if (byId) {
+      return byId;
+    }
+    for (const item of document.querySelectorAll('.ant-form-item')) {
+      const label = item.querySelector('label, .ant-form-item-label');
+      if (label && /^SN\s*:?$/i.test(label.textContent.trim())) {
+        const input = item.querySelector('input');
+        if (input) {
+          return input;
+        }
+      }
+    }
+    return (
+      document.querySelector('input[id$="sn" i]') ||
+      document.querySelector('input[placeholder*="SN"]') ||
+      null
+    );
+  }
+
+  function findTestViewQueryButton() {
+    let fallback = null;
+    for (const button of document.querySelectorAll('button')) {
+      if (button.textContent.replace(/\s+/g, '').toLowerCase() !== 'query') {
+        continue;
+      }
+      if (button.offsetParent !== null) {
+        return button;
+      }
+      fallback = fallback || button;
+    }
+    return fallback;
+  }
+
+  function clickTestViewButton(button) {
+    const opts = { bubbles: true, cancelable: true, button: 0, buttons: 1 };
+    button.focus();
+    for (const [Ctor, type] of [
+      [window.PointerEvent || MouseEvent, 'pointerdown'],
+      [MouseEvent, 'mousedown'],
+      [window.PointerEvent || MouseEvent, 'pointerup'],
+      [MouseEvent, 'mouseup']
+    ]) {
+      try {
+        button.dispatchEvent(new Ctor(type, opts));
+      } catch (error) {}
+    }
+    button.click();
+  }
+
+  function testViewIsLoading() {
+    for (const spin of document.querySelectorAll('.ant-spin-spinning, .ant-spin-blur')) {
+      if (spin.offsetParent !== null) {
+        return true;
+      }
+    }
+    const button = findTestViewQueryButton();
+    return !!(
+      button &&
+      (button.disabled ||
+        button.classList.contains('ant-btn-loading') ||
+        button.getAttribute('aria-busy') === 'true')
+    );
+  }
+
+  function testViewTableSignature() {
+    return Array.from(document.querySelectorAll('.ant-table-tbody tr.ant-table-row'))
+      .map(row => (row.firstElementChild ? row.firstElementChild.textContent.trim() : ''))
+      .join(',');
+  }
+
+  function describeTestViewPage(input) {
+    const button = findTestViewQueryButton();
+    const rows = document.querySelectorAll('.ant-table-tbody tr.ant-table-row');
+    return (
+      `SN box #${input.id || '?'} = "${input.value}", ` +
+      `Query button ${button ? `class="${button.className}"` : 'NOT FOUND'}, ` +
+      `inside <form>: ${input.closest('form') ? 'yes' : 'no'}, ` +
+      `busy: ${testViewIsLoading()}, rows: ${rows.length}, ` +
+      `first row: "${rows.length ? testViewTableSignature().split(',')[0] : '-'}"`
+    );
+  }
+
+  function triggerTestViewQuery(input, attempt) {
+    const form = input.closest('form');
+    if (attempt === 2 && form && typeof form.requestSubmit === 'function') {
+      form.requestSubmit();
+      return 'form.requestSubmit()';
+    }
+    const button = findTestViewQueryButton();
+    if (button) {
+      clickTestViewButton(button);
+      return 'Query click';
+    }
+    const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true };
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', enter));
+    input.dispatchEvent(new KeyboardEvent('keyup', enter));
+    return 'Enter key';
+  }
+
+  function testViewResultsFiltered(serial) {
+    const rows = document.querySelectorAll('.ant-table-tbody tr.ant-table-row');
+    if (!rows.length) {
+      return !!document.querySelector('.ant-table-placeholder');
+    }
+    const want = serial.toUpperCase();
+    for (const row of rows) {
+      if (row.textContent.toUpperCase().indexOf(want) === -1) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function testViewSleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function testViewWaitFor(condition, capMs) {
+    const until = Date.now() + capMs;
+    while (!condition()) {
+      if (Date.now() > until) {
+        return false;
+      }
+      await testViewSleep(TESTVIEW_POLL_MS / 2);
+    }
+    return true;
+  }
+
+  async function testViewWaitQuiet(quietMs, capMs) {
+    const until = Date.now() + capMs;
+    let idleSince = 0;
+    while (Date.now() < until) {
+      if (testViewIsLoading()) {
+        idleSince = 0;
+      } else {
+        idleSince = idleSince || Date.now();
+        if (Date.now() - idleSince >= quietMs) {
+          return true;
+        }
+      }
+      await testViewSleep(TESTVIEW_POLL_MS / 2);
+    }
+    return false;
+  }
+
+  function testViewKey(input, type, ch) {
+    input.dispatchEvent(
+      new KeyboardEvent(type, {
+        key: ch,
+        code: /^[a-z]$/i.test(ch) ? `Key${ch.toUpperCase()}` : /^\d$/.test(ch) ? `Digit${ch}` : '',
+        keyCode: ch.toUpperCase().charCodeAt(0),
+        which: ch.toUpperCase().charCodeAt(0),
+        bubbles: true,
+        cancelable: true
+      })
+    );
+  }
+
+  function testViewInsert(input, text, inputType) {
+    let done = false;
+    try {
+      done = document.execCommand(inputType === 'insertText' ? 'insertText' : 'delete', false, text);
+    } catch (error) {}
+    if (done) {
+      return;
+    }
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, inputType === 'insertText' ? input.value + text : '');
+    input.dispatchEvent(
+      new InputEvent('input', { bubbles: true, data: text || null, inputType })
+    );
+  }
+
+  async function typeIntoTestViewInput(input, value) {
+    input.focus();
+    input.select();
+    if (input.value) {
+      testViewInsert(input, '', 'deleteContentBackward');
+    }
+    for (const ch of value) {
+      testViewKey(input, 'keydown', ch);
+      testViewKey(input, 'keypress', ch);
+      testViewInsert(input, ch, 'insertText');
+      testViewKey(input, 'keyup', ch);
+      await testViewSleep(TESTVIEW_KEY_MS);
+    }
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.blur();
+  }
+
+  async function submitTestViewQuery(input, serial) {
+    const say = message => console.log(LOG_PREFIX + ` TestView: ${message}`);
+    let userTookOver = false;
+    const onUserKey = event => {
+      if (event.isTrusted) {
+        userTookOver = true;
+      }
+    };
+    document.addEventListener('keydown', onUserKey, true);
+    try {
+      for (let attempt = 1; attempt <= TESTVIEW_MAX_TRIES; attempt += 1) {
+        if (!input.isConnected) {
+          input = findTestViewSnInput() || input;
+        }
+        if (attempt === 1) {
+          say(`waiting for the page to finish loading. ${describeTestViewPage(input)}`);
+        }
+        const ready = await testViewWaitQuiet(TESTVIEW_QUIET_MS, TESTVIEW_LOAD_CAP_MS);
+        if (userTookOver) {
+          say('user is typing; auto-query stopped.');
+          return;
+        }
+        if (!input.isConnected) {
+          input = findTestViewSnInput() || input;
+        }
+        await typeIntoTestViewInput(input, serial);
+        say(`try ${attempt}: page ${ready ? 'idle' : 'still busy'}; typed SN, pausing before Query.`);
+        await testViewSleep(TESTVIEW_COMMIT_MS);
+        await testViewWaitQuiet(TESTVIEW_SETTLE_MS, TESTVIEW_LOAD_CAP_MS);
+        if (userTookOver) {
+          say('user is typing; auto-query stopped.');
+          return;
+        }
+        if (!input.isConnected || input.value !== serial) {
+          say(`try ${attempt}: SN box changed to "${input.value}" before Query; typing again.`);
+          continue;
+        }
+        const before = testViewTableSignature();
+        const how = triggerTestViewQuery(input, attempt);
+        say(`try ${attempt}: ${how} (page ${ready ? 'was idle' : 'still busy'}); ${describeTestViewPage(input)}`);
+        const reacted = await testViewWaitFor(
+          () => testViewIsLoading() || testViewTableSignature() !== before,
+          TESTVIEW_RESULT_WAIT_MS
+        );
+        await testViewWaitFor(() => !testViewIsLoading(), TESTVIEW_LOAD_CAP_MS);
+        await testViewSleep(TESTVIEW_SETTLE_MS);
+        if (testViewResultsFiltered(serial)) {
+          say(`results filtered to SN ${serial}.`);
+          return;
+        }
+        if (userTookOver) {
+          say('user is typing; auto-query stopped.');
+          return;
+        }
+        say(
+          `try ${attempt}: not filtered (${reacted ? 'table reloaded' : 'NO reload after ' + how}); ` +
+            describeTestViewPage(input)
+        );
+      }
+      say(`gave up after ${TESTVIEW_MAX_TRIES} tries.`);
+      showTestViewBanner(`EVE Tracker: typed SN ${serial} but the list did not filter. Press Query.`);
+    } finally {
+      document.removeEventListener('keydown', onUserKey, true);
+    }
+  }
+
+  function showTestViewBanner(text) {
+    try {
+      const banner = document.createElement('div');
+      banner.style.cssText =
+        'position:fixed;top:10px;right:10px;z-index:2147483647;' +
+        'max-width:360px;padding:10px 12px;border-radius:8px;' +
+        'background:#7f1d1d;color:#fff;border:2px solid #ef4444;' +
+        'font:13px Arial,Helvetica,sans-serif;cursor:pointer;';
+      banner.textContent = text;
+      banner.title = 'Click to dismiss';
+      banner.addEventListener('click', () => banner.remove());
+      document.body.appendChild(banner);
+    } catch (error) {}
+  }
+
+  async function lookupTestViewDetailId(serial) {
+    const params = new URLSearchParams();
+    for (const field of ['id', 'server_sn', 'started']) {
+      params.append('fields', field);
+    }
+    params.append('only_latest_slt', 'true');
+    params.append('page_num', '1');
+    params.append('page_size', '10');
+    params.append('server_sn', serial);
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => controller && controller.abort(), TESTVIEW_LOOKUP_TIMEOUT_MS);
+    try {
+      const response = await fetch(`${TESTVIEW_API_PATH}?${params}`, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+        signal: controller ? controller.signal : undefined
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const body = await response.json();
+      const items = (body && body.data && Array.isArray(body.data.items) && body.data.items) || [];
+      const want = serial.toUpperCase();
+      const matches = items.filter(
+        item => item && item.id && String(item.server_sn || '').toUpperCase() === want
+      );
+      matches.sort((a, b) => String(b.started || '').localeCompare(String(a.started || '')));
+      return matches.length ? String(matches[0].id) : '';
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function isTestViewOrigin() {
+    try {
+      return window.location.origin === new URL(TESTVIEW_LIST_URL).origin;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function runTestViewAutoQuery() {
+    if (!isTestViewOrigin()) {
+      return;
+    }
+    const serial = readTestViewSerial();
+    if (!serial) {
+      return;
+    }
+    lookupTestViewDetailId(serial)
+      .then(id => {
+        if (/^\d+$/.test(id)) {
+          console.log(LOG_PREFIX + ` TestView: SN ${serial} is test ${id}; opening its detail page.`);
+          window.location.replace(TESTVIEW_DETAIL_PATH + id);
+          return;
+        }
+        console.log(LOG_PREFIX + ` TestView: no test found for SN ${serial}; querying the list.`);
+        startTestViewListQuery(serial);
+      })
+      .catch(error => {
+        console.warn(LOG_PREFIX + ' TestView: detail lookup failed; querying the list.', error);
+        startTestViewListQuery(serial);
+      });
+  }
+
+  function startTestViewListQuery(serial) {
+    const startedAt = Date.now();
+    let done = false;
+    let observer = null;
+    let timer = 0;
+    const finish = () => {
+      done = true;
+      if (observer) {
+        observer.disconnect();
+      }
+      clearInterval(timer);
+    };
+    const attempt = () => {
+      if (done) {
+        return;
+      }
+      const input = findTestViewSnInput();
+      if (!input) {
+        if (Date.now() - startedAt > TESTVIEW_WAIT_MS) {
+          finish();
+          console.warn(LOG_PREFIX + ' TestView: SN input not found; auto-query skipped.');
+          showTestViewBanner(`EVE Tracker: could not auto-fill SN ${serial}. Enter it manually.`);
+        }
+        return;
+      }
+      finish();
+      submitTestViewQuery(input, serial).catch(error => {
+        console.error(LOG_PREFIX + ' TestView: auto-query crashed:', error);
+        showTestViewBanner(`EVE Tracker: auto-query failed (${error && error.message}). Press Query.`);
+      });
+    };
+    observer = new MutationObserver(attempt);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    timer = setInterval(attempt, TESTVIEW_POLL_MS);
+    attempt();
   }
 
   // ===== JIRA =====
@@ -1018,9 +1462,13 @@
   function openNotificationTarget(detailUrl, serial, failedAt, pretest) {
     const target = (settings && settings.notificationClickTarget) || 'jira';
     const wantJira = (target === 'jira' || target === 'both') && !!serial;
-    const wantDetail = (target === 'detail' || target === 'both' || !wantJira) && !!detailUrl;
+    const wantPage = target === 'detail' || target === 'both' || !wantJira;
+    const wantTestView = wantPage && !!serial;
+    const wantDetail = wantPage && !serial && !!detailUrl;
     if (wantDetail) {
       openFromNotification(detailUrl);
+    } else if (wantTestView) {
+      openTestView(serial, openFromNotification);
     }
     if (wantJira) {
       return openJiraFromToast(serial, failedAt || 0, !!pretest);
@@ -4268,7 +4716,7 @@
     if (!card) {
       return;
     }
-    applyCardState(card, record, record.detailUrl);
+    applyCardState(card, record);
     syncJiraForCard(card, record);
     const titleEl = card.querySelector('.eve-alert-header span');
     if (titleEl) {
@@ -4341,11 +4789,23 @@
     Object.keys(TRANSITIONS).map(key => [key, TRANSITIONS[key].css])
   );
 
-  function applyCardState(element, record, detailUrl) {
+  function isCardClickable(record) {
+    return !!(record.serial || safeUrl(record.detailUrl));
+  }
+
+  function openCardTarget(record) {
+    if (record.serial) {
+      openTestView(record.serial, openExternal);
+      return;
+    }
+    openExternal(record.detailUrl);
+  }
+
+  function applyCardState(element, record) {
     const alertClass = ALERT_CLASS_BY_TRANSITION[record.transition] || 'eve-failure';
     element.className =
       `eve-alert ${alertClass}` +
-      (detailUrl ? ' eve-alert-clickable' : '') +
+      (isCardClickable(record) ? ' eve-alert-clickable' : '') +
       (record.phaseSource === 'unverified' ? ' eve-alert-unverified' : '') +
       (isAlertAged(record.ts) ? ' eve-alert-aged' : '');
     element.dataset.transition = record.transition || '';
@@ -4355,10 +4815,12 @@
   function renderAlertElement(record, shouldStore) {
     const container = getAlertContainer();
     const alert = document.createElement('div');
-    const detailUrl = safeUrl(record.detailUrl);
-    applyCardState(alert, record, detailUrl);
-    if (detailUrl) {
-      alert.title = 'Click anywhere on this alert to open Server Detail';
+    const clickable = isCardClickable(record);
+    applyCardState(alert, record);
+    if (clickable) {
+      alert.title = record.serial
+        ? 'Click anywhere on this alert to open this serial in TestView'
+        : 'Click anywhere on this alert to open Server Detail';
     }
     alert.dataset.alertId = record.id;
     alert.dataset.debug = isDebugData(record) ? '1' : '0';
@@ -4412,7 +4874,7 @@ ${escapeHtml(formatRelativeTime(ts))}
     if (record.serial) {
       alert.querySelector('.eve-alert-footer').appendChild(buildJiraButton(record.serial, record));
     }
-    if (detailUrl) {
+    if (clickable) {
       alert.addEventListener('click', event => {
         if (
           event.target.closest('.eve-alert-serial') ||
@@ -4421,7 +4883,7 @@ ${escapeHtml(formatRelativeTime(ts))}
         ) {
           return;
         }
-        openExternal(detailUrl);
+        openCardTarget(record);
       });
     }
     alert.querySelector('.eve-alert-close').addEventListener('click', () => {
@@ -5236,7 +5698,7 @@ style="display:none"
 <span>Toast click opens</span>
 <select id="eve-notification-click" class="eve-dev-input">
 <option value="jira">Jira ticket</option>
-<option value="detail">Server detail</option>
+<option value="detail">TestView search</option>
 <option value="both">Both</option>
 </select>
 </label>
@@ -6852,6 +7314,14 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   // ===== BOOTSTRAP =====
 
   function bootstrap() {
+    if (/^\/slt\//.test(window.location.pathname)) {
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', runTestViewAutoQuery);
+      } else {
+        runTestViewAutoQuery();
+      }
+      return;
+    }
     let earlyObserver = null;
     try {
       if (document.documentElement) {
