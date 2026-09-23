@@ -22,6 +22,9 @@ recorded as diagnostics, never as failures.
 - **Jira** button on every card. Fail cards find the ticket raised for that
   failure (the Jira bot usually takes 5-10 min) and show its key and status.
   With no ticket, one click gives the two useful searches.
+- **Card click opens TestView**: click anywhere else on a card to go straight
+  to that serial's latest SLT test-detail page in TestView. If the test cannot
+  be found, the TestView SLT list opens with the serial searched instead.
 - **Section counts**: live test / fail / pass numbers beside each section you
   have switched on.
 - **Per-shift log**: pick Day, Swing or Graveyard; exports never mix shifts.
@@ -181,11 +184,17 @@ are already logged in to:
   its phase and pass/fail;
 - Jira's search API at `jira.synnex.com`, with your existing Jira login, to find
   the ticket for a serial. Only the serial number is sent.
+- TestView's own SLT list API, on the TestView site, when you click a card, to
+  find that serial's test id. It is sent with your existing TestView login
+  (the browser adds the cookie; the script never reads it). Only the serial
+  number is sent.
 
 No credentials are stored. There are no analytics and no telemetry. All state
 lives in your own browser: `localStorage` (settings, audit log, panel position)
 and `sessionStorage` (rack baselines, undismissed alerts, flap cooldowns, Jira
-lookup cache). Exported `.txt` / `.csv` files are written locally by your
+lookup cache). The serial of a clicked card is handed to the TestView tab
+through Tampermonkey storage and deleted as soon as that tab reads it (it
+expires after 2 minutes regardless). Exported `.txt` / `.csv` files are written locally by your
 browser.
 
 ---

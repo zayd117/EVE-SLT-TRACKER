@@ -7,7 +7,7 @@ most notes record a real failure seen on the floor and the rule that stops it co
 Every `// ===== TITLE =====` marker in the script has a matching heading below. Each note is
 labelled with the function, constant or line it belongs to.
 
-> Written for **v0.9.7**. When code changes, update the matching note here in the same commit.
+> Written for **v0.9.9**. When code changes, update the matching note here in the same commit.
 
 ## Contents
 
@@ -21,6 +21,7 @@ labelled with the function, constant or line it belongs to.
 - [SETTINGS](#settings)
 - [RUNTIME STATE](#runtime-state)
 - [DETECTION HEALTH](#detection-health)
+- [TESTVIEW](#testview)
 - [JIRA](#jira)
 - [LOAD / SAVE SETTINGS](#load--save-settings)
 - [BASELINE STATE (previousStates)](#baseline-state-previousstates)
@@ -267,6 +268,59 @@ Toast callbacks are NOT a user gesture, so window.open() from one gets popup-blo
 **In `openFromNotification()`, at `window.open(target, '_blank', 'noopener,noreferrer');`**
 
 Best effort. May be blocked - hence the grant above.
+
+## TESTVIEW
+
+v0.9.9. A card click (and a toast click when "Toast click opens" is TestView search) opens the card's server in TestView instead of the mfg-collector Server Detail page. The TestView test-detail page (`/slt/testdetail/<id>`) needs a database id the rack page does not have, so the card opens the TestView list page, and the script there looks the id up (lookupTestViewDetailId) and redirects to the detail page. If that fails it queries the list for the serial instead. A card or toast with no serial still opens the old detailUrl.
+
+The same script runs on the TestView list page (`@match *://*/slt/list*`, host-agnostic like the rack `@match`). bootstrap() sees the `/slt/` path, runs only runTestViewAutoQuery() and returns, so none of the tracker starts there.
+
+### `isTestViewOrigin()`
+
+`@match *://*/slt/list*` is host-agnostic, so the script also starts on any other site that happens to have that path. It does nothing there: without this check a stray /slt/list page opened within the handoff TTL would consume the handoff and receive the serial in its API call.
+
+### `openTestView()`
+
+The serial travels two ways: in the URL hash (`#eveSn=...`) and in GM storage (`GM_setValue`, shared by this script across origins). A TestView login redirect can drop the hash; the GM handoff, valid for TESTVIEW\_HANDOFF\_TTL\_MS, still gets the serial through when the user lands on the list page again.
+
+### `readTestViewSerial()`
+
+The hash wins over the handoff. Both are consumed on read (hash stripped with replaceState, handoff deleted) so a reload of the list page does not re-query.
+
+### `lookupTestViewDetailId()`
+
+The list page's own table request: `GET /api/v1/server_level_tests/view?fields=...&only_latest_slt=true&page_num=1&page_size=10&server_sn=<SN>` returns `{code, msg, data: {page_info, items: [{id, server_sn, status, started, ...}]}}`; `items[].id` is the number in `/slt/testdetail/<id>` (field capture, 2026-09-23). The script runs on the TestView origin, so a same-origin fetch carries the user's `access_token` cookie - no token is read or stored by the script. Only an item whose server\_sn equals the serial counts; with several, the newest `started` wins. A non-OK status, a network error, TESTVIEW\_LOOKUP\_TIMEOUT\_MS with no answer, or no match all fall back to startTestViewListQuery(). The redirect uses location.replace so Back does not land on the list page and bounce again (the handoff is consumed on read anyway).
+
+### `findTestViewSnInput()`
+
+TestView is an Ant Design app. The SN field is `<input id="server_sn" class="ant-input">` (seen on the live page); the `.ant-form-item` labelled "SN" and the id / placeholder selectors are fallbacks if that markup changes.
+
+### `typeIntoTestViewInput()`
+
+Types the SN the way a person does, one key at a time: keydown, keypress, the character inserted with execCommand 'insertText' (real input events the React form handles; native value setter + InputEvent as fallback), keyup, TESTVIEW\_KEY\_MS apart. Any old text is deleted first. It ends with change and a real blur(): a mouse click on Query moves focus out of the box first, and a form that saves the field on blur never sees the SN without it.
+
+### `runTestViewAutoQuery()` / `startTestViewListQuery()`
+
+runTestViewAutoQuery() tries the detail lookup first; startTestViewListQuery() is the list fallback. The SPA renders the form after the page loads, so it waits (MutationObserver plus a TESTVIEW\_POLL\_MS poll, capped at TESTVIEW\_WAIT\_MS) for the SN input, then hands off to submitTestViewQuery(). If the input never appears a dismissible red banner tells the user to enter the SN by hand.
+
+### `submitTestViewQuery()`
+
+Field tests: (1) the SN showed in the box and Query ran, but the query went out without the SN; (2) with Query held back until the table loaded, the SN appeared only after the page's own load; (3) SN typed first and Query focused, still unfiltered. In (3) the SN had reached the form (the allowClear icon only shows when the form holds a value), so the Query press itself was lost - most likely pressed while the page was still busy, when an antd Button in its loading state ignores clicks. Each try runs strictly in this order:
+
+1. Wait until the page has been idle for TESTVIEW\_QUIET\_MS without a break (the page can run several loads back to back; a query pressed in the gap between them is overwritten), and only then type the SN, once, slowly (TESTVIEW\_KEY\_MS per key), including the blur.
+2. Pause TESTVIEW\_COMMIT\_MS, then wait until the page is idle again: no visible `.ant-spin-spinning` / `.ant-spin-blur` AND the Query button is not disabled / `ant-btn-loading` / aria-busy (up to TESTVIEW\_LOAD\_CAP\_MS - the first list load can be slow).
+3. If the box no longer holds the SN, type it again. Otherwise trigger the query (triggerTestViewQuery): a Query click (focus, pointer/mouse down+up, click - for a submit button, click() also fires the form's submit, which the browser marks trusted); on try 2 `form.requestSubmit()` if the field is inside a `<form>`; Enter on the input if there is no Query button.
+4. Wait for the table to react (busy, or rows changed), then to go idle, then check every `.ant-table-row` contains the serial (an empty table counts as filtered). If not, next try, at most TESTVIEW\_MAX\_TRIES, then a banner asks the user to press Query.
+
+What finally fixed it (v0.9.9 test builds, compared): the flow was right from the second build on, but every build that dispatched pointer/mouse events built them with `view: window` and crashed in Tampermonkey before Query was pressed (see below). The symptoms - SN in the box, a "query" that did not filter - were the page's own first list load, which runs every time /slt/list opens, and never a query from the script. The first build did not crash (bare click()) but pressed Query 0.4 s after the box appeared, inside that first load. Removing `view` made the click land; waiting for the page to go idle makes it land after the page's own load. An early extra typing pass was only redundant and was removed.
+
+Timing (v0.9.9 final): idle 1 s (TESTVIEW\_QUIET\_MS), type at 40 ms per key, pause 0.7 s (TESTVIEW\_COMMIT\_MS), idle 0.25 s, click - about 2.3 s after the page's own load for a 10-character SN (was about 4.8 s).
+
+**In `clickTestViewButton()`**: no `view: window` in the event init. Inside Tampermonkey `window` is a sandbox proxy, not a real Window, and `new PointerEvent(..., { view: window })` throws "Failed to convert value to 'Window'" (field console, v0.9.9 test build) - the throw killed the flow before Query was pressed. Each synthetic event is also wrapped in try/catch so a missing constructor cannot stop the final click(), and runTestViewAutoQuery() catches any crash, logs it and shows the banner.
+
+A synthetic Tab or Enter cannot move focus or press a button (browsers ignore untrusted key events for default actions), so "Tab to Query, press Enter" is done as focus + click().
+
+A real keypress stops it at once so it never fights someone typing another SN. Every step logs `[EVE Tracker] TestView: ...` with describeTestViewPage(): SN box value, Query button class, whether it is inside a form, busy state, row count and first row - enough to diagnose a failure from a console paste.
 
 ## JIRA
 
