@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.10
+// @version      0.9.11
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -34,7 +34,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '0.9.10';
+      : '0.9.11';
   const LOG_PREFIX = '[EVE Tracker]';
 
   // ===== STORAGE KEYS =====
@@ -44,6 +44,7 @@
   const RECENT_ALERTS_KEY = 'eveRackTrackerRecentAlerts';
   const ALERT_LOG_KEY = 'eveRackTrackerAlertLog';
   const LOG_SHIFT_KEY = 'eveRackTrackerAlertLogDay';
+  const LOG_AUTO_SHIFT_KEY = 'eveRackTrackerAutoShift';
   const LOG_CLEARED_KEY = 'eveRackTrackerAlertLogClearedAt';
   const ALERTS_COLLAPSED_KEY = 'eveRackTrackerAlertsCollapsed';
   const PANEL_POSITION_KEY = 'eveRackTrackerPanelPosition';
@@ -51,6 +52,7 @@
   const ALERT_PANEL_POSITION_KEY = 'eveRackTrackerAlertPanelPosition';
   const JIRA_CACHE_KEY = 'eveRackTrackerJiraCache';
   const HEARTBEAT_KEY = 'eveRackTrackerHeartbeat';
+  const EVENT_CLAIMS_KEY = 'eveRackTrackerEventClaims';
 
   // ===== STORAGE I/O =====
 
@@ -105,6 +107,7 @@
   const BLIND_SCAN_THRESHOLD = 3;
   const EVE_HEADER_PATTERN = /^TA\.([^-]+)-EVE(\d+)/i;
   const REFRESH_INTERVAL_OPTIONS = [30, 20, 10];
+  const SITE_TIME_ZONE = 'America/Los_Angeles';
   const DEFAULT_REFRESH_SECONDS = 30;
 
   // ===== SETTINGS =====
@@ -115,7 +118,8 @@
     developerMode: false,
     jiraBaseUrl: 'https://jira.synnex.com',
     notificationClickTarget: 'jira',
-    logShift: ''
+    logShiftChoice: 'auto',
+    logShiftOverrideFor: ''
   };
 
   // ===== RUNTIME STATE =====
@@ -132,6 +136,7 @@
   let observerSuppressDepth = 0;
   let alertFilter = 'all';
   let alertSearch = '';
+  let rackDataAt = 0;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -744,6 +749,11 @@
     return !!record && record.transition === 'PRETEST_FAILURE';
   }
 
+  function isPassResult(record) {
+    const meta = record ? transitionMeta(record.transition) : null;
+    return !!meta && !meta.failure && !meta.diagnostic;
+  }
+
   function jiraExpecting(failedAt) {
     return !!failedAt && Date.now() - failedAt < JIRA_TICKET_EXPECT_MS;
   }
@@ -1082,6 +1092,15 @@
 
   function paintJiraButton(button, serial, result, loading) {
     const label = button.querySelector('.eve-jira-label');
+    if (result && result.state === 'passed') {
+      setClassIfChanged(button, 'eve-alert-jira eve-jira-passed');
+      button.removeAttribute('href');
+      button.title = `${serial} passed \u{2014} passes do not get a Jira ticket.`;
+      button.setAttribute('aria-label', `${serial} passed, no Jira ticket needed`);
+      setTextIfChanged(label, 'PASSED (no ticket)');
+      return;
+    }
+    button.setAttribute('aria-label', `Open ${serial} in Jira`);
     const failedAt = Number(button.dataset.failedAt) || 0;
     const pretest = button.dataset.pretest === '1';
     let cls = 'eve-alert-jira';
@@ -1155,20 +1174,20 @@
     }
   }
 
-  function buildJiraButton(serial, record) {
+  function buildJiraButton(serial) {
     const button = document.createElement('a');
-    const failedAt = jiraFailedAt(record);
     button.className = 'eve-alert-jira';
     button.target = '_blank';
     button.rel = 'noopener noreferrer';
-    button.dataset.failedAt = failedAt ? String(failedAt) : '';
-    button.dataset.pretest = jiraIsPretest(record) ? '1' : '';
-    button.setAttribute('aria-label', `Open ${serial} in Jira`);
     button.innerHTML =
       '<span class="eve-jira-dot" aria-hidden="true"></span>' +
       '<span class="eve-jira-label">Jira</span>' +
       JIRA_ICON_SVG;
     button.addEventListener('click', event => {
+      if (button.dataset.passed === '1') {
+        event.preventDefault();
+        return;
+      }
       const at = Number(button.dataset.failedAt) || 0;
       const known = jiraKnownUrl(serial, at);
       button.href = known || jiraUrlFor(serial, at);
@@ -1207,7 +1226,6 @@
         }
       });
     });
-    paintJiraButton(button, serial, jiraCardResult(serial, failedAt));
     return button;
   }
   const JIRA_TAB_CSS =
@@ -1391,6 +1409,16 @@
     if (!button || !record || !record.serial) {
       return;
     }
+    if (isPassResult(record)) {
+      clearTimeout(button.__eveJiraPoll);
+      button.dataset.passed = '1';
+      button.dataset.failedAt = '';
+      button.dataset.pretest = '';
+      paintJiraButton(button, record.serial, { state: 'passed' });
+      indexJiraKey(card, null);
+      return;
+    }
+    button.dataset.passed = '';
     const failedAt = jiraFailedAt(record);
     button.dataset.failedAt = failedAt ? String(failedAt) : '';
     button.dataset.pretest = jiraIsPretest(record) ? '1' : '';
@@ -1473,9 +1501,11 @@
     refreshJiraOnCards();
   }
 
-  function openNotificationTarget(detailUrl, serial, failedAt, pretest) {
+  function openNotificationTarget(record) {
+    const detailUrl = record.detailUrl;
+    const serial = record.serial;
     const target = (settings && settings.notificationClickTarget) || 'jira';
-    const wantJira = (target === 'jira' || target === 'both') && !!serial;
+    const wantJira = (target === 'jira' || target === 'both') && !!serial && !isPassResult(record);
     const wantPage = target === 'detail' || target === 'both' || !wantJira;
     const wantTestView = wantPage && !!serial;
     const wantDetail = wantPage && !serial && !!detailUrl;
@@ -1485,7 +1515,7 @@
       openTestView(serial, openFromNotification);
     }
     if (wantJira) {
-      return openJiraFromToast(serial, failedAt || 0, !!pretest);
+      return openJiraFromToast(serial, jiraFailedAt(record), jiraIsPretest(record));
     }
     return Promise.resolve();
   }
@@ -1614,9 +1644,17 @@
     return withLogShift({ ...defaultSettings, sections: {} });
   }
 
+  // Before 0.9.11 the shift was picked by hand (`logShift`) and stayed picked,
+  // so a shared PC stayed on whichever shift touched it last. Every saved
+  // pick becomes Auto once; a pick now lasts until the next shift change.
   function withLogShift(loaded) {
-    if (!SHIFTS[loaded.logShift]) {
-      loaded.logShift = guessShift(new Date());
+    const legacy = Object.prototype.hasOwnProperty.call(loaded, 'logShift');
+    delete loaded.logShift;
+    if (loaded.logShiftChoice !== 'auto' && !SHIFTS[loaded.logShiftChoice]) {
+      loaded.logShiftChoice = 'auto';
+      loaded.logShiftOverrideFor = '';
+    }
+    if (legacy) {
       writeJSON(localStorage, SETTINGS_KEY, loaded, 'Settings');
     }
     return loaded;
@@ -2096,6 +2134,7 @@
   }
 
   function afterSwap() {
+    rackDataAt = Date.now();
     observePage();
     const groups = getEveTableGroups();
     buildSectionControls(groups);
@@ -2118,19 +2157,38 @@
     return !isOwnUiNode(mutation.target);
   }
 
+  function touchesTable(mutation) {
+    const target = mutation.target.nodeType === 1 ? mutation.target : mutation.target.parentElement;
+    if (target && target.closest('table')) {
+      return true;
+    }
+    return [...mutation.addedNodes, ...mutation.removedNodes].some(
+      node => node.nodeType === 1 && (node.tagName === 'TABLE' || !!node.querySelector('table'))
+    );
+  }
+  let pendingRackChange = false;
+
   function observePage() {
     if (pageObserver) {
       pageObserver.disconnect();
     }
     pageObserver = new MutationObserver(mutations => {
-      if (!mutations.some(isRelevantMutation)) {
+      const relevant = mutations.filter(isRelevantMutation);
+      if (!relevant.length) {
         return;
+      }
+      if (relevant.some(touchesTable)) {
+        pendingRackChange = true;
       }
       if (scanTimer) {
         clearTimeout(scanTimer);
       }
       scanTimer = setTimeout(() => {
         scanTimer = null;
+        if (pendingRackChange) {
+          pendingRackChange = false;
+          rackDataAt = Date.now();
+        }
         invalidateHeaderCache();
         const groups = getEveTableGroups();
         buildSectionControls(groups);
@@ -3085,6 +3143,34 @@
     return false;
   }
 
+  // ===== EVENT CLAIMS (one event -> one log entry + one toast, across tabs) =====
+  const EVENT_CLAIM_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+  const MAX_EVENT_CLAIMS = 400;
+
+  function readEventClaims() {
+    const claims = readJSON(localStorage, EVENT_CLAIMS_KEY, null, null);
+    return claims && typeof claims === 'object' ? claims : {};
+  }
+
+  function findEventClaim(key, serial, transition, seenAt) {
+    if (!seenAt) {
+      return null;
+    }
+    const claim = readEventClaims()[`${key}|${serial}|${transition}`];
+    return claim && Number(claim.at) >= seenAt ? claim : null;
+  }
+
+  function recordEventClaim(key, serial, transition, eventId) {
+    const claims = readEventClaims();
+    claims[`${key}|${serial}|${transition}`] = { at: rackDataAt, eventId: eventId || '' };
+    const cutoff = Date.now() - EVENT_CLAIM_MAX_AGE_MS;
+    const live = Object.entries(claims)
+      .filter(([, claim]) => claim && Number(claim.at) > cutoff)
+      .sort((a, b) => b[1].at - a[1].at)
+      .slice(0, MAX_EVENT_CLAIMS);
+    writeJSON(localStorage, EVENT_CLAIMS_KEY, Object.fromEntries(live), null);
+  }
+
   // ===== SCAN PAGE =====
 
   function scan(groupsIn) {
@@ -3253,7 +3339,8 @@
     const oldState = previousStates.get(key);
     const newState = {
       color: info.color,
-      serial: info.serial
+      serial: info.serial,
+      seen: rackDataAt
     };
     const colorChanged = oldState && oldState.color !== info.color;
     const serialChanged = oldState && oldState.serial !== info.serial;
@@ -3263,6 +3350,8 @@
         `${key} \u{2192} color:${info.color} serial:${info.serial}` +
           (oldState ? ` (was ${oldState.color}/${oldState.serial})` : ' (baseline)')
       );
+    } else if (oldState.seen !== rackDataAt) {
+      markDirty();
     }
     previousStates.set(key, newState);
     if (!oldState) {
@@ -3282,8 +3371,23 @@
     if (!transition) {
       return;
     }
+    if (findEventClaim(key, info.serial, transition, oldState.seen)) {
+      const repeat = isDuplicateAlert(key, info.serial, transition);
+      devLog(
+        `${key} ${transition} already logged and notified by another ` +
+          'tracker tab \u{2014} card only, no second log entry or toast.'
+      );
+      if (!repeat && getSectionSettings(header.section).watch) {
+        const confirmation = info.detailUrl ? confirmPhase(info.detailUrl, info, { force: true }) : null;
+        surfaceAlert(info, transition, confirmation, '', true);
+      }
+      return;
+    }
     const suppressed = isDuplicateAlert(key, info.serial, transition);
     const eventId = logRealAlert(info, transition, !!suppressed);
+    if (eventId) {
+      recordEventClaim(key, info.serial, transition, eventId);
+    }
     const confirmation = confirmEvent(info, transition, eventId);
     if (suppressed) {
       return;
@@ -3307,7 +3411,7 @@
     if (isLogEntryResolved(eventId)) {
       return null;
     }
-    return confirmPhase(info.detailUrl, info)
+    return confirmPhase(info.detailUrl, info, { force: true })
       .then(result => {
         applyConfirmationToLogEntry(eventId, transition, result);
         return result;
@@ -3364,25 +3468,17 @@
         tail
       ].join('\n'),
       getTransitionIcon(record.transition),
-      record.detailUrl || record.serial
-        ? () =>
-            openNotificationTarget(
-              record.detailUrl,
-              record.serial,
-              jiraFailedAt(record),
-              jiraIsPretest(record)
-            )
-        : null
+      record.detailUrl || record.serial ? () => openNotificationTarget(record) : null
     );
   }
 
-  function surfaceAlert(info, transition, eventConfirmation, eventId) {
+  function surfaceAlert(info, transition, eventConfirmation, eventId, cardOnly) {
     const record = createPersistentAlert(getTransitionTitle(transition), info, transition);
     record.eventId = eventId || '';
     linkLogEntryToAlert(eventId, record.id);
     updateStoredAlert(record);
     const confirmation = eventConfirmation
-      ? eventConfirmation
+      ? trackConfirmation(record, eventConfirmation)
           .then(result => {
             reconcileAlertPhase(record, result);
             return result;
@@ -3393,6 +3489,9 @@
             return null;
           })
       : null;
+    if (cardOnly) {
+      return;
+    }
     pendingToasts.push({
       info: info,
       record: record,
@@ -3438,14 +3537,8 @@
           buildNotificationBody(item.info, item.transition) +
             (unverified ? '\n\u{26a0} phase not verified' : ''),
           getTransitionIcon(item.transition),
-          item.info && (item.info.detailUrl || item.info.serial)
-            ? () =>
-                openNotificationTarget(
-                  item.info.detailUrl,
-                  item.info.serial,
-                  jiraFailedAt(item.record),
-                  jiraIsPretest(item.record)
-                )
+          item.record.detailUrl || item.record.serial
+            ? () => openNotificationTarget(item.record)
             : null
         );
         markToastSent(item.record, item.transition);
@@ -3636,8 +3729,53 @@
     return ids.sort((a, b) => until(a) - until(b))[0];
   }
 
-  function currentShiftId() {
-    return settings && SHIFTS[settings.logShift] ? settings.logShift : 'graveyard';
+  // ===== AUTO LOG SHIFT =====
+  // Auto follows the shift the session is in: the running shift (the one that
+  // started most recently where two overlap) is kept until its window closes
+  // (end + SHIFT_LATE_MIN), then the shift running at that moment takes over.
+  // Stored per browser so every tab exports the same window.
+
+  function readAutoShiftKey() {
+    try {
+      return localStorage.getItem(LOG_AUTO_SHIFT_KEY) || '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function autoShiftId(now) {
+    const stored = readAutoShiftKey();
+    const storedId = stored.split('@')[0];
+    if (SHIFTS[storedId]) {
+      const win = shiftWindowAt(now, storedId);
+      if (win.key === stored && now < win.closes.getTime()) {
+        return storedId;
+      }
+    }
+    const id = guessShift(new Date(now));
+    const key = shiftWindowAt(now, id).key;
+    if (key !== stored) {
+      try {
+        localStorage.setItem(LOG_AUTO_SHIFT_KEY, key);
+      } catch (error) {
+        warn('Could not record the auto log shift:', error);
+      }
+    }
+    return id;
+  }
+
+  // A hand-picked shift applies until Auto moves to its next shift.
+  function logShiftOverride(now) {
+    const choice = settings && settings.logShiftChoice;
+    if (!SHIFTS[choice]) {
+      return '';
+    }
+    return settings.logShiftOverrideFor === shiftWindowAt(now, autoShiftId(now)).key ? choice : '';
+  }
+
+  function currentShiftId(now) {
+    const at = now === undefined ? Date.now() : now;
+    return logShiftOverride(at) || autoShiftId(at);
   }
 
   function localDateKey(date) {
@@ -3727,14 +3865,36 @@
     }
   }
 
-  function checkLogShiftRollover() {
-    const win = currentShiftWindow();
+  // Oldest time any shift can still export: each shift's most recent window
+  // (the one its exports cover now) is kept until that shift opens again.
+  // Clearing at the selected shift's own window used to delete a neighbour
+  // shift that was still running (Day opens at 5:00 AM, mid-Graveyard).
+  function logRetentionFloorAt(now) {
+    return Math.min(...Object.keys(SHIFTS).map(id => shiftWindowAt(now, id).opens.getTime()));
+  }
+
+  function expireLogShiftOverride(now) {
+    if (!settings || !SHIFTS[settings.logShiftChoice] || logShiftOverride(now)) {
+      return;
+    }
+    const label = SHIFTS[settings.logShiftChoice].label;
+    settings.logShiftChoice = 'auto';
+    settings.logShiftOverrideFor = '';
+    saveSettings();
+    log(`Log shift: the ${label} pick ended at the shift change - back to Auto.`);
+  }
+
+  function checkLogShiftRollover(now) {
+    const at = now === undefined ? Date.now() : now;
+    expireLogShiftOverride(at);
+    updateLogShiftControl(at);
+    const win = shiftWindowAt(at, currentShiftId(at));
     if (activeLogShift === win.key) {
       return;
     }
     const previous = activeLogShift;
     recordActiveLogShift(win.key);
-    const removed = pruneLogBefore(win.opens.getTime());
+    const removed = pruneLogBefore(logRetentionFloorAt(at));
     if (!removed) {
       return;
     }
@@ -3759,13 +3919,67 @@
     );
   }
 
-  function onLogShiftChanged() {
-    const win = currentShiftWindow();
+  function shiftRangeLabel(shift) {
+    return `${shift.label} \u{b7} ${shiftClock(shift.start)} \u{2013} ${shiftClock(shift.end)}`;
+  }
+
+  function logShiftTooltip(shiftId, manual) {
+    const shift = SHIFTS[shiftId] || SHIFTS.graveyard;
+    const clock = minutes => shiftClock(`0:${(minutes + 1440) % 1440}`);
+    const opens = clock(shiftMinutes(shift.start) - SHIFT_EARLY_MIN);
+    const closes = clock(shiftMinutes(shift.end) + SHIFT_LATE_MIN);
+    const lead = manual
+      ? `Manual: ${shift.label} until the next shift change, then back to Auto.`
+      : `Auto: follows the shift you are in - ${shift.label} now - and moves ` +
+        'to the next shift when this window ends. Pick a shift to override ' +
+        'it until the next shift change.';
+    return (
+      `${lead} The alert log and TXT/CSV exports cover ${opens} - ${closes} ` +
+      `(${SHIFT_EARLY_MIN} min before the shift starts to ${SHIFT_LATE_MIN} min ` +
+      `after it ends). This log is kept until ${opens}, when the next ` +
+      `${shift.label} window opens - export before then. Entries another ` +
+      "shift's latest window still covers are never cleared, and changing " +
+      'this setting clears nothing.'
+    );
+  }
+
+  function updateLogShiftControl(now) {
+    const select = document.getElementById('eve-log-shift');
+    if (!select) {
+      return;
+    }
+    const at = now === undefined ? Date.now() : now;
+    const manual = logShiftOverride(at);
+    const autoOption = select.querySelector('option[value="auto"]');
+    const autoText = `Auto \u{b7} ${SHIFTS[autoShiftId(at)].label} now`;
+    if (autoOption && autoOption.textContent !== autoText) {
+      autoOption.textContent = autoText;
+    }
+    const value = manual || 'auto';
+    if (select.value !== value) {
+      select.value = value;
+    }
+    const title = logShiftTooltip(currentShiftId(at), !!manual);
+    if (select.title !== title) {
+      select.title = title;
+    }
+  }
+
+  function setLogShiftChoice(choice, now) {
+    const at = now === undefined ? Date.now() : now;
+    const manual = !!SHIFTS[choice];
+    settings.logShiftChoice = manual ? choice : 'auto';
+    settings.logShiftOverrideFor = manual ? shiftWindowAt(at, autoShiftId(at)).key : '';
+    saveSettings();
+    const win = shiftWindowAt(at, currentShiftId(at));
     recordActiveLogShift(win.key);
+    updateLogShiftControl(at);
     log(
-      `Log shift set to ${win.shift.label}. Exports now cover ` +
-        `${shiftWindowLabel(win)} (plus ${SHIFT_EARLY_MIN} min ` +
-        `before, ${SHIFT_LATE_MIN} min after). Nothing was cleared.`
+      `Log shift set to ${manual ? win.shift.label : `Auto (${win.shift.label} now)`}. ` +
+        `Exports now cover ${shiftWindowLabel(win)} (plus ${SHIFT_EARLY_MIN} min ` +
+        `before, ${SHIFT_LATE_MIN} min after). ` +
+        (manual ? 'Back to Auto at the next shift change. ' : '') +
+        'Nothing was cleared.'
     );
   }
 
@@ -3994,6 +4208,10 @@
     entry.taskset = fields.taskset || '';
     entry.taskcase = fields.taskcase || '';
     entry.pass = fields.pass === 0 || fields.pass === 1 ? String(fields.pass) : '';
+    const happened = eventTimeFromDetail(fields.finished, entry.iso);
+    if (happened) {
+      entry.eventIso = happened;
+    }
   }
 
   function applyConfirmationToLogEntry(eventId, transition, confirmation) {
@@ -4009,7 +4227,8 @@
         operation: confirmation.operation,
         taskset: confirmation.taskset,
         taskcase: confirmation.taskcase,
-        pass: confirmation.pass
+        pass: confirmation.pass,
+        finished: confirmation.finished
       });
     } else {
       entry.phaseSource = 'unverified';
@@ -4051,23 +4270,77 @@
     return value + ' '.repeat(width - value.length);
   }
 
+  const SITE_PARTS_FORMAT = new Intl.DateTimeFormat('en-US', {
+    timeZone: SITE_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23'
+  });
+
   function isoDateParts(iso) {
-    if (!iso) {
+    const parsed = iso ? new Date(iso) : null;
+    if (!parsed || Number.isNaN(parsed.getTime())) {
       return { date: '', time: '' };
     }
-    const match = String(iso).match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
-    if (match) {
-      return { date: match[1], time: match[2] };
+    const p = {};
+    SITE_PARTS_FORMAT.formatToParts(parsed).forEach(part => {
+      p[part.type] = part.value;
+    });
+    return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}:${p.second}` };
+  }
+
+  function siteDateTime(date) {
+    return date.toLocaleString('en-US', { timeZone: SITE_TIME_ZONE, timeZoneName: 'short' });
+  }
+
+  // "2026-09-23 02:39:49" as shown on the detail page (Fremont wall clock) ->
+  // epoch ms. Corrects the UTC guess by the Pacific offset at that moment, so
+  // PDT/PST follow the date. NaN when the text is not a date-time.
+  function siteTimeToMs(text) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+      String(text || '').trim()
+    );
+    if (!m) {
+      return NaN;
     }
-    const parsed = new Date(iso);
-    if (Number.isNaN(parsed.getTime())) {
-      return { date: '', time: '' };
+    const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    if (Number.isNaN(wall)) {
+      return NaN;
     }
-    const isoString = parsed.toISOString();
-    return {
-      date: isoString.slice(0, 10),
-      time: isoString.slice(11, 19)
-    };
+    let ms = wall;
+    for (let i = 0; i < 2; i += 1) {
+      const p = isoDateParts(new Date(ms).toISOString());
+      const d = p.date.split('-').map(Number);
+      const t = p.time.split(':').map(Number);
+      ms += wall - Date.UTC(d[0], d[1] - 1, d[2], t[0], t[1], t[2]);
+    }
+    return ms;
+  }
+
+  // When the result actually happened: the detail page's Finished time, if it
+  // is plausible for this detection (not after it beyond clock skew, not more
+  // than a day before it). Otherwise '' and the detection time is used.
+  const EVENT_TIME_SKEW_MS = 10 * 60 * 1000;
+  const EVENT_TIME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+  function eventTimeFromDetail(finished, detectedIso) {
+    const at = siteTimeToMs(finished);
+    const detected = Date.parse(detectedIso || '');
+    if (!Number.isFinite(at) || !Number.isFinite(detected)) {
+      return '';
+    }
+    if (at > detected + EVENT_TIME_SKEW_MS || at < detected - EVENT_TIME_MAX_AGE_MS) {
+      return '';
+    }
+    return new Date(at).toISOString();
+  }
+
+  function entryWhenIso(entry) {
+    return entry.eventIso || entry.iso;
   }
   const LOG_CATEGORIES = Object.keys(TRANSITIONS).map(key => ({
     transition: key,
@@ -4093,7 +4366,7 @@
     );
     lines.push('  ' + LOG_THIN);
     entries.forEach((entry, index) => {
-      const parts = isoDateParts(entry.iso);
+      const parts = isoDateParts(entryWhenIso(entry));
       lines.push(
         '  ' +
           padOrTrim(index + 1, LOG_COLUMNS[0].width) +
@@ -4118,16 +4391,17 @@
       `Tracker version: ${SCRIPT_VERSION}`,
       LOG_RULE,
       '',
-      `Exported:      ${new Date().toLocaleString()}`,
+      `Exported:      ${siteDateTime(new Date())}`,
       `Shift:         ${shiftWindowLabel(win)}`,
-      `Log window:    ${win.opens.toLocaleString()} \u{2013} ` + `${win.closes.toLocaleString()}`
+      `Log window:    ${siteDateTime(win.opens)} \u{2013} ` + `${siteDateTime(win.closes)}`
     );
     if (logEntries.length) {
-      const first = new Date(logEntries[0].iso);
-      const last = new Date(logEntries[logEntries.length - 1].iso);
+      const times = logEntries.map(entry => Date.parse(entryWhenIso(entry)));
+      const first = new Date(Math.min(...times));
+      const last = new Date(Math.max(...times));
       lines.push(
-        `First alert:   ${first.toLocaleString()}`,
-        `Last alert:    ${last.toLocaleString()}`,
+        `First alert:   ${siteDateTime(first)}`,
+        `Last alert:    ${siteDateTime(last)}`,
         `Time span:     ${formatDuration(last - first)}`
       );
     }
@@ -4234,13 +4508,18 @@
       );
     } else {
       logEntries.forEach((entry, index) => {
+        const at = isoDateParts(entryWhenIso(entry));
         lines.push(
-          `[${index + 1}] ${entry.date} ${entry.time} \u{2014} ` + `${entry.result}`,
+          `[${index + 1}] ${at.date || entry.date} ${at.time || entry.time} \u{2014} ` + `${entry.result}`,
           `      Serial #: ${entry.serial}`,
           `      Location: ${entry.section} \u{2022} ` + `${entry.eve} \u{2022} ${entry.unit}`
         );
         if (entry.serverType) {
           lines.push(`      Type:     ${entry.serverType}`);
+        }
+        if (entry.eventIso) {
+          const seen = isoDateParts(entry.iso);
+          lines.push(`      Detected: ${seen.date} ${seen.time} (time above: detail page Finished)`);
         }
         lines.push(`      ISO:      ${entry.iso}`, '');
       });
@@ -4287,11 +4566,14 @@
         'Pass',
         'Taskset',
         'Taskcase',
-        'Notified'
+        'Notified',
+        'Time Source',
+        'Detected At'
       ].join(',')
     );
     logEntries.forEach(entry => {
-      const parts = isoDateParts(entry.iso);
+      const parts = isoDateParts(entryWhenIso(entry));
+      const seen = isoDateParts(entry.iso);
       rows.push(
         [
           parts.date,
@@ -4314,7 +4596,9 @@
           entry.pass === undefined ? '' : entry.pass,
           entry.taskset || '',
           entry.taskcase || '',
-          entry.alertId ? 'yes' : 'no'
+          entry.alertId ? 'yes' : 'no',
+          entry.eventIso ? 'detail page Finished' : 'detected',
+          `${seen.date} ${seen.time}`
         ]
           .map(csvEscape)
           .join(',')
@@ -4329,10 +4613,7 @@
     try {
       const blob = new Blob([content], { type: mimeType });
       const url = URL.createObjectURL(blob);
-      const now = new Date();
-      const time = [now.getHours(), now.getMinutes(), now.getSeconds()]
-        .map(part => String(part).padStart(2, '0'))
-        .join('-');
+      const time = isoDateParts(new Date().toISOString()).time.replace(/:/g, '-');
       const win = currentShiftWindow();
       const link = document.createElement('a');
       link.href = url;
@@ -4566,15 +4847,34 @@
     return record.phaseSource !== 'confirmed' || record.resultConfirmed !== true;
   }
   const RESULT_RETRY_MAX_ATTEMPTS = 8;
+  const confirmationsInFlight = new Set();
+
+  function trackConfirmation(record, promise) {
+    confirmationsInFlight.add(record.id);
+    const done = () => confirmationsInFlight.delete(record.id);
+    return Promise.resolve(promise).then(
+      result => {
+        done();
+        return result;
+      },
+      error => {
+        done();
+        throw error;
+      }
+    );
+  }
 
   function reconfirmRecord(record) {
     const attempts = Number(record.resultAttempts) || 0;
-    if (attempts >= RESULT_RETRY_MAX_ATTEMPTS) {
+    if (attempts >= RESULT_RETRY_MAX_ATTEMPTS || confirmationsInFlight.has(record.id)) {
       return false;
     }
     record.resultAttempts = attempts + 1;
     updateStoredAlert(record);
-    confirmPhase(safeUrl(record.detailUrl), infoFromRecord(record), { live: false, force: true })
+    trackConfirmation(
+      record,
+      confirmPhase(safeUrl(record.detailUrl), infoFromRecord(record), { live: false, force: true })
+    )
       .then(result => reconcileAlertPhase(record, result))
       .catch(error => {
         fail('Re-confirmation threw:', error);
@@ -4696,6 +4996,7 @@
       record.taskset = confirmation.taskset || '';
       record.taskcase = confirmation.taskcase || '';
       record.operation = confirmation.operation || '';
+      record.finished = confirmation.finished || '';
       record.phase = confirmation.phase || '';
       record.passFlag =
         confirmation.pass === 0 || confirmation.pass === 1 ? confirmation.pass : null;
@@ -4791,7 +5092,8 @@
         operation: record.operation,
         taskset: record.taskset,
         taskcase: record.taskcase,
-        pass: record.passFlag
+        pass: record.passFlag,
+        finished: record.finished
       });
       markLogEntryChanged(entry);
       return;
@@ -4886,7 +5188,7 @@ ${escapeHtml(formatRelativeTime(ts))}
 </div>
 `;
     if (record.serial) {
-      alert.querySelector('.eve-alert-footer').appendChild(buildJiraButton(record.serial, record));
+      alert.querySelector('.eve-alert-footer').appendChild(buildJiraButton(record.serial));
     }
     if (clickable) {
       alert.addEventListener('click', event => {
@@ -4968,19 +5270,24 @@ ${escapeHtml(formatRelativeTime(ts))}
 <span id="eve-alert-count">(0)</span>
 </span>
 <span id="eve-alert-header-actions">
-<button id="eve-alert-export"
-title="Save real notifications to a .txt report">
-\u{1f4be} TXT
-</button>
-<button id="eve-alert-export-csv"
-title="Save real notifications to a .csv for Excel">
-\u{1f4ca} CSV
-</button>
-<button id="eve-alert-dismiss-all"
-title="Dismiss all alerts on screen">
-\u{2715} All
-</button>
+<button id="eve-alert-menu-btn" type="button" aria-haspopup="menu" aria-expanded="false"
+aria-controls="eve-alert-menu" title="Export log / dismiss cards">\u{22ef}</button>
 </span>
+</div>
+<div id="eve-alert-menu" role="menu" aria-label="JIRAlerts actions" hidden>
+<button id="eve-alert-export" type="button" role="menuitem"
+title="Save this shift's real notifications to a .txt report">
+<span class="eve-menu-icon">\u{1f4be}</span>Export shift log (.txt)
+</button>
+<button id="eve-alert-export-csv" type="button" role="menuitem"
+title="Save this shift's real notifications to a .csv for Excel">
+<span class="eve-menu-icon">\u{1f4ca}</span>Export for Excel (.csv)
+</button>
+<div class="eve-menu-sep" role="separator"></div>
+<button id="eve-alert-dismiss-all" type="button" role="menuitem"
+title="Dismiss all alerts on screen (the exportable log is NOT affected)">
+<span class="eve-menu-icon">\u{2715}</span>Dismiss all cards
+</button>
 </div>
 <div id="eve-alert-toolbar">
 <div id="eve-alert-filters">
@@ -5013,21 +5320,24 @@ placeholder="Search serial, location or Jira\u{2026}"
       }
     } catch (error) {}
     const dismissAll = document.getElementById('eve-alert-dismiss-all');
+    const dismissAllLabel = dismissAll.innerHTML;
     let dismissArmedTimer = null;
     const disarmDismissAll = () => {
       clearTimeout(dismissArmedTimer);
       dismissArmedTimer = null;
       dismissAll.classList.remove('eve-confirm');
-      dismissAll.textContent = '\u{2715} All';
+      dismissAll.innerHTML = dismissAllLabel;
     };
+    const menu = setupAlertMenu(container, disarmDismissAll);
     dismissAll.addEventListener('click', () => {
       if (!dismissArmedTimer) {
         dismissAll.classList.add('eve-confirm');
-        dismissAll.textContent = '\u{2715} Sure?';
+        dismissAll.innerHTML =
+          '<span class="eve-menu-icon">\u{2715}</span>Click again to dismiss all';
         dismissArmedTimer = setTimeout(disarmDismissAll, 3000);
         return;
       }
-      disarmDismissAll();
+      menu.close();
       clearStoredAlerts();
       body.querySelectorAll('.eve-alert').forEach(node => node.remove());
       refreshAlertChrome();
@@ -5035,10 +5345,14 @@ placeholder="Search serial, location or Jira\u{2026}"
         'All alerts dismissed and cleared from storage. ' + '(The exportable log is NOT affected.)'
       );
     });
-    document.getElementById('eve-alert-export').addEventListener('click', () => exportLog('txt'));
-    document
-      .getElementById('eve-alert-export-csv')
-      .addEventListener('click', () => exportLog('csv'));
+    document.getElementById('eve-alert-export').addEventListener('click', () => {
+      menu.close();
+      exportLog('txt');
+    });
+    document.getElementById('eve-alert-export-csv').addEventListener('click', () => {
+      menu.close();
+      exportLog('csv');
+    });
     container.querySelectorAll('.eve-filter-category').forEach(button => {
       button.addEventListener('click', () => {
         container
@@ -5065,6 +5379,106 @@ placeholder="Search serial, location or Jira\u{2026}"
       });
     }
     return body;
+  }
+
+  // ===== ALERT ACTIONS MENU =====
+  // TXT / CSV / dismiss-all live behind one small "..." button so the title
+  // bar stays free for dragging. The menu is position: fixed inside the panel,
+  // so the panel's overflow: hidden cannot clip it (even when folded).
+
+  function setupAlertMenu(container, onClose) {
+    const button = container.querySelector('#eve-alert-menu-btn');
+    const menu = container.querySelector('#eve-alert-menu');
+    const items = () =>
+      [...menu.querySelectorAll('[role="menuitem"]')].filter(el => el.style.display !== 'none');
+    const isOpen = () => !menu.hidden;
+
+    function place() {
+      const anchor = button.getBoundingClientRect();
+      const width = menu.offsetWidth;
+      const height = menu.offsetHeight;
+      const left = Math.min(
+        Math.max(PANEL_MARGIN, anchor.right - width),
+        window.innerWidth - width - PANEL_MARGIN
+      );
+      const below = anchor.bottom + 4;
+      const top =
+        below + height > window.innerHeight - PANEL_MARGIN
+          ? Math.max(PANEL_MARGIN, anchor.top - 4 - height)
+          : below;
+      menu.style.left = `${Math.round(left)}px`;
+      menu.style.top = `${Math.round(top)}px`;
+    }
+
+    function close(options) {
+      if (!isOpen()) {
+        return;
+      }
+      menu.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+      button.classList.remove('eve-menu-open');
+      onClose();
+      if (options && options.focusButton) {
+        button.focus();
+      }
+    }
+
+    function open(focusFirst) {
+      menu.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      button.classList.add('eve-menu-open');
+      place();
+      if (focusFirst && items()[0]) {
+        items()[0].focus();
+      }
+    }
+
+    button.addEventListener('click', event => {
+      if (isOpen()) {
+        close();
+      } else {
+        open(event.detail === 0);
+      }
+    });
+    button.addEventListener('keydown', event => {
+      if (event.key === 'ArrowDown' && !isOpen()) {
+        event.preventDefault();
+        open(true);
+      }
+    });
+    menu.addEventListener('keydown', event => {
+      const list = items();
+      const index = list.indexOf(document.activeElement);
+      if (event.key === 'Escape' || event.key === 'Tab') {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+        }
+        close({ focusButton: event.key === 'Escape' });
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        const next = list[(index + step + list.length) % list.length];
+        if (next) {
+          next.focus();
+        }
+      }
+    });
+    document.addEventListener(
+      'pointerdown',
+      event => {
+        if (isOpen() && !menu.contains(event.target) && !button.contains(event.target)) {
+          close();
+        }
+      },
+      true
+    );
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && isOpen()) {
+        close({ focusButton: true });
+      }
+    });
+    window.addEventListener('resize', () => close());
+    return { close: close, isOpen: isOpen };
   }
 
   // ===== ALERT WINDOW UX (drag / snap / persistent position) =====
@@ -5130,14 +5544,13 @@ placeholder="Search serial, location or Jira\u{2026}"
     );
 
     function getHeaderViewportBounds() {
-      const rect = header.getBoundingClientRect();
+      const panel = container.getBoundingClientRect();
+      const barHeight = header.getBoundingClientRect().bottom - panel.top;
       const margin = PANEL_MARGIN;
       return {
         margin,
-        width: rect.width,
-        height: rect.height,
-        maxLeft: Math.max(margin, window.innerWidth - rect.width - margin),
-        maxTop: Math.max(margin, window.innerHeight - rect.height - margin)
+        maxLeft: Math.max(margin, window.innerWidth - panel.width - margin),
+        maxTop: Math.max(margin, window.innerHeight - barHeight - margin)
       };
     }
 
@@ -5178,7 +5591,8 @@ placeholder="Search serial, location or Jira\u{2026}"
       if (!wasDragged) {
         return;
       }
-      const rect = header.getBoundingClientRect();
+      const rect = container.getBoundingClientRect();
+      const bar = header.getBoundingClientRect();
       const bounds = getHeaderViewportBounds();
       const snapDistance = PANEL_SNAP_DISTANCE;
       let left = rect.left;
@@ -5186,7 +5600,7 @@ placeholder="Search serial, location or Jira\u{2026}"
       const nearLeft = rect.left <= bounds.margin + snapDistance;
       const nearRight = window.innerWidth - rect.right <= bounds.margin + snapDistance;
       const nearTop = rect.top <= bounds.margin + snapDistance;
-      const nearBottom = window.innerHeight - rect.bottom <= bounds.margin + snapDistance;
+      const nearBottom = window.innerHeight - bar.bottom <= bounds.margin + snapDistance;
       if (nearLeft && nearTop) {
         left = bounds.margin;
         top = bounds.margin;
@@ -5210,18 +5624,15 @@ placeholder="Search serial, location or Jira\u{2026}"
       container.style.right = 'auto';
       syncAlertPanelHeight(container);
       saveAlertPanelPosition(container);
-      draggedEnough = false;
+      setTimeout(() => {
+        draggedEnough = false;
+      }, 0);
     }
     header.addEventListener('pointerdown', event => {
-      if (
-        event.target.closest('button') ||
-        event.target.closest('input') ||
-        event.target.closest('a') ||
-        event.target.closest('#eve-alert-toggle')
-      ) {
+      if (event.button !== 0 || event.target.closest('button, input, a')) {
         return;
       }
-      const rect = header.getBoundingClientRect();
+      const rect = container.getBoundingClientRect();
       dragState = {
         offsetX: event.clientX - rect.left,
         offsetY: event.clientY - rect.top,
@@ -5235,7 +5646,7 @@ placeholder="Search serial, location or Jira\u{2026}"
       event.preventDefault();
     });
     window.addEventListener('resize', () => {
-      const rect = header.getBoundingClientRect();
+      const rect = container.getBoundingClientRect();
       const bounds = getHeaderViewportBounds();
       const left = Math.max(bounds.margin, Math.min(rect.left, bounds.maxLeft));
       const top = Math.max(bounds.margin, Math.min(rect.top, bounds.maxTop));
@@ -5318,6 +5729,10 @@ placeholder="Search serial, location or Jira\u{2026}"
     const dismissAll = document.getElementById('eve-alert-dismiss-all');
     if (dismissAll) {
       dismissAll.style.display = count > 1 ? '' : 'none';
+      const sep = dismissAll.previousElementSibling;
+      if (sep) {
+        sep.style.display = dismissAll.style.display;
+      }
     }
   }
 
@@ -5671,14 +6086,10 @@ aria-hidden="true">
 Log shift
 </span>
 <select id="eve-log-shift"
-title="The alert log and TXT/CSV exports cover one occurrence of this shift, plus ${SHIFT_EARLY_MIN} min before and ${SHIFT_LATE_MIN} min after. The previous shift's log is cleared when the next one starts - export before then.">
+title="${escapeHtml(logShiftTooltip(currentShiftId(), false))}">
+<option value="auto">Auto</option>
 ${Object.keys(SHIFTS)
-  .map(
-    id =>
-      `<option value="${id}">${SHIFTS[id].label} \u{b7} ` +
-      `${shiftClock(SHIFTS[id].start)} \u{2013} ` +
-      `${shiftClock(SHIFTS[id].end)}</option>`
-  )
+  .map(id => `<option value="${id}">${shiftRangeLabel(SHIFTS[id])}</option>`)
   .join('')}
 </select>
 </div>
@@ -5922,11 +6333,11 @@ aria-label="Developer Mode"
       message: seconds => `Auto refresh interval set to ${seconds}s.`
     });
     updateRefreshCountdown();
-    bindSetting('eve-log-shift', 'logShift', {
-      coerce: raw => (SHIFTS[raw] ? raw : currentShiftId()),
-      writeBack: true,
-      after: onLogShiftChanged
-    });
+    const shiftSelect = document.getElementById('eve-log-shift');
+    if (shiftSelect) {
+      shiftSelect.addEventListener('change', () => setLogShiftChoice(shiftSelect.value));
+      updateLogShiftControl();
+    }
     bindSetting('eve-notification-timeout', 'notificationTimeoutSeconds', {
       coerce: raw => {
         const value = Number(raw);
@@ -6700,24 +7111,70 @@ aria-label="Notifications for ${escapeHtml(section)}"
   font-weight: 700;
   letter-spacing: -.005em;
 }
-#eve-alert-toggle { cursor: pointer; user-select: none; flex: 1; }
+#eve-alert-toggle { cursor: pointer; user-select: none; }
 #eve-alert-caret { display: inline-block; width: 14px; }
 #eve-alert-count { color: var(--eve-muted); font-weight: 500; font-variant-numeric: tabular-nums; }
-#eve-alert-header-actions { display: flex; gap: 6px; }
-#eve-alert-header-actions button {
-  background: var(--eve-control);
-  color: var(--eve-text);
-  border: 1px solid var(--eve-line-strong);
+#eve-alert-header-actions { display: flex; flex: 0 0 auto; }
+#eve-alert-menu-btn {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  color: var(--eve-muted);
+  border: 1px solid transparent;
   border-radius: 7px;
-  padding: 4px 9px;
   font-family: var(--eve-font);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 20px;
   cursor: pointer;
-  transition: background .12s;
+  transition: background .12s, color .12s, border-color .12s;
 }
-#eve-alert-header-actions button:hover { background: var(--eve-control-hover); }
-#eve-alert-header-actions button.eve-confirm { background: #b91c1c; border-color: #ef4444; color: #fff; }
+#eve-alert-menu-btn:hover, #eve-alert-menu-btn.eve-menu-open {
+  background: var(--eve-control-hover);
+  border-color: var(--eve-line-strong);
+  color: var(--eve-text);
+}
+#eve-alert-menu-btn:focus-visible { outline: 2px solid var(--eve-blue); outline-offset: 1px; }
+#eve-alert-menu {
+  position: fixed;
+  z-index: 2147483647;
+  min-width: 210px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #1f2025;
+  border: 1px solid var(--eve-line-strong);
+  border-radius: 9px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .55);
+  font-family: var(--eve-font);
+}
+#eve-alert-menu[hidden] { display: none; }
+#eve-alert-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--eve-text);
+  border: 0;
+  border-radius: 6px;
+  font-family: var(--eve-font);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+#eve-alert-menu button:hover, #eve-alert-menu button:focus-visible {
+  background: var(--eve-control-hover);
+  outline: none;
+}
+#eve-alert-menu button.eve-confirm { background: #b91c1c; color: #fff; }
+.eve-menu-icon { width: 16px; text-align: center; flex: 0 0 auto; }
+.eve-menu-sep { height: 1px; margin: 3px 4px; background: var(--eve-line); }
 #eve-alert-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -6947,14 +7404,44 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
 }
 .eve-jira-noticket { color: #b8bcc3; border-color: var(--eve-line-strong); background: var(--eve-control); }
 .eve-jira-noticket .eve-jira-dot { background: #6b7280; opacity: 1; }
+.eve-jira-passed, .eve-jira-passed:hover {
+  color: #86efac;
+  border-color: rgba(34, 197, 94, .4);
+  background: rgba(34, 197, 94, .1);
+  cursor: default;
+}
+.eve-jira-passed .eve-jira-dot { background: #22c55e; opacity: 1; }
+.eve-jira-passed .eve-jira-ext { display: none; }
 `;
     document.head.appendChild(style);
   }
 
   // ===== INITIALIZE =====
 
+  const RUNNING_ATTR = 'data-eve-slt-tracker';
+
+  function claimThisTab() {
+    const root = document.documentElement;
+    const running = root.getAttribute(RUNNING_ATTR);
+    if (running) {
+      warn(
+        `Another copy of EVE SLT Tracker (v${running}) is already running in this ` +
+          `tab. This copy (v${SCRIPT_VERSION}) stays idle so every alert is not ` +
+          'logged and notified twice. Remove the extra copy in the Tampermonkey ' +
+          'Dashboard.'
+      );
+      return false;
+    }
+    root.setAttribute(RUNNING_ATTR, SCRIPT_VERSION);
+    return true;
+  }
+
   function initialize() {
+    if (!claimThisTab()) {
+      return;
+    }
     try {
+      rackDataAt = Date.now();
       settings = loadSettings();
       previousStates = loadPreviousStates();
       recentAlerts = loadRecentAlerts();

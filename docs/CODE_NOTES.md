@@ -7,7 +7,7 @@ most notes record a real failure seen on the floor and the rule that stops it co
 Every `// ===== TITLE =====` marker in the script has a matching heading below. Each note is
 labelled with the function, constant or line it belongs to.
 
-> Written for **v0.9.9**. When code changes, update the matching note here in the same commit.
+> Written for **v0.9.11**. When code changes, update the matching note here in the same commit.
 
 ## Contents
 
@@ -47,6 +47,7 @@ labelled with the function, constant or line it belongs to.
 - [VALID TRANSITIONS](#valid-transitions)
 - [READ SERVER INFORMATION](#read-server-information)
 - [FLAP PROTECTION](#flap-protection)
+- [EVENT CLAIMS (one event -> one log entry + one toast, across tabs)](#event-claims-one-event---one-log-entry--one-toast-across-tabs)
 - [SCAN PAGE](#scan-page)
 - [SURFACE AN ALERT (in-page card + desktop toast)](#surface-an-alert-in-page-card--desktop-toast)
 - [DEBUG: PERSISTENCE TESTER (Developer Mode only)](#debug-persistence-tester-developer-mode-only)
@@ -589,7 +590,17 @@ Coming back to this tab after logging in to Jira in another one is the moment to
 
 ### `openNotificationTarget()`
 
-What a desktop-toast click opens. Toast callbacks are not a user gesture, so everything goes through openFromNotification(). 'both' opens the detail page first so the Jira tab ends up in front. failedAt / pretest: the failure behind the toast (0 / false for anything else).
+What a desktop-toast click opens. Toast callbacks are not a user gesture, so everything goes through openFromNotification(). 'both' opens the page (TestView) first so the Jira tab ends up in front.
+
+Takes the alert record (v0.9.11; both callers used to repeat the same four derived arguments). A PASS never goes to Jira - passes get no ticket - so its toast opens TestView even when the target is 'jira'.
+
+### `isPassResult()`
+
+TEST PASS / PRE-TEST PASS: not a failure and not a SYS\_DEKIT diagnostic, per the TRANSITIONS table. Passes never get a Jira ticket, so their card shows an inert "PASSED (no ticket)" and nothing asks Jira about them.
+
+### `syncJiraForCard()`
+
+The one owner of a card's Jira button state (buildJiraButton only builds the element; renderAlertElement calls this right after). A pass paints the `passed` state: no href, no lookup, no polling. A card relabelled from PASS to FAIL by the detail page comes back through here and gets the normal live button.
 
 ### `openJiraFromToast()`
 
@@ -645,7 +656,7 @@ Shallow spread would replace this wholesale; make sure it is always a usable obj
 
 ### `withLogShift()`
 
-First run (or a value this build does not know): guess the shift from the clock and save it, so the guess is made once and the panel shows it. The tester can change it there.
+`logShiftChoice` is `'auto'` (default) or a shift id; `logShiftOverrideFor` is the Auto occurrence key a hand pick belongs to. Up to 0.9.10 the shift was picked by hand (`logShift`) and stayed picked, so a shared floor PC stayed on whichever shift touched it last. A saved `logShift` is dropped once and the setting becomes Auto; anything unknown also becomes Auto.
 
 **In `getSectionSettings()`, at `saveSettings();`**
 
@@ -837,6 +848,10 @@ childList mutations that add or remove tracker nodes report mutation.target as d
 
 The page changed for real, so any cached header layout is suspect.
 
+
+### `touchesTable()`
+
+v0.9.11. Only mutations inside or around a table count as new rack data (`rackDataAt`, the event-claim clock). The observer also fires for any other page change that is not our own UI; letting those move the clock would make a tab's STALE table look freshly seen and turn another tab's already-processed event into a "new" one. `pendingRackChange` carries the fact across the 250 ms debounce so a burst is not lost.
 ## NOTIFICATION TIMEOUT (ms)
 
 GM\_notification's "timeout" is the time in ms after which the toast auto-closes. A literal 0 reads as "close after 0ms", i.e. create and destroy in the same tick, which looks exactly like "no toast appeared". The correct way to say "never auto-close" is to OMIT the key entirely.
@@ -1265,6 +1280,33 @@ Silent by design: worst case a flap slips through after a reload, which is not w
 
 The expiry sweep alone does NOTHING when every key is still live - which is exactly the burst case this cap exists for. Evict oldest-first until it actually holds.
 
+## EVENT CLAIMS (one event -> one log entry + one toast, across tabs)
+
+v0.9.11. ROOT CAUSE OF DUPLICATE LOG ENTRIES AND TOASTS ("SN -> FAIL" twice): every running copy of the tracker processed every transition on its own. Each tab has its own baseline (sessionStorage), its own flap cooldowns and its own toasts, and mints its own eventId - but the audit log is SHARED (localStorage, merged by eventId). So two tabs on the same rack page, or the same tab with the script installed twice, each logged and toasted the same real event: two identical log entries, two identical toasts. Reproduced in tests/dedupe.test.mjs (fails on 0.9.10). Intermittent in the field because it only happens while a second tab (or a second installed copy) is open.
+
+Two separate guards, because the two cases differ:
+
+- Same tab, two installed copies: `claimThisTab()` (INITIALIZE). The DOM is shared, so the first copy marks `<html data-eve-slt-tracker="version">` and later copies stay idle with a console warning naming both versions. Copies older than 0.9.11 do not check the mark - remove them in the Tampermonkey Dashboard.
+- Several tabs: a shared claim per event in localStorage (`eveRackTrackerEventClaims`), key `slot|serial|transition`, value `{ at, eventId }`. `at` is the time the rack data that showed the change arrived in the claiming tab (`rackDataAt`).
+
+What counts as THE SAME EVENT (never "the same serial"): a detection matches a claim when this tab's last sighting of the slot's PREVIOUS state (`previousStates[key].seen`) is not newer than the claim. Another tab's copy of the same FAIL was last seen testing BEFORE the first tab claimed it -> same event -> this tab shows the card (a view) but does not log, toast, or write the log entry. After a retest this tab has seen the slot back in testing AFTER the claim, so the next FAIL is a new event and is processed normally; FAIL then PASS is a different transition key anyway. No time window decides this, so a legitimate later event can never be swallowed by it.
+
+`rackDataAt` moves only when rack data actually changes: page load, a soft-refresh swap, or a relevant page mutation. The 4 s re-scans of the same DOM do not move it, so a sighting from a stale page never outranks a claim.
+
+Unknown `seen` (a baseline saved by an older version) never suppresses: the event is processed. Claims are pruned at 12 h and capped at 400 entries.
+
+Residual limit, by design: two tabs whose refreshes complete within the same few milliseconds can both see no claim yet (localStorage is not a lock). Tabs refresh on their own schedules, so this needs a coincidence; a Web Lock would close it at the cost of making detection asynchronous.
+
+Also fixed while tracing duplicate toasts: see `trackConfirmation()` (ALERT PERSISTENCE) and `confirmEvent()`.
+
+### `findEventClaim()`
+
+Returns the claim when this detection is the same event another tab already processed, else null. `seenAt` missing -> null (never suppress on unknown data).
+
+### `recordEventClaim()`
+
+Written for every event this tab logs, flap repeats included (keeps the claim's time current, so another tab's copy of a repeat is also recognised). Prunes old claims on write so the key stays small.
+
 ## SCAN PAGE
 
 Walks each EVE table's rows ONCE and loops that table's header columns inside. The old shape was
@@ -1355,6 +1397,14 @@ The state key is a RACK SLOT, not a server. If the serial changed, a different p
 
 Without this guard, pulling a passing server (lightgreen) and racking one that is already red produced a "TEST FAIL" against the NEW server's serial - a machine that never failed - and wrote that into the permanent audit log.
 
+**In `processSlot()`, at `seen: rackDataAt`**
+
+When this state was last seen, as rack-data time. Updated (and persisted) whenever fresh data re-confirms it, because the event-claim test compares against it. See EVENT CLAIMS.
+
+**In `processSlot()`, at `if (findEventClaim(`**
+
+Another tab already logged and notified this exact event: show the card here (a view, confirmed from the detail page) but never log, toast, or link it to the log entry. The flap map is still updated so a flicker repeat does not become a card either.
+
 **In `processSlot()`, at `const suppressed`**
 
 Dedup gates SURFACING only. It used to return above recordTransition(), which made the "the log can never develop silent holes" claim above FALSE: a genuine second failure of the same slot+serial inside the cooldown was never recorded at all. Repeats now bump a counter on the existing entry, so the log stays truthful without growing once per 4s scan tick.
@@ -1372,6 +1422,8 @@ Confirmation is attached to the EVENT, not to the card. It used to be started in
 Confirm a recorded EVENT. Independent of whether that event is ever shown to anyone.
 
 Returns the promise so surfaceAlert() can reuse it: one fetch per event, log updated first, card reconciled after.
+
+`force: true` (v0.9.11): a NEW event always reads the detail page fresh. The 2 min cache is keyed by serial, so a retest that finishes (or fails pre-test) within 2 min of the previous result was being confirmed with the previous event's answer - e.g. FAIL then PASS logged as FAIL twice. Found by the "FAIL then PASS" test in tests/dedupe.test.mjs.
 
 **In `confirmEvent()`, at `if (isLogEntryResolved(eventId)) {`**
 
@@ -1535,9 +1587,21 @@ Every later merge applies the same floor - see SEVERAL EVE TABS, ONE LOG.
 
 Written immediately rather than through the debounce. A destructive change that is still sitting in a timer when the page reloads leaves storage and memory disagreeing about what the log contains.
 
+## AUTO LOG SHIFT
+
+The user no longer picks a shift. `autoShiftId(now)` keeps the shift the session is in until its window closes (end + SHIFT_LATE_MIN), then takes the shift running at that moment (`guessShift()`: the running shift that started most recently). The occurrence key is stored per browser (LOG_AUTO_SHIFT_KEY) so every tab exports the same window; a stored key that is closed or stale is recomputed. On an open tab that gives Graveyard until 7:30 AM, Day until 3:30 PM, Swing until 1:15 AM - the overlaps (Swing and Graveyard both run 10 PM - 12:15 AM) never flip it mid-shift. A fresh session inside an overlap gets the shift that started most recently (Graveyard at 11 PM); a hand pick covers the rare other case.
+
+### `logShiftOverride()` / `currentShiftId()`
+
+A hand pick applies only while Auto is still on the occurrence it was made in; after that `currentShiftId()` is Auto's.
+
+### `logRetentionFloorAt()`
+
+What a rollover may delete: only entries older than EVERY shift's most recent window (`min` of each shift's `shiftWindowAt(now).opens`). The +/-60 min margins make neighbouring windows overlap (Graveyard 9 PM - 7:30 AM, Day 5 AM - 3:30 PM), so clearing at the selected shift's own `opens` - the rule before 0.9.11 - deleted a neighbour shift mid-run: a browser left on Day wiped the running Graveyard log at 5:00 AM. With this floor each shift's latest log survives until that shift opens again, so switching the dropdown can still export it. Worst-case retention is about a day and a half, bounded by MAX_LOG_ENTRIES.
+
 ### `checkLogShiftRollover()`
 
-Called at startup and on the master tick. Cheap when nothing has changed: one key comparison. Clears only when TIME moves into the next occurrence of the shift - never at midnight, never mid-shift, and never because the shift setting was changed (see onLogShiftChanged).
+Called at startup and on the master tick; `now` is a parameter only so tests can simulate a clock. First expires a hand pick whose shift change has passed and refreshes the dropdown. Cheap when nothing has changed: one key comparison. Runs only when TIME moves into the next occurrence of the current shift (Auto's, or the pick's) - never at midnight, never mid-shift, and never because the shift setting was changed (see setLogShiftChoice) - and then clears only below `logRetentionFloorAt()`.
 
 **In `checkLogShiftRollover()`, at `if (!previous) {`**
 
@@ -1547,9 +1611,13 @@ previous === '' means this ran at startup against a log left over from an earlie
 
 No icon: this is routine, and the red X means "failure".
 
-### `onLogShiftChanged()`
+### `logShiftTooltip()` / `updateLogShiftControl()`
 
-The shift setting changed. Point the log at the new shift but clear NOTHING: a mis-click in a dropdown must not delete a shift's worth of entries. Anything outside the new window simply stops appearing in exports and goes at the next real rollover.
+The dropdown shows "Auto - <shift> now" or the hand pick, and the tooltip says which (Auto / Manual), the exact window and when its log is cleared. Refreshed on every rollover check and pick; DOM is only written when the text changes. The Auto option names the shift only - with the times it was the widest option and pushed the select over its label. The old static tooltip ("cleared when the next one starts") read as if Graveyard's log went when Day started.
+
+### `setLogShiftChoice()`
+
+A dropdown change. A shift pick is stored with the Auto occurrence it overrides (`logShiftOverrideFor`), so it ends by itself at the next shift change - nobody leaves the next crew on the wrong shift. Picking Auto clears it. Clears NOTHING: a mis-click in a dropdown must not delete a shift's worth of entries; anything outside the new window simply stops appearing in exports.
 
 ### `logEntryId()`
 
@@ -1628,6 +1696,12 @@ Pads AND truncates. padRight() alone let one long serial or a verbose locale tim
 ### `isoDateParts()`
 
 ISO-derived, locale-independent. Stored date/time are locale strings, which sort as text and differ machine-to-machine.
+
+Always Fremont time (`SITE_TIME_ZONE`, America/Los_Angeles: PDT or PST by date) via Intl, whatever the PC's timezone. Before 0.9.11 it sliced the UTC ISO string, so every export printed UTC. `siteDateTime()` is the same for the .txt header lines and names the zone. Shift windows (`shiftWindowAt()`) and on-screen card times still use the PC clock - correct on the site's Pacific PCs.
+
+### `siteTimeToMs()` / `eventTimeFromDetail()` / `entryWhenIso()`
+
+The detail page's Finished column is a Fremont wall-clock string with no zone. `siteTimeToMs()` reads it as America/Los_Angeles: start from the UTC guess and correct by the Pacific offset at that instant (twice, so a guess on the far side of a DST change settles). `eventTimeFromDetail()` only accepts it when plausible for this detection - at most `EVENT_TIME_SKEW_MS` after it (PC / server clock skew) and at most `EVENT_TIME_MAX_AGE_MS` before it - so a server clock in another zone or an older Test Status row can never move an entry by hours; it then falls back to detection time. `writeLogEntryResult()` stores it as `entry.eventIso`; `entry.iso` stays the detection time because shift-window membership, pruning and ordering are keyed on it. Exports print `entryWhenIso()` (event time if known).
 
 **`const LOG_CATEGORIES`**
 
@@ -1737,6 +1811,10 @@ Also where cards cross into "aged" - on the same 15s tick, so no extra timer.
 Regex map rather than creating a throwaway DOM element per call (4 per card, 50 cards on restore).
 
 ## ALERT PERSISTENCE ACROSS REFRESHES
+
+### `trackConfirmation()`
+
+v0.9.11. Marks a card's detail-page confirmation as in flight. The 45 s retry (retryPendingConfirmations) picks up any card whose phase is not confirmed yet - including a brand-new card whose first confirmation is still loading - and ran a second one on a second copy of the record (reloaded from storage). Two confirmations on two copies could each send a "CORRECTED" toast. reconfirmRecord() now skips a card that is already being confirmed.
 
 In-page cards are plain DOM nodes, so a hard reload would destroy them - meaning any alert not read within the auto-refresh window vanished unseen. Every alert is written to sessionStorage on creation and re-rendered on load. An alert only leaves storage when the user explicitly dismisses it.
 
@@ -2001,9 +2079,15 @@ DISMISS ALL
 
 Two clicks within 3s. One stray click used to wipe every card on screen with no way back.
 
-**In `getAlertContainer()`, at `document .getElementById('eve-alert-export')`**
+**In `getAlertContainer()`, at `document.getElementById('eve-alert-export')`**
 
-EXPORTS
+EXPORTS. Each menu item closes the menu first, then acts.
+
+## ALERT ACTIONS MENU
+
+### `setupAlertMenu()`
+
+TXT / CSV / dismiss-all sit behind one 28 px "..." button (0.9.11) so the title bar is almost all drag area; the buttons used to take a third of it. The menu is `position: fixed` inside the panel: fixed boxes escape the panel's `overflow: hidden` (the panel has no transform), so it is not clipped when the panel is folded to its title bar, and it still inherits the panel's CSS variables. It is placed from the button's rect each time it opens - right-aligned, below, or above when there is no room below - and closes on an outside pointerdown (capture phase, so a header drag closes it too), Escape, Tab, a resize, or any item. Closing always disarms Dismiss all (`onClose`), so an armed confirm can never survive into a later open. The header's drag guard already ignores `button` targets, so the menu button never starts a drag. Keyboard: Enter/Space or ArrowDown opens with focus on the first item (`event.detail === 0` marks a keyboard click); arrows wrap over the visible items.
 
 **In `getAlertContainer()`, at `container .querySelectorAll('.eve-filter-category')`**
 
@@ -2029,7 +2113,11 @@ clampToViewport() is the SAME function that used to exist a second time as clamp
 
 **In `setupAlertWindowUX()`, at `header.addEventListener('click', event => {`**
 
-Dragging starts on the header only. Snapping and viewport limits are based ONLY on the header rectangle, never on the full alert container. The alert cards below may therefore extend below the viewport without forcing the header to snap to the bottom edge.
+Dragging starts anywhere on the header except its buttons - including the empty space and the title (v0.9.11). The title's fold span used to have `flex: 1`, so it covered all the empty space and only an 8 px gap plus the padding could start a drag. Now the span is only as wide as its text; the layout is otherwise identical (tests/ui.test.mjs re-applies the old rule and compares boxes).
+
+Positions are taken from the PANEL box (the header sits 1 px inside the border; measuring the header made the panel creep 1-2 px per drag). The vertical limit still uses only the title bar's height, so the alert cards below may extend past the viewport without forcing a bottom snap.
+
+This capture listener swallows the click that follows a real drag (so a drag from the title does not fold the panel). onPointerUp clears `draggedEnough` in a setTimeout(0) - AFTER that click is dispatched; clearing it synchronously (as before) made this guard dead code.
 
 **In `positionHeaderFromPointer()`, at `syncAlertPanelHeight(container);`**
 
@@ -2228,6 +2316,10 @@ Wrapped in withoutObserver() because it writes style.display on PAGE cells, whic
 _No notes - the code is self-explanatory._
 
 ## INITIALIZE
+
+### `claimThisTab()`
+
+One tracker per tab (v0.9.11). Two installed copies of the script share this page's DOM, so the first to initialize marks `<html>` and any other copy stays idle - otherwise both scan, log, toast and render every event (see EVENT CLAIMS). The warning names both versions so the extra install can be found and removed.
 
 **In `initialize()`, at `try {settings = loadSettings();`**
 

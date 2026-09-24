@@ -21,15 +21,26 @@ recorded as diagnostics, never as failures.
   counts, search by serial, location or Jira key. Cards older than 45 min dim.
 - **Jira** button on every card. Fail cards find the ticket raised for that
   failure (the Jira bot usually takes 5-10 min) and show its key and status.
-  With no ticket, one click gives the two useful searches.
+  With no ticket, one click gives the two useful searches. Passes never get a
+  ticket, so pass cards just say **PASSED (no ticket)**.
 - **Card click opens TestView**: click anywhere else on a card to go straight
   to that serial's latest SLT test-detail page in TestView. If the test cannot
   be found, the TestView SLT list opens with the serial searched instead.
 - **Section counts**: live test / fail / pass numbers beside each section you
   have switched on.
-- **Per-shift log**: pick Day, Swing or Graveyard; exports never mix shifts.
+- **Per-shift log, automatic**: the log follows the shift you are in (Day,
+  Swing or Graveyard) - nothing to pick. Exports cover that shift from 60 min
+  before it starts to 60 min after it ends, and its log is kept until the
+  same shift starts again (hover **Log shift** for the exact times). Picking a
+  shift overrides Auto until the next shift change.
 - **Keeps working**: soft refresh in the background, survives network blips,
   detects when the browser put the tab to sleep and catches up.
+- **More than one tab is fine**: each result is logged and notified once, by
+  whichever tab sees it first; every tab still shows the card. Drag the
+  JIRAlerts window by any empty part of its title bar.
+- **Exports**: the **...** button on the JIRAlerts title bar has Export shift
+  log (.txt), Export for Excel (.csv) and Dismiss all cards. Export times are
+  Fremont time (PDT/PST) and show when each result happened.
 
 ---
 
@@ -100,7 +111,9 @@ Open an [issue](../../issues/new/choose). The bug report form asks for:
 4. Any red text from the browser console (F12 -> Console)
 
 Every line the tracker prints starts with `[EVE Tracker]`, so you can filter
-the console on that string. With **Dev** on, the panel also shows three
+the console on that string. If it says *"Another copy of EVE SLT Tracker ... is
+already running in this tab"*, the script is installed twice: remove the extra
+one in the Tampermonkey Dashboard. With **Dev** on, the panel also shows three
 **Refresh diagnostics** lines (refresh status, last scan, keep-awake) - paste
 those too.
 

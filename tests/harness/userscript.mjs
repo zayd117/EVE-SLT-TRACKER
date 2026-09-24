@@ -24,10 +24,11 @@ export const SCRIPT_VERSION = SCRIPT_SOURCE.match(/^\/\/ @version\s+(\S+)/m)[1];
 export const HOOK_NAMES = [
   'getTransitionType', 'resolveTransitionFromDetail', 'canonicalColor',
   'normalizePhaseWord', 'normalizeStatusWord', 'normalizePassFlag',
-  'parseDetailDocument', 'parseJiraResponse', 'safeUrl', 'escapeHtml', 'csvEscape',
+  'parseDetailDocument', 'siteTimeToMs', 'eventTimeFromDetail', 'parseJiraResponse', 'safeUrl', 'escapeHtml', 'csvEscape',
   'shiftWindowAt', 'guessShift', 'isDuplicateAlert', 'scan', 'performSoftRefresh',
   'getAlertLog', 'buildAlertLogCsv', 'buildAlertLogText',
-  'buildTestViewUrl', 'isTestViewOrigin', 'readTestViewSerial'
+  'buildTestViewUrl', 'isTestViewOrigin', 'readTestViewSerial', 'retryPendingConfirmations', 'isoDateParts',
+  'checkLogShiftRollover', 'setLogShiftChoice', 'currentShiftId'
 ];
 
 const TAIL = '  bootstrap();\n})();';
@@ -43,7 +44,9 @@ export function instrument(source = SCRIPT_SOURCE, names = HOOK_NAMES) {
   }
   const hook =
     '  globalThis.__eve = { ' + names.join(', ') +
-    ', state: () => ({ settings, previousStates: Object.fromEntries(previousStates) }) };\n';
+    ', state: () => ({ settings, previousStates: Object.fromEntries(previousStates) })' +
+    // Expire the 60 s flap cooldown, as if a minute had passed.
+    ', resetFlap: () => recentAlerts.clear() };\n';
   const at = source.lastIndexOf(TAIL);
   return source.slice(0, at) + hook + source.slice(at);
 }
@@ -96,56 +99,72 @@ export async function launchBrowser() {
 
 // Opens `url` with the userscript injected. `server` is a fixture router
 // (see server.mjs). Every request is answered by it; nothing reaches the network.
+//
+// options.context  reuse another tm's browser context: a SECOND TAB of the same
+//                  browser session (shared localStorage, own sessionStorage).
+// options.copies   inject the script N times into the same tab, each in its own
+//                  world with its own GM_* stubs - like two installed copies.
+//                  World names: 'tm', 'tm2', ...
 export async function openWithScript(browser, url, server, options = {}) {
-  const context = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const reuse = !!options.context;
+  const context = options.context || await browser.newContext({
+    viewport: { width: 1400, height: 900 },
+    // The container runs in UTC, where local time == UTC and timezone bugs hide.
+    ...(options.timezoneId ? { timezoneId: options.timezoneId } : {})
+  });
   const page = await context.newPage();
   const logs = [];
   const errors = [];
   page.on('console', m => logs.push(`${m.type()}: ${m.text()}`));
   page.on('pageerror', e => errors.push(e.message));
-  await context.route('**/*', route => server.handle(route));
-  if (options.localStorage) {
+  if (!reuse) await context.route('**/*', route => server.handle(route));
+  if ((options.localStorage || options.sessionStorage) && !reuse) {
     // Seed once per test (not again on reload), before the script runs.
     await context.addInitScript(seed => {
       if (location.host === seed.host && !sessionStorage.getItem('__seeded')) {
         sessionStorage.setItem('__seeded', '1');
-        for (const [k, v] of Object.entries(seed.items)) localStorage.setItem(k, JSON.stringify(v));
+        for (const [k, v] of Object.entries(seed.local)) localStorage.setItem(k, JSON.stringify(v));
+        for (const [k, v] of Object.entries(seed.session)) sessionStorage.setItem(k, JSON.stringify(v));
       }
-    }, { host: new URL(url).host, items: options.localStorage });
+    }, { host: new URL(url).host, local: options.localStorage || {}, session: options.sessionStorage || {} });
   }
 
   const cdp = await context.newCDPSession(page);
   await cdp.send('Runtime.enable');
-  let tmContext = null;
+  const worlds = {};
   cdp.on('Runtime.executionContextCreated', ({ context: c }) => {
-    if (c.name === 'tm' && c.auxData && c.auxData.isDefault === false) {
-      tmContext = c.id;
+    if (/^tm\d*$/.test(c.name) && c.auxData && c.auxData.isDefault === false) {
+      worlds[c.name] = c.id;
     }
   });
   const source = options.source || (options.instrument === false ? SCRIPT_SOURCE : instrument());
   await cdp.send('Page.enable');
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
-    worldName: 'tm',
-    source:
-      gmPrelude({ version: SCRIPT_VERSION, gmStore: options.gmStore }) +
-      wrapInSandboxWindow(source)
-  });
+  const copies = options.copies || 1;
+  for (let i = 1; i <= copies; i += 1) {
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      worldName: i === 1 ? 'tm' : `tm${i}`,
+      source:
+        gmPrelude({ version: SCRIPT_VERSION, gmStore: options.gmStore }) +
+        wrapInSandboxWindow(source)
+    });
+  }
   await page.goto(url, { waitUntil: 'domcontentloaded' });
 
   const tm = {
     page, context, logs, errors,
-    // Evaluate an expression in the userscript's world. Promises are awaited.
-    async eval(expression) {
-      for (let i = 0; i < 50 && !tmContext; i += 1) await page.waitForTimeout(20);
+    // Evaluate an expression in the userscript's world ('tm', or 'tm2'...
+    // for extra copies). Promises are awaited.
+    async eval(expression, world = 'tm') {
+      for (let i = 0; i < 50 && !worlds[world]; i += 1) await page.waitForTimeout(20);
       const r = await cdp.send('Runtime.evaluate', {
-        expression, contextId: tmContext, returnByValue: true, awaitPromise: true
+        expression, contextId: worlds[world], returnByValue: true, awaitPromise: true
       });
       if (r.exceptionDetails) {
         throw new Error('tm.eval: ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
       }
       return r.result.value;
     },
-    gm() { return this.eval('JSON.parse(JSON.stringify({store: __gm.store, notifications: __gm.notifications, openedTabs: __gm.openedTabs, windowOpens: __gm.windowOpens, xhr: __gm.xhr}))'); },
+    gm(world = 'tm') { return this.eval('JSON.parse(JSON.stringify({store: __gm.store, notifications: __gm.notifications, openedTabs: __gm.openedTabs, windowOpens: __gm.windowOpens, xhr: __gm.xhr}))', world); },
     trackerLogs(re = /\[EVE Tracker\]/) { return logs.filter(l => re.test(l)); },
     async waitFor(fn, { timeout = 15000, interval = 100, message = 'condition' } = {}) {
       const until = Date.now() + timeout;
@@ -159,10 +178,10 @@ export async function openWithScript(browser, url, server, options = {}) {
     },
     // Re-run the script as after a full page reload (Tampermonkey re-injects).
     async reload() {
-      tmContext = null;
+      for (const k of Object.keys(worlds)) delete worlds[k];
       await page.reload({ waitUntil: 'domcontentloaded' });
     },
-    close: () => context.close()
+    close: () => (reuse ? page.close() : context.close())
   };
   return tm;
 }
