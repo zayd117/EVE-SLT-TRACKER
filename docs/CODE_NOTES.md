@@ -7,7 +7,7 @@ most notes record a real failure seen on the floor and the rule that stops it co
 Every `// ===== TITLE =====` marker in the script has a matching heading below. Each note is
 labelled with the function, constant or line it belongs to.
 
-> Written for **v0.9.11**. When code changes, update the matching note here in the same commit.
+> Written for **v0.9.12**. When code changes, update the matching note here in the same commit.
 
 ## Contents
 
@@ -2082,6 +2082,18 @@ Two clicks within 3s. One stray click used to wipe every card on screen with no 
 **In `getAlertContainer()`, at `document.getElementById('eve-alert-export')`**
 
 EXPORTS. Each menu item closes the menu first, then acts.
+
+### `jiraChipText()`
+
+v0.9.12. The found-ticket chip reads "JIRA - <number>": it says where the click goes, and the project prefix (MFGS) meant nothing to most readers. Display only - the tooltip, `href` and `indexJiraKey()` (search) keep the real key.
+
+## RACK CELL CLICK
+
+A failed (red) rack cell opens TestView through `openTestView(serial, openExternal)` - the exact call the alert card makes (`openCardTarget()`), so there is one source of truth for the destination (`buildTestViewUrl()`) and the TestView-side lookup. The serial comes from `getServerInfo()`, the same parser the scan uses; "red" is `normalizeColor()`, the same test that raises a failure alert; "rack cell" is a column under a `TA.<section>-EVE<n>` header of a table `getEveTableGroups()` accepts (cached), so the Unit column, headers and other tables never match.
+
+### `onRackCellClick()` / `rackCellForClick()`
+
+ONE capture-phase `click` listener on `document`, installed once in `initialize()` after `claimThisTab()` (so a second installed copy never adds another). The cells are the page's own markup and a soft refresh replaces whole tables, so per-cell listeners or overlays would have to be rebuilt every 10-30 s (1,640 cells on a large rack) for no gain; the delegated listener costs nothing between clicks (idle heap and node count identical to 0.9.11) and ~0.01 ms per click. Capture phase + `preventDefault()` + `stopPropagation()` on a handled click only, so the page's link (or any handler the page may attach) never also fires. Ctrl/Cmd/Shift/Alt and non-primary buttons are left alone - the browser opens the old detail link as usual. Keyboard Enter on the link is a click too. No cursor/CSS change: the cell's link already shows the pointer.
 
 ## ALERT ACTIONS MENU
 
