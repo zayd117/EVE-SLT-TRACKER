@@ -17,7 +17,7 @@ body:
       description: >
         The `[EVE Tracker] EVE SLT Tracker vX.Y.Z running` banner in the
         console, or the version shown in the Tampermonkey dashboard.
-      placeholder: "0.9.11"
+      placeholder: "0.9.12"
     validations:
       required: true
 
