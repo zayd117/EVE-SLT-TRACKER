@@ -112,6 +112,7 @@ those too.
 |---|---|
 | [CHANGELOG.md](CHANGELOG.md) | Every change, per version |
 | [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Why the code is the way it is. Each `// ===== SECTION =====` marker in the script has a matching heading here. |
+| [docs/TESTING.md](docs/TESTING.md) | How the script is tested: architecture overview, code-to-test map, commands, what still needs a human. |
 | [docs/reviews/](docs/reviews/) | Code reviews |
 
 The script itself carries no change notes or long comments - they live here, so
@@ -125,16 +126,19 @@ the file users install stays small.
 git clone https://github.com/zayd117/EVE-SLT-TRACKER.git
 cd EVE-SLT-TRACKER
 
-# syntax check + header check (what CI runs)
-node --check EVE_SLT_Tracker.user.js
-node scripts/validate-header.mjs EVE_SLT_Tracker.user.js
+# syntax check + header check
+npm run check
+
+# full test suite: the real script in headless Chromium against fixture
+# pages (needs Node 20+; first time: npm ci && npx playwright install chromium)
+npm test
 
 # cut a release: bumps @version, updates CHANGELOG, tags, pushes
 ./scripts/release.sh patch "Fix flap protection swallowing swapped-server failures"
 ```
 
 When you change code, update the matching section of `docs/CODE_NOTES.md` in
-the same commit.
+the same commit, and add or update tests (see [docs/TESTING.md](docs/TESTING.md)).
 
 ### Repository layout
 
@@ -142,7 +146,11 @@ the same commit.
 EVE_SLT_Tracker.user.js        the userscript (what users install)
 CHANGELOG.md                   change history
 docs/CODE_NOTES.md             design notes, one heading per script section
+docs/TESTING.md                testing guide and code-to-test map
 docs/reviews/                  code reviews
+tests/                         automated tests (node:test + Playwright; dev only)
+package.json                   dev-only test tooling (nothing ships to users)
+CLAUDE.md                      working rules for AI-assisted changes
 scripts/release.sh             cut a release
 scripts/validate-header.mjs    checks the ==UserScript== header
 scripts/check-version-bump.mjs fails a PR that changes the script without a bump
@@ -155,8 +163,8 @@ scripts/check-version-bump.mjs fails a PR that changes the script without a bump
 
 - `main` is the release channel. Whatever is on `main` is what users download.
 - Work on a branch, open a PR, merge. CI flags a PR that changes the script
-  without bumping `@version`, or that fails the syntax, header or plain-ASCII
-  checks.
+  without bumping `@version`, that fails the syntax, header or plain-ASCII
+  checks, or that fails the test suite.
 - `./scripts/release.sh` tags the commit; the release workflow then publishes a
   GitHub Release with the changelog entry attached.
 
