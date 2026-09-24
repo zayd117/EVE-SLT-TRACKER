@@ -22,14 +22,21 @@ async function failAndWaitForButton(server, wantClass) {
   return { tm, button };
 }
 
-test('failure with a ticket: button shows the key; lookup queried Jira for the serial', async () => {
+test('failure with a ticket: chip reads "JIRA - <number>", real key in the tooltip; lookup queried Jira for the serial', async () => {
   const server = new FixtureServer();
   const serial = server.rack.slot('EVE01', 'U2').serial;
   server.jira.set(serial, [issue('MFGS-1001', serial)]);
   const { tm, button } = await failAndWaitForButton(server, 'eve-jira-found');
   try {
-    assert.equal(button.label, 'MFGS-1001');
+    assert.equal(button.label, 'JIRA - 1001', 'says where the click goes, not the project prefix');
+    assert.match(button.title, /^MFGS-1001/, 'real key in the tooltip');
     assert.match(button.title, /Raised for this failure/);
+    const href = await tm.page.$eval('.eve-alert .eve-alert-jira', el => el.getAttribute('href'));
+    assert.equal(href, 'https://jira.synnex.com/browse/MFGS-1001', 'link uses the real key');
+    await tm.page.fill('#eve-alert-search', 'MFGS-1001');
+    assert.equal(await tm.page.$eval('.eve-alert', el => el.style.display), '', 'search by the real key unchanged');
+    await tm.page.fill('#eve-alert-search', 'MFGS-9999');
+    assert.equal(await tm.page.$eval('.eve-alert', el => el.style.display), 'none');
     const gm = await tm.gm();
     assert.ok(gm.xhr.some(u => u.startsWith('https://jira.synnex.com/rest/api/2/search') && decodeURIComponent(u).includes(serial)));
     assert.deepEqual(tm.errors, []);

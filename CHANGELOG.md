@@ -8,6 +8,26 @@ userscript header increases, so every entry below corresponds to a version
 that was actually shipped. The script itself carries no change notes; they
 all live here.
 
+## [0.9.12] - 2026-09-24
+
+### Changed
+- **Red cells on the rack page open TestView.** Clicking a failed (red)
+  server cell - its link or anywhere in the cell - now opens that serial in
+  TestView, exactly like clicking its alert card (same destination, same
+  test-detail lookup), instead of the old server detail page. Other colours,
+  other tables and the Unit column are untouched. Ctrl/Cmd+click, Shift+click
+  and middle click still do what the browser normally does with the cell's
+  link, so the old detail page stays one Ctrl+click away. One listener for
+  the whole page: nothing is added to the table and nothing is re-attached
+  after a refresh.
+- Card Jira chip reads **JIRA - 587632** instead of **MFGS-587632**, so it is
+  clear the click opens Jira. Label only: the tooltip, link and search still
+  use the real key.
+
+### Tests
+- New suite tests/cellclick.test.mjs (9 tests); Jira chip label in
+  tests/jira.test.mjs.
+
 ## [0.9.11] - 2026-09-24
 
 ### Fixed
