@@ -16,6 +16,7 @@ export class FixtureServer {
     this.rack = new RackModel();
     this.details = new Map();        // serial -> detail page options
     this.detailStatus = 200;
+    this.detailDelayMs = 0;          // slow detail pages (confirmation races)
     this.jira = new Map();           // serial -> jira issues array
     this.jiraStatus = 200;
     this.testview = {
@@ -44,6 +45,7 @@ export class FixtureServer {
       if (url.pathname === '/out/out.eveslt.php') return html(this.rack.render());
       if (url.pathname === '/out/out.eveserverdetail.php') {
         const serial = url.searchParams.get('in') || '';
+        if (this.detailDelayMs) await new Promise(r => setTimeout(r, this.detailDelayMs));
         if (this.detailStatus !== 200) return { status: this.detailStatus, body: 'error' };
         return html(detailPage(serial, this.details.get(serial)));
       }

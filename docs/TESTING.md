@@ -15,11 +15,11 @@ script that alters behaviour updates the matching row of the
 ```bash
 npm ci                                  # once: installs Playwright (dev only)
 npx playwright install chromium         # once, if no Chromium is available
-npm test                                # everything, ~40 s
+npm test                                # everything, ~2 min
 npm run check                           # syntax + header only, ~1 s
 npm run test:static                     # file-level checks, no browser
 npm run test:unit                       # pure logic, one browser page
-npm run test:browser                    # rack / TestView / Jira workflows
+npm run test:browser                    # rack / TestView / Jira / UI / dedupe
 npm run test:mutation                   # proves the suite catches bugs, ~3 min
 ```
 
@@ -98,8 +98,12 @@ Jira keys, tokens or cookies in tests.
 | `tests/logic.test.mjs` | Transition table; colour aliases; detail-page authority rules; phase/status/pass words; `parseDetailDocument` (fail, pass, running, newest row, disagreement, serial mismatch, login/empty pages); Jira response states; CSV formula injection; HTML escaping and URL safety; shift windows across midnight; flap cooldown; TestView URL building | ~5 s |
 | `tests/rack.test.mjs` | Boot (panel, meta refresh stripped, no alerts on baseline); FAIL / PASS / PRE-TEST detection end to end (card, toast, audit log, detail fetch); non-result colour changes ignored; server swap; flap protection; Notifs-off section; cards survive reload without re-alerting; soft-refresh detection; card click -> TestView + handoff; serial/close clicks do not open TestView; toast click targets (TestView, Jira) | ~20 s |
 | `tests/testview.test.mjs` | Lookup -> detail redirect; newest test wins; GM handoff after a dropped hash; stale handoff ignored; list fallback (one Query with the SN, hash stripped); empty result = filtered; API error fallback; Query / requestSubmit never reload a native form; origin guard; idle without a serial; harness reproduces the `view: window` crash | ~25 s |
-| `tests/jira.test.mjs` | Card Jira button: ticket found (key shown, serial queried), pending, login needed (401) | ~8 s |
-| `tests/mutation.mjs` | Plants 12 real bugs one at a time; each must make its suite fail | ~3 min |
+| `tests/jira.test.mjs` | Card Jira button: ticket found (key shown, serial queried), pending, login needed (401); PASS and pre-test PASS show "PASSED (no ticket)" with no link and no Jira call; PASS toast opens TestView; PASS relabelled FAIL gets the live button; pre-test FAIL unchanged | ~20 s |
+| `tests/ui.test.mjs` | JIRAlerts header: title bar is the title plus one small "..." menu button (rest is drag area), empty area and title drag the panel, click still folds; the actions menu opens below (or above near the bottom) inside the viewport, is not clipped when folded, closes on outside click / Escape / drag / export, works from the keyboard; TXT / CSV download, Dismiss all arms then clears and is disarmed by closing, hidden with one card; drags never activate a control, snapping/clamping exact (no creep) | ~25 s |
+| `tests/timezone.test.mjs` | Export date/time are Fremont time (PDT/PST, incl. the November DST change) on PCs set to UTC, Asia/Tokyo and America/Los_Angeles; a real detected failure's TXT row, chronological line and CSV columns are Pacific, header names PDT/PST, only the `ISO:` line is UTC; detail-page Finished time parsed as Fremont time and used as the event time, with fallback to detection time when blank, in the future or over a day old | ~25 s |
+| `tests/shiftlog.test.mjs` | Log shift on a simulated Fremont clock: Auto is the default; a new session gets the running shift; an open session stays on its shift through the overlaps and moves on when the window ends (Graveyard -> Day 7:30 AM -> Swing 3:30 PM -> Graveyard 1:15 AM); nothing is cleared at 6:30 / 7:30 AM or during the day; a hand pick lasts until the next shift change; Day picked at 4 AM never wipes a running Graveyard; an old hand-picked setting migrates to Auto; tooltip says Auto/Manual, the window and the clear time | ~20 s |
+| `tests/dedupe.test.mjs` | One event -> one log entry + one toast with two tabs (either order) or two installed copies; repeated scans; PASS / FAIL / pre-test FAIL once each; a later FAIL after a retest and FAIL-then-PASS still processed (one tab and two tabs); old baselines never suppress; retry never overlaps an in-flight confirmation | ~60 s |
+| `tests/mutation.mjs` | Plants real bugs one at a time; each must make its suite fail | ~5 min |
 
 A test has **genuinely passed** only if it asserts the behaviour (card text,
 toast title, request made, URL reached, value stored) - not merely that code
@@ -117,18 +121,20 @@ ran. `npm run test:mutation` is the proof: every mutant must be `KILLED`.
 | EVE TABLE / HEADER DISCOVERY | rack page markup (`TA.x-EVEn` headers, `Un` rows) | nothing detected (BLIND), wrong column | `rack` (all), `logic` |
 | NORMALIZE COLOR, VALID TRANSITIONS | scan, section counts, CSV | missed or false alerts | `logic` (transition + colour), `rack` |
 | SCAN PAGE / processSlot | baselines, flap, log, confirm, surface | duplicate/missed alerts, swap alerts | `rack` |
-| FLAP PROTECTION | sessionStorage cooldown map | alert storms or swallowed alerts | `logic` (isDuplicateAlert), `rack` (flap) |
+| FLAP PROTECTION | sessionStorage cooldown map | alert storms or swallowed alerts | `logic` (isDuplicateAlert), `rack` (flap), `dedupe` |
+| EVENT CLAIMS / claimThisTab / previousStates.seen | localStorage claims, rackDataAt, other tabs and installed copies | duplicate log entries and toasts, or a real later event swallowed | `dedupe` (all), then `rack` |
 | PHASE CONFIRMATION | detail page HTML, fetch, cache | wrong PASS/FAIL/phase on cards and log | `logic` (parseDetailDocument, resolve), `rack` (PRE-TEST override) |
-| SURFACE AN ALERT / RENDER CARD / RECONCILE | GM_notification, card DOM, click handlers | missing toast/card, wrong title, click opens wrong page | `rack` |
+| SURFACE AN ALERT / RENDER CARD / RECONCILE | GM_notification, card DOM, click handlers, confirmationsInFlight | missing or doubled toast/card, wrong title, click opens wrong page | `rack`, `dedupe`, `jira` |
 | ALERT PERSISTENCE | sessionStorage | cards lost or duplicated on refresh | `rack` (reload) |
 | SOFT REFRESH / swapPageBody / observer | fetch of rack page, our UI nodes | monitoring silently stops, UI wiped | `rack` (soft refresh) |
 | REAL-ALERT AUDIT LOG, .TXT, .CSV | localStorage, shift windows | lost entries, CSV injection, wrong shift | `logic` (csv, shift), `rack` (log entries) |
-| JIRA | GM_xmlhttpRequest, jira search API, card button | wrong ticket, crash on auth/error | `logic` (parseJiraResponse), `jira` |
+| JIRA (incl. isPassResult, syncJiraForCard, openNotificationTarget) | GM_xmlhttpRequest, jira search API, card button, TRANSITIONS | wrong ticket, crash on auth/error, Jira shown or queried for a pass | `logic` (parseJiraResponse), `jira`, `rack` (toast clicks) |
 | TESTVIEW | GM storage handoff, TestView API + list page | wrong test opened, serial leaked to another site, no query | `testview`, `rack` (card/toast click) |
 | Settings (LOAD / SAVE, sections) | localStorage | Notifs/visibility ignored | `rack` (Notifs off) |
-| CSS / UI layout, drag/snap, exports download | DOM only | visual regressions | manual (see below) |
+| ALERT WINDOW UX (drag / snap), JIRAlerts header CSS | panel + header boxes, localStorage position | hard to grab, panel jumps, controls fire on drag | `ui` |
+| Other CSS / visual polish | DOM only | visual regressions | manual (see below) |
 
-When in doubt, run `npm test` - it is only ~40 s.
+When in doubt, run `npm test` - it takes about 2 minutes.
 
 ---
 
@@ -166,6 +172,24 @@ permanently unless a documented reason says otherwise. Current:
   reload the page` (testview) - found while building the suite, fixed in
   0.9.10: pressing Query on a form that does not cancel native submission
   reloaded TestView and lost the query.
+- `tests/dedupe.test.mjs` (whole file) - field report fixed in 0.9.11: one
+  failure logged and toasted twice. Root cause: two tabs, or two installed
+  copies, each processed the same event (shared log, separate toasts). The
+  two-tab and two-copy tests fail on 0.9.10. Also covers the stale 2-minute
+  detail cache (FAIL then PASS logged as FAIL twice) and the retry overlapping
+  an in-flight confirmation.
+- `tests/ui.test.mjs` drag tests - 0.9.11: the draggable strip was a thin gap
+  (title span had flex: 1), the post-drag click guard was dead code, and the
+  panel crept 1-2 px per drag.
+- `tests/timezone.test.mjs` (whole file) - field report fixed in 0.9.11:
+  exports showed raw UTC times (a 10 PM - 6:30 AM shift as 05:18 - 09:55).
+  All four tests fail on 0.9.10.
+- `tests/shiftlog.test.mjs` - review of 0.9.11: the log was cleared at the
+  selected shift's window, so Day (opens 5:00 AM) wiped a running Graveyard.
+  With that rule restored, the Day test fails. Also covers the Auto log
+  shift requested in the same review. The event-time tests cover the review
+  request to log when a result happened (detail page Finished), not when
+  it was noticed.
 
 ---
 
@@ -199,4 +223,10 @@ These need a human on the real site (or explicit acceptance of the risk):
 - TestView: `server.testview.api` / `apiStatus` / `listHtml`.
 - Assert on `tm.gm()` for toasts, tabs, `window.open` and GM storage;
   `tm.errors` and `server.unrouted` must stay empty.
+- Several observers: `openWithScript(..., { context: other.context })` opens a
+  second TAB (shared localStorage, own sessionStorage); `{ copies: 2 }` injects
+  the script twice into one tab (worlds `tm`, `tm2`; `tm.gm('tm2')`).
+- Seed storage before the script runs: `{ localStorage: {...}, sessionStorage: {...} }`.
+- Time: `__eve.resetFlap()` expires the 60 s flap cooldown; `server.detailDelayMs`
+  slows detail pages; `__eve.retryPendingConfirmations()` runs the 45 s retry now.
 - New behaviour worth protecting? Add a mutant to `tests/mutation.mjs`.
