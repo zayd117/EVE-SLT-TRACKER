@@ -8,6 +8,21 @@ userscript header increases, so every entry below corresponds to a version
 that was actually shipped. The script itself carries no change notes; they
 all live here.
 
+## [0.9.10] - 2026-09-24
+
+### Fixed
+- TestView list fallback: pressing Query (a click, or `form.requestSubmit()`
+  on the second try) can no longer reload the TestView page. On a form that
+  does not cancel native submission, the browser used to navigate away,
+  losing the typed SN and the query. The page's own submit handling still
+  runs; only the browser's navigation is cancelled, and only for that one
+  press. The real TestView (Ant Design) form already cancels it, so this was
+  a latent risk, not a reported failure.
+
+### Tests
+- Automated test suite (`npm test`, 53 tests) and CI test job, added after
+  0.9.9; two new regression tests cover this fix. See docs/TESTING.md.
+
 ## [0.9.9] - 2026-09-23
 
 ### Changed
