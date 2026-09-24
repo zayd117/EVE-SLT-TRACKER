@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.9
+// @version      0.9.10
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -34,7 +34,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '0.9.9';
+      : '0.9.10';
   const LOG_PREFIX = '[EVE Tracker]';
 
   // ===== STORAGE KEYS =====
@@ -374,6 +374,20 @@
 
   function triggerTestViewQuery(input, attempt) {
     const form = input.closest('form');
+    const keepPage = event => {
+      if (form && event.target === form) {
+        event.preventDefault();
+      }
+    };
+    window.addEventListener('submit', keepPage);
+    try {
+      return pressTestViewQuery(input, form, attempt);
+    } finally {
+      window.removeEventListener('submit', keepPage);
+    }
+  }
+
+  function pressTestViewQuery(input, form, attempt) {
     if (attempt === 2 && form && typeof form.requestSubmit === 'function') {
       form.requestSubmit();
       return 'form.requestSubmit()';

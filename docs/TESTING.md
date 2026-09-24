@@ -97,9 +97,9 @@ Jira keys, tokens or cookies in tests.
 | `tests/static.test.mjs` | Parses; header valid; ASCII; version consistent across `@version`, fallback, CHANGELOG; `@name` has no version; every `GM_*` used is granted and vice versa; every section marker has a CODE_NOTES heading; no `view: window`; no tokens/keys in tracked files; only allow-listed hosts in the script | < 1 s |
 | `tests/logic.test.mjs` | Transition table; colour aliases; detail-page authority rules; phase/status/pass words; `parseDetailDocument` (fail, pass, running, newest row, disagreement, serial mismatch, login/empty pages); Jira response states; CSV formula injection; HTML escaping and URL safety; shift windows across midnight; flap cooldown; TestView URL building | ~5 s |
 | `tests/rack.test.mjs` | Boot (panel, meta refresh stripped, no alerts on baseline); FAIL / PASS / PRE-TEST detection end to end (card, toast, audit log, detail fetch); non-result colour changes ignored; server swap; flap protection; Notifs-off section; cards survive reload without re-alerting; soft-refresh detection; card click -> TestView + handoff; serial/close clicks do not open TestView; toast click targets (TestView, Jira) | ~20 s |
-| `tests/testview.test.mjs` | Lookup -> detail redirect; newest test wins; GM handoff after a dropped hash; stale handoff ignored; list fallback (one Query with the SN, hash stripped); empty result = filtered; API error fallback; origin guard; idle without a serial; harness reproduces the `view: window` crash | ~15 s |
+| `tests/testview.test.mjs` | Lookup -> detail redirect; newest test wins; GM handoff after a dropped hash; stale handoff ignored; list fallback (one Query with the SN, hash stripped); empty result = filtered; API error fallback; Query / requestSubmit never reload a native form; origin guard; idle without a serial; harness reproduces the `view: window` crash | ~25 s |
 | `tests/jira.test.mjs` | Card Jira button: ticket found (key shown, serial queried), pending, login needed (401) | ~8 s |
-| `tests/mutation.mjs` | Plants 11 real bugs one at a time; each must make its suite fail | ~3 min |
+| `tests/mutation.mjs` | Plants 12 real bugs one at a time; each must make its suite fail | ~3 min |
 
 A test has **genuinely passed** only if it asserts the behaviour (card text,
 toast title, request made, URL reached, value stored) - not merely that code
@@ -161,6 +161,11 @@ permanently unless a documented reason says otherwise. Current:
 - `regression: no view: window in synthetic event init` (static) and
   `regression: harness reproduces the view: window crash` (testview) -
   v0.9.9 TestView Query click crashed under Tampermonkey.
+- `regression: Query as a submit button on a native form does not reload the
+  page` and `regression: try-2 form.requestSubmit() on a native form does not
+  reload the page` (testview) - found while building the suite, fixed in
+  0.9.10: pressing Query on a form that does not cancel native submission
+  reloaded TestView and lost the query.
 
 ---
 
@@ -180,10 +185,6 @@ These need a human on the real site (or explicit acceptance of the risk):
 - Long-running behaviour over hours (tab sleep, memory). The code bounds every
   collection (see CODE_NOTES); tests check correctness, not endurance.
 
-Known risk found while building the tests: on TestView the list fallback's
-second try uses `form.requestSubmit()`. On a form that does not cancel native
-submission this reloads the page. The real antd form cancels it, so this has
-not happened in the field; the fixture mirrors antd.
 
 ---
 
