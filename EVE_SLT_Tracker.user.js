@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.11
+// @version      0.9.12
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -34,7 +34,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '0.9.11';
+      : '0.9.12';
   const LOG_PREFIX = '[EVE Tracker]';
 
   // ===== STORAGE KEYS =====
@@ -702,6 +702,13 @@
   const JIRA_LATE_POLL_MS = 5 * 60 * 1000;
   const JIRA_TAB_POLL_MS = 15 * 1000;
   const JIRA_KEY_PATTERN = /^[A-Z][A-Z0-9_]*-\d+$/;
+
+  // Card chip text for a ticket: "JIRA - 587632" says where the click goes;
+  // the project prefix (MFGS) means nothing to most readers. Display only -
+  // the tooltip, link and search keep the real key.
+  function jiraChipText(key) {
+    return `JIRA - ${String(key).split('-').pop()}`;
+  }
   const JIRA_ICON_SVG =
     '<svg class="eve-jira-ext" width="12" height="12" viewBox="0 0 24 24" ' +
     'fill="none" stroke="currentColor" stroke-width="2.4" ' +
@@ -1116,7 +1123,7 @@
         cls += ` eve-jira-cat-${String(result.category).replace(/[^a-z-]/gi, '')}`;
       }
       const created = jiraTimeText(result.created);
-      text = result.key;
+      text = jiraChipText(result.key);
       tip =
         result.key +
         (result.status ? ` \u{b7} ${result.status}` : '') +
@@ -3090,6 +3097,52 @@
       detailUrl: safeUrl(anchor.href),
       cell: cell
     };
+  }
+
+  // ===== RACK CELL CLICK =====
+  // A red (failed) server cell opens TestView for its serial - the same
+  // openTestView() the alert cards use - instead of the old detail page its
+  // link points at. ONE capture-phase listener on the document: the cells
+  // belong to the page and a soft refresh replaces whole tables, so nothing
+  // is attached per cell and nothing has to be re-attached after a refresh.
+  // Work happens only on a click. Modified / non-primary clicks keep the
+  // browser's own behaviour (e.g. Ctrl+click still opens the old detail page).
+
+  function rackCellForClick(event) {
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.altKey ||
+      !event.target ||
+      !event.target.closest
+    ) {
+      return null;
+    }
+    const cell = event.target.closest('td');
+    const table = cell && cell.closest('table');
+    if (!table || normalizeColor(cell) !== 'red') {
+      return null;
+    }
+    const group = getEveTableGroups().find(g => g.table === table);
+    if (!group || !group.headers.some(header => header.column === cell.cellIndex)) {
+      return null;
+    }
+    const info = getServerInfo(cell, '', '', '');
+    return info && info.serial ? info : null;
+  }
+
+  function onRackCellClick(event) {
+    const info = rackCellForClick(event);
+    if (!info) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    devLog(`Red cell ${info.serial} clicked - opening TestView.`);
+    openTestView(info.serial, openExternal);
   }
 
   // ===== FLAP PROTECTION =====
@@ -7442,6 +7495,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     }
     try {
       rackDataAt = Date.now();
+      document.addEventListener('click', onRackCellClick, true);
       settings = loadSettings();
       previousStates = loadPreviousStates();
       recentAlerts = loadRecentAlerts();

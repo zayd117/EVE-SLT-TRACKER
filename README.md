@@ -20,12 +20,15 @@ recorded as diagnostics, never as failures.
 - **JIRAlerts** window: one card per result, newest on top, filter chips with
   counts, search by serial, location or Jira key. Cards older than 45 min dim.
 - **Jira** button on every card. Fail cards find the ticket raised for that
-  failure (the Jira bot usually takes 5-10 min) and show its key and status.
+  failure (the Jira bot usually takes 5-10 min) and show it as JIRA-<number> with its
+  status.
   With no ticket, one click gives the two useful searches. Passes never get a
   ticket, so pass cards just say **PASSED (no ticket)**.
 - **Card click opens TestView**: click anywhere else on a card to go straight
   to that serial's latest SLT test-detail page in TestView. If the test cannot
   be found, the TestView SLT list opens with the serial searched instead.
+  Clicking a **red cell** on the rack page does the same (Ctrl+click still
+  opens the old detail page).
 - **Section counts**: live test / fail / pass numbers beside each section you
   have switched on.
 - **Per-shift log, automatic**: the log follows the shift you are in (Day,

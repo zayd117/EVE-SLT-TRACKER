@@ -92,6 +92,16 @@ const MUTANTS = [
     from: "    if (!settings || !SHIFTS[settings.logShiftChoice] || logShiftOverride(now)) {", to: '    if (true) {' },
   { name: 'old hand-picked shift not migrated to Auto', suite: 'shiftlog',
     from: '    delete loaded.logShift;\n', to: "    if (SHIFTS[loaded.logShift]) { loaded.logShiftChoice = loaded.logShift; loaded.logShiftOverrideFor = 'legacy'; }\n    delete loaded.logShift;\n" },
+  { name: 'Jira chip shows the project key again', suite: 'jira',
+    from: '      text = jiraChipText(result.key);', to: '      text = result.key;' },
+  { name: 'red-cell click intercepts modifier clicks', suite: 'cellclick',
+    from: '      event.button !== 0 ||\n      event.ctrlKey ||\n', to: '      event.button !== 0 ||\n' },
+  { name: 'red-cell click intercepts any colour', suite: 'cellclick',
+    from: "    if (!table || normalizeColor(cell) !== 'red') {", to: '    if (!table) {' },
+  { name: 'red-cell click intercepts any table / column', suite: 'cellclick',
+    from: '    if (!group || !group.headers.some(header => header.column === cell.cellIndex)) {', to: '    if (false) {' },
+  { name: 'red-cell click lets the old detail link fire too', suite: 'cellclick',
+    from: '    event.preventDefault();\n    event.stopPropagation();\n    devLog(`Red cell', to: '    devLog(`Red cell' },
   { name: 'Finished read as UTC, not Fremont time', suite: 'timezone',
     from: '    for (let i = 0; i < 2; i += 1) {\n      const p = isoDateParts', to: '    for (let i = 0; i < 0; i += 1) {\n      const p = isoDateParts' }
 ];
