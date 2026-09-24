@@ -8,6 +8,84 @@ userscript header increases, so every entry below corresponds to a version
 that was actually shipped. The script itself carries no change notes; they
 all live here.
 
+## [0.9.11] - 2026-09-24
+
+### Fixed
+- **Duplicate log entries and toasts for one event** ("SN -> FAIL" twice).
+  Root cause: every running copy of the tracker processed every transition
+  on its own, and the audit log is shared between tabs. Two tabs on the same
+  rack page - or the script installed twice - each logged and toasted the
+  same event. Now:
+  - one tracker per tab: a second installed copy stays idle and says so in
+    the console (remove it in the Tampermonkey Dashboard);
+  - across tabs, each real event is claimed by the first tab that sees it;
+    other tabs still show the card but do not log it or toast it again.
+  A later event for the same serial (FAIL, retest, FAIL again; or FAIL then
+  PASS) is still processed normally - events are matched, not serials.
+- A new event now always reads the server's detail page fresh; within 2 min
+  of a previous result for the same serial it could reuse that result (a PASS
+  logged as FAIL).
+- The 45 s re-check no longer starts a second detail-page confirmation for a
+  card whose first one is still loading (could send "CORRECTED" twice).
+- JIRAlerts panel no longer creeps 1-2 px down/right on every drag.
+- Shift log could be wiped while a shift was still running. Each shift's
+  log window starts 60 min early and ends 60 min late, so neighbouring
+  windows overlap; old entries were cleared at the *selected* shift's
+  window, so a browser left on **Day** cleared everything before 5:00 AM -
+  the Graveyard crew's log, mid-shift. Now an entry is only cleared once no
+  shift's most recent window covers it: each shift's log is kept until that
+  shift's next window opens (Graveyard: 9:00 PM the next evening). Nothing
+  is cleared at 6:30 or 7:30 AM, and changing the Log shift setting never
+  clears anything.
+- The Log shift tooltip was misleading ("cleared when the next one starts").
+  It now says Auto or Manual, the exact window and when its log is
+  cleared, e.g. Graveyard: "9:00 PM - 7:30 AM ... kept until 9:00 PM".
+- Log exports (.txt and .csv) now always show Fremont, CA time - PDT or PST
+  by date - whatever timezone the PC is set to. The table date/time columns
+  printed raw UTC (a 10 PM - 6:30 AM shift exported as 05:18 - 09:55). The
+  .txt header times name the zone; each entry's raw `ISO:` line stays UTC.
+
+### Changed
+- **Log shift is automatic.** The new default, **Auto**, follows the shift
+  you are in: the shift running when the session starts (the one that started
+  most recently where two overlap), kept until its window ends (60 min after
+  the shift), then the shift running at that moment. An open tab goes
+  Graveyard -> Day at 7:30 AM, Day -> Swing at 3:30 PM, Swing -> Graveyard at
+  1:15 AM. Picking a shift in the dropdown still works but only until the
+  next shift change, then it returns to Auto, so a shared PC is never left on
+  the wrong shift. A shift picked in an older version becomes Auto once.
+- Log exports show when a result actually **happened**: the Finished time
+  from the server's detail page (Test Status table, Fremont time), not when
+  the tracker noticed it. The detection time is kept (`Detected:` line in the
+  .txt, `Detected At` column in the .csv; new `Time Source` column). If the
+  detail page has no usable Finished time - blank, later than detection, or
+  more than a day older - the detection time is used, as before.
+- JIRAlerts header: the whole empty area between the title and the
+  TXT / CSV / X buttons now drags the panel (it was a thin strip), and a drag
+  can start on the title too. A click on the title still folds / unfolds; the
+  buttons are unaffected; the header looks exactly the same.
+- JIRAlerts title bar: TXT, CSV and X All moved into one small **...** menu
+  at the right of the title bar, so almost the whole bar is free to drag
+  the window. The menu has **Export shift log (.txt)**, **Export for Excel
+  (.csv)** and **Dismiss all cards** (still two clicks: the second says
+  "Click again to dismiss all"; shown with 2+ cards). It closes on an outside
+  click, Escape, a drag or after an export, opens upward near the bottom of
+  the screen, works when the window is folded, and works from the keyboard
+  (Enter / arrows / Escape).
+- PASSED cards show **PASSED (no ticket)** in the Jira area. Passes never get
+  a Jira ticket, so nothing asks Jira about them, the label is not a link, and
+  a PASS toast click opens TestView instead of Jira. FAIL and pre-test FAIL
+  keep the existing Jira behaviour.
+
+### Tests
+- New suites: tests/ui.test.mjs (JIRAlerts header) and
+  tests/dedupe.test.mjs (one event -> one log/toast, later events still
+  processed); tests/timezone.test.mjs (exports in Pacific time on PCs set to
+  UTC, Tokyo or Los Angeles, across the DST change; event time from the
+  detail page Finished column, with fallbacks); PASSED cases in
+  tests/jira.test.mjs. Harness can now open a
+  second tab and a second installed copy.
+
 ## [0.9.10] - 2026-09-24
 
 ### Fixed
