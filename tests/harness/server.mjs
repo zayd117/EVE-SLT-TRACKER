@@ -144,11 +144,16 @@ export function detailPage(serial, opts = {}) {
 // Behaves like antd where the script depends on it: the form's submit handler
 // preventDefault()s and runs the query; an empty result renders
 // .ant-table-placeholder. window.queries records every SN actually queried.
-export function testViewListPage({ firstLoadMs = 600, rows = ['2699YW1001', '2699YW2001', '2699YW1003'] } = {}) {
+//
+// nativeSubmit: the form's submit handler runs the query but does NOT
+// preventDefault (a plain, non-antd form): a real submission then reloads the
+// page. buttonType / clickQueries shape how the Query button behaves.
+export function testViewListPage({ firstLoadMs = 600, rows = ['2699YW1001', '2699YW2001', '2699YW1003'],
+  nativeSubmit = false, buttonType = 'button', clickQueries = true } = {}) {
   return `<!doctype html><html><body>
   <form class="ant-form"><div class="ant-form-item"><label>SN</label>
     <input id="server_sn" class="ant-input" placeholder="Please enter"></div>
-    <button type="button" class="ant-btn ant-btn-primary"><span>Query</span></button></form>
+    <button type="${buttonType}" class="ant-btn ant-btn-primary"><span>Query</span></button></form>
   <div class="ant-table-wrapper"><div id="spin"></div>
     <table><tbody class="ant-table-tbody"></tbody></table></div>
   <script>
@@ -168,8 +173,8 @@ export function testViewListPage({ firstLoadMs = 600, rows = ['2699YW1001', '269
       }, ms);
     };
     const query = () => { window.queries.push(sn); load(sn, 300); };
-    document.querySelector('button').addEventListener('click', query);
-    document.querySelector('form').addEventListener('submit', e => { e.preventDefault(); query(); });
+    if (${clickQueries}) document.querySelector('button').addEventListener('click', e => { if (e.target.closest('button').type !== 'submit') query(); });
+    document.querySelector('form').addEventListener('submit', e => { if (!${nativeSubmit}) e.preventDefault(); query(); });
     load('', ${firstLoadMs});
   </script></body></html>`;
 }

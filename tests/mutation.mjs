@@ -34,6 +34,8 @@ const MUTANTS = [
   { name: 'view: window reintroduced', suite: 'static',
     from: 'const opts = { bubbles: true, cancelable: true, button: 0, buttons: 1 };',
     to: 'const opts = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };' },
+  { name: 'native form submission not cancelled on Query press', suite: 'testview',
+    from: '      if (form && event.target === form) {\n        event.preventDefault();', to: '      if (false) {\n        event.preventDefault();' },
   { name: 'Jira key shown for a non-found result', suite: 'jira',
     from: "    } else if (result && result.state === 'waiting') {\n      cls += ' eve-jira-waiting';\n      text = pretest ? 'No ticket yet' : 'Ticket pending';",
     to: "    } else if (result && result.state === 'waiting') {\n      cls += ' eve-jira-waiting';\n      text = 'MFGS-0';" }

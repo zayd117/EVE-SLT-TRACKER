@@ -3,7 +3,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { launchBrowser, openWithScript, SCRIPT_SOURCE } from './harness/userscript.mjs';
-import { FixtureServer, TESTVIEW_ORIGIN } from './harness/server.mjs';
+import { FixtureServer, TESTVIEW_ORIGIN, testViewListPage } from './harness/server.mjs';
 
 const LIST = `${TESTVIEW_ORIGIN}/slt/list`;
 const SN = '2699YW2001';
@@ -98,6 +98,31 @@ test('API error -> list fallback', async () => {
   server.testview.apiStatus = 500;
   await expectListFallback(server);
 });
+
+// Regression (found while building the suite, fixed in 0.9.10): the list
+// fallback triggers the query with a Query click (try 1, 3) or
+// form.requestSubmit() (try 2). On a form that does not cancel native
+// submission either one also navigated the page, reloading /slt/list and
+// throwing away the query. The real antd form cancels it; the script must not
+// rely on that.
+async function expectNoReload(listOptions, wantQueries) {
+  const server = new FixtureServer();
+  server.testview.apiStatus = 500;
+  server.testview.listHtml = testViewListPage(listOptions);
+  await run(server, `${LIST}#eveSn=${SN}`, {}, async tm => {
+    await tm.waitFor(() => tm.trackerLogs(/results filtered/).length, { timeout: 25000, message: 'filtered' });
+    assert.equal(server.requests.filter(r => r.includes('/slt/list')).length, 1, 'list page loaded once (no reload)');
+    assert.deepEqual(await tm.page.evaluate(() => window.queries), wantQueries);
+    assert.deepEqual(await tm.page.$$eval('tbody tr', els => els.map(e => e.textContent)), [SN]);
+  });
+}
+
+test('regression: Query as a submit button on a native form does not reload the page', () =>
+  expectNoReload({ nativeSubmit: true, buttonType: 'submit' }, [SN]));
+
+test('regression: try-2 form.requestSubmit() on a native form does not reload the page', () =>
+  // Query clicks do nothing here, so try 1 fails and try 2 submits the form.
+  expectNoReload({ nativeSubmit: true, buttonType: 'button', clickQueries: false }, [SN]));
 
 // Regression (v0.9.9 field bug): the Query click built MouseEvents with
 // `view: window`, which throws under Tampermonkey's proxied window. The
