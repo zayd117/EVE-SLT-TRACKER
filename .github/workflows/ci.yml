@@ -57,3 +57,27 @@ jobs:
             exit 1
           fi
           echo "File is pure ASCII."
+
+  # ------------------------------------------------------------------
+  # 5. Behaviour tests: the real script in headless Chromium, injected
+  #    the way Tampermonkey does, against a fixture rack page, detail
+  #    pages, Jira and TestView. See docs/TESTING.md.
+  # ------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install test tooling
+        run: npm ci
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Run tests
+        run: npm test
