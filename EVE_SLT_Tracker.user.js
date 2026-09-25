@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT Tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      0.9.12
+// @version      1.0.1
 // @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -18,6 +18,7 @@
 // @grant        GM_getValue
 // @grant        GM_deleteValue
 // @connect      jira.synnex.com
+// @connect      testview-eve-fmt.hyvesolutions.org
 // @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
 // ==/UserScript==
@@ -34,7 +35,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '0.9.12';
+      : '1.0.1';
   const LOG_PREFIX = '[EVE Tracker]';
 
   // ===== STORAGE KEYS =====
@@ -51,6 +52,7 @@
   const DEBUG_SNAPSHOT_KEY = 'eveRackTrackerDebugSnapshot';
   const ALERT_PANEL_POSITION_KEY = 'eveRackTrackerAlertPanelPosition';
   const JIRA_CACHE_KEY = 'eveRackTrackerJiraCache';
+  const JIRA_ATTENTION_KEY = 'eveRackTrackerJiraAttention';
   const HEARTBEAT_KEY = 'eveRackTrackerHeartbeat';
   const EVENT_CLAIMS_KEY = 'eveRackTrackerEventClaims';
 
@@ -68,6 +70,12 @@
       }
     }
     return fallback;
+  }
+
+  // Saved lists can be damaged (edited by hand, cut short): keep only
+  // entries that are objects, so one bad entry cannot stop the tracker.
+  function isRecordObject(entry) {
+    return !!entry && typeof entry === 'object' && !Array.isArray(entry);
   }
 
   function writeJSON(store, key, value, label) {
@@ -614,6 +622,102 @@
     }
   }
 
+  // ---- Is the serial's test running right now (TestView 2.0)? ----
+  // PuTTY refuses "ticket <serial>" while a test runs ("The test is still
+  // running. No ticket was created."), and TestView counts every step -
+  // power off included - as RUNNING. So before telling anyone to raise a
+  // ticket by hand, ask TestView (from the rack page: GM_xmlhttpRequest,
+  // @connect). Result per serial, cached briefly: true / false / null
+  // (unknown - no answer, no login, or no status in the reply).
+  const TESTVIEW_STATUS_CACHE_MS = 60 * 1000;
+  const MAX_TESTVIEW_STATUS_ENTRIES = 200;
+  const testViewStatusCache = new Map();
+
+  function testViewStatusFrom(item) {
+    const raw = item && (item.status || item.test_status || item.slt_status || item.state);
+    return raw ? String(raw) : '';
+  }
+
+  // The TestView 2.0 page of the serial's latest run, if known.
+  function testViewRunUrl(serial) {
+    const hit = testViewStatusCache.get(serial);
+    return hit && /^\d+$/.test(hit.id || '')
+      ? `${new URL(TESTVIEW_LIST_URL).origin}${TESTVIEW_DETAIL_PATH}${hit.id}`
+      : '';
+  }
+
+  function testViewRunningCached(serial) {
+    const hit = testViewStatusCache.get(serial);
+    return hit ? hit.running : null;
+  }
+
+  function testViewRunning(serial) {
+    const hit = testViewStatusCache.get(serial);
+    if (hit && Date.now() - hit.at < TESTVIEW_STATUS_CACHE_MS) {
+      return hit.promise || Promise.resolve(hit.running);
+    }
+    const params = new URLSearchParams();
+    for (const field of ['id', 'server_sn', 'started', 'status']) {
+      params.append('fields', field);
+    }
+    params.append('only_latest_slt', 'true');
+    params.append('page_num', '1');
+    params.append('page_size', '10');
+    params.append('server_sn', serial);
+    const url = `${new URL(TESTVIEW_LIST_URL).origin}${TESTVIEW_API_PATH}?${params}`;
+    const entry = { at: Date.now(), running: hit ? hit.running : null, id: hit ? hit.id : '' };
+    entry.promise = new Promise(resolve => {
+      const done = running => {
+        entry.running = running;
+        entry.promise = null;
+        resolve(running);
+      };
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        done(null);
+        return;
+      }
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: url,
+          headers: { Accept: 'application/json' },
+          timeout: TESTVIEW_LOOKUP_TIMEOUT_MS,
+          onload: response => {
+            try {
+              if (response.status !== 200) {
+                done(null);
+                return;
+              }
+              const body = JSON.parse(response.responseText || 'null');
+              const items = (body && body.data && Array.isArray(body.data.items) && body.data.items) || [];
+              const want = serial.toUpperCase();
+              const matches = items.filter(
+                item => item && String(item.server_sn || '').toUpperCase() === want
+              );
+              matches.sort((a, b) => String(b.started || '').localeCompare(String(a.started || '')));
+              const status = matches.length ? testViewStatusFrom(matches[0]) : '';
+              entry.id = matches.length && matches[0].id ? String(matches[0].id) : '';
+              done(status ? /running|in[ _-]?progress/i.test(status) : null);
+            } catch (error) {
+              done(null);
+            }
+          },
+          onerror: () => done(null),
+          onabort: () => done(null),
+          ontimeout: () => done(null)
+        });
+      } catch (error) {
+        done(null);
+      }
+    });
+    testViewStatusCache.delete(serial);
+    testViewStatusCache.set(serial, entry);
+    while (testViewStatusCache.size > MAX_TESTVIEW_STATUS_ENTRIES) {
+      testViewStatusCache.delete(testViewStatusCache.keys().next().value);
+    }
+    return entry.promise;
+  }
+
   function isTestViewOrigin() {
     try {
       return window.location.origin === new URL(TESTVIEW_LIST_URL).origin;
@@ -696,7 +800,20 @@
   const JIRA_TICKET_USUAL_MIN = 5;
   const JIRA_TICKET_USUAL_MAX = 10;
   const JIRA_TICKET_EXPECT_MS = 20 * 60 * 1000;
+  // After this long with no ticket, the Jira bot has had its chance: the
+  // no-ticket page (any failure) says how to raise one by hand, and a
+  // pre-test chip says "No ticket (create one)". Display only - lookups
+  // continue as before.
+  const JIRA_CREATE_BY_HAND_MS = 15 * 60 * 1000;
   const JIRA_TICKET_LATE_MS = 2 * 60 * 60 * 1000;
+  // Attention marks (green "new ticket", gold pre-test "create one") are
+  // remembered per failure so a page reload never re-fires or drops them.
+  const JIRA_ATTENTION_TTL_MS = 24 * 60 * 60 * 1000;
+  const JIRA_PENDING_STATES = ['waiting', 'noticket', 'none'];
+  // After the first hover, attention effects stay this long, then go.
+  const JIRA_HOVER_FADE_MS = 10 * 1000;
+  // The green "new ticket" mark goes quicker once seen.
+  const JIRA_NEW_FADE_MS = 3 * 1000;
   const JIRA_PEAK_POLL_MS = 30 * 1000;
   const JIRA_PENDING_POLL_MS = 60 * 1000;
   const JIRA_LATE_POLL_MS = 5 * 60 * 1000;
@@ -1105,11 +1222,21 @@
       button.title = `${serial} passed \u{2014} passes do not get a Jira ticket.`;
       button.setAttribute('aria-label', `${serial} passed, no Jira ticket needed`);
       setTextIfChanged(label, 'PASSED (no ticket)');
+      syncJiraExtras(button, result, false);
       return;
     }
     button.setAttribute('aria-label', `Open ${serial} in Jira`);
     const failedAt = Number(button.dataset.failedAt) || 0;
     const pretest = button.dataset.pretest === '1';
+    if (
+      pretest &&
+      result &&
+      result.state === 'waiting' &&
+      failedAt &&
+      Date.now() - failedAt >= JIRA_CREATE_BY_HAND_MS
+    ) {
+      result = { ...result, state: 'noticket' };
+    }
     let cls = 'eve-alert-jira';
     let text = 'Jira';
     let tip = `Search Jira for ${serial}`;
@@ -1146,22 +1273,33 @@
           : 'The Jira bot has not raised the ticket for this ' + 'failure yet.') +
         `\n${jiraUsualText(failedAt)}` +
         '\nChecking regularly \u{2014} click to open it the moment it ' +
-        'exists, or to search Jira.';
+        'exists, or to search Jira.' +
+        (failedAt ? `\n${jiraPuttyTip(serial, failedAt)}` : '');
     } else if (result && result.state === 'noticket') {
       cls += ' eve-jira-noticket';
-      text = 'No ticket';
+      // Pre-test fails do not get a ticket automatically: say what to do,
+      // with a tracing yellow outline until acknowledged (hover + 10 s).
+      const testRunning = testViewRunningCached(serial) === true;
+      text = pretest ? (testRunning ? 'No ticket (re-testing)' : 'No ticket (create one)') : 'No ticket';
+      if (pretest && !testRunning && !jiraAttentionSeen(serial, failedAt, 'attn')) {
+        cls += ' eve-jira-attn';
+      }
+      // Keep TestView's answer fresh (cached 60 s); repaint if it changed.
+      const painted = result;
+      testViewRunning(serial).then(now => {
+        if (now !== null && now !== testRunning && button.isConnected) {
+          paintJiraButton(button, serial, painted);
+        }
+      });
       tip =
-        `No Jira ticket was raised in the ${jiraMinutesSince(failedAt)} min ` +
-        'since this failure (they usually appear within ' +
-        `${JIRA_TICKET_USUAL_MAX} min)` +
-        (pretest ? ' \u{2014} common for pre-test fails.' : '.') +
+        `${jiraPuttyTip(serial, failedAt)}\n` +
+        (pretest ? 'Pre-test fails often get no ticket automatically. ' : '') +
         (jiraStillChecking(failedAt)
-          ? ' Still checking every few minutes until ' +
+          ? 'Still checking Jira every few minutes until ' +
             `${new Date(failedAt + JIRA_TICKET_LATE_MS).toLocaleTimeString()} ` +
             'in case one is raised late.'
           : '') +
-        '\nClick to search Jira: most recently updated or most ' +
-        'recently created.';
+        '\nClick for the PuTTY command and the Jira searches.';
     } else if (result && result.state === 'none') {
       cls += ' eve-jira-none';
       tip =
@@ -1179,17 +1317,147 @@
     if (label) {
       setTextIfChanged(label, text);
     }
+    syncJiraExtras(button, result, loading);
+  }
+
+  // Copy control and "new ticket" badge. Both hang off the paint, which runs
+  // on every lookup / rescan / card update, so they must be idempotent: the
+  // badge fires only on a real no-ticket -> ticket change of THIS chip (not
+  // a repaint, not the same key again, not a card that was found at first
+  // look), and there is never more than one of either element.
+  function syncJiraExtras(button, result, loading) {
+    const found =
+      !loading && !!result && result.state === 'found' && JIRA_KEY_PATTERN.test(String(result.key));
+    const copy = button.parentElement
+      ? button.parentElement.querySelector('.eve-jira-copy')
+      : null;
+    if (copy) {
+      copy.hidden = !found;
+      const link = found ? jiraIssueUrl(result.key) : '';
+      if (found && copy.dataset.link !== link) {
+        copy.dataset.link = link;
+        copy.title = `Copy link: ${link}`;
+        copy.setAttribute('aria-label', `Copy link to Jira ticket ${result.key}`);
+      }
+    }
+    if (!loading && result && JIRA_PENDING_STATES.indexOf(result.state) !== -1) {
+      button.dataset.wasPending = '1';
+    }
+    const serial = button.dataset.serial || '';
+    const failedAt = Number(button.dataset.failedAt) || 0;
+    if (found && button.dataset.noticedKey !== result.key) {
+      if (button.dataset.wasPending === '1') {
+        // A real no-ticket -> ticket change seen by this chip: remember it,
+        // so it survives reloads until acknowledged.
+        setJiraAttention(serial, failedAt, 'new', { state: 'new', key: result.key });
+      }
+      button.dataset.noticedKey = result.key;
+      button.dataset.wasPending = '';
+    }
+    const mark = found ? jiraAttention(serial, failedAt, 'new') : null;
+    const badge = button.querySelector('.eve-jira-new');
+    if (mark && mark.state === 'new' && mark.key === result.key) {
+      showJiraNewBadge(button, result.key);
+    } else if (badge && (!found || (mark && mark.state === 'seen'))) {
+      clearJiraNewBadge(badge);
+    }
+    // The paint rewrites the chip's class list; keep the glow with the badge.
+    button.classList.toggle('eve-jira-fresh', !!button.querySelector('.eve-jira-new'));
+  }
+
+  // ---- attention marks, per failure (serial + failure time), all tabs ----
+  function jiraAttentionId(serial, failedAt, kind) {
+    return `${serial}|${failedAt}|${kind}`;
+  }
+
+  function readJiraAttention() {
+    const map = readJSON(localStorage, JIRA_ATTENTION_KEY, {}, 'Jira attention marks');
+    return map && typeof map === 'object' ? map : {};
+  }
+
+  function jiraAttention(serial, failedAt, kind) {
+    if (!serial || !failedAt) {
+      return null;
+    }
+    return readJiraAttention()[jiraAttentionId(serial, failedAt, kind)] || null;
+  }
+
+  function jiraAttentionSeen(serial, failedAt, kind) {
+    const mark = jiraAttention(serial, failedAt, kind);
+    return !!mark && mark.state === 'seen';
+  }
+
+  function setJiraAttention(serial, failedAt, kind, mark) {
+    if (!serial || !failedAt) {
+      return;
+    }
+    const map = readJiraAttention();
+    const now = Date.now();
+    Object.keys(map).forEach(id => {
+      if (!map[id] || now - (Number(map[id].at) || 0) > JIRA_ATTENTION_TTL_MS) {
+        delete map[id];
+      }
+    });
+    map[jiraAttentionId(serial, failedAt, kind)] = { ...mark, at: now };
+    writeJSON(localStorage, JIRA_ATTENTION_KEY, map, 'Jira attention marks');
+  }
+
+  function clearJiraNewBadge(badge) {
+    if (!badge.isConnected) {
+      return;
+    }
+    const chip = badge.parentElement;
+    badge.remove();
+    if (chip) {
+      chip.classList.remove('eve-jira-fresh');
+    }
+  }
+
+  function showJiraNewBadge(button, key) {
+    if (button.querySelector('.eve-jira-new')) {
+      return;
+    }
+    const badge = document.createElement('span');
+    badge.className = 'eve-jira-new';
+    badge.textContent = '!';
+    badge.title = `New: ${key} was just raised for this failure`;
+    badge.setAttribute('aria-label', `New Jira ticket ${key}`);
+    button.appendChild(badge);
+    button.classList.add('eve-jira-fresh');
+    devLog(`${key} marked as new on its card until acknowledged.`);
   }
 
   function buildJiraButton(serial) {
     const button = document.createElement('a');
     button.className = 'eve-alert-jira';
+    button.dataset.serial = serial;
     button.target = '_blank';
     button.rel = 'noopener noreferrer';
     button.innerHTML =
       '<span class="eve-jira-dot" aria-hidden="true"></span>' +
       '<span class="eve-jira-label">Jira</span>' +
       JIRA_ICON_SVG;
+    // First hover acknowledges the "new ticket" glow and the pre-test
+    // outline; each fades JIRA_HOVER_FADE_MS later (armed once, not per hover).
+    // Acknowledged for good (stored): neither comes back after a reload.
+    button.addEventListener('mouseenter', () => {
+      const failedAt = Number(button.dataset.failedAt) || 0;
+      const badge = button.querySelector('.eve-jira-new');
+      if (badge && !badge.dataset.hovered) {
+        badge.dataset.hovered = '1';
+        setTimeout(() => {
+          setJiraAttention(serial, failedAt, 'new', { state: 'seen' });
+          clearJiraNewBadge(badge);
+        }, JIRA_NEW_FADE_MS);
+      }
+      if (button.classList.contains('eve-jira-attn') && !button.dataset.attnArmed) {
+        button.dataset.attnArmed = '1';
+        setTimeout(() => {
+          setJiraAttention(serial, failedAt, 'attn', { state: 'seen' });
+          button.classList.remove('eve-jira-attn');
+        }, JIRA_HOVER_FADE_MS);
+      }
+    });
     button.addEventListener('click', event => {
       if (button.dataset.passed === '1') {
         event.preventDefault();
@@ -1235,6 +1503,30 @@
     });
     return button;
   }
+  const JIRA_COPY_IDLE = '\u{29c9}';
+
+  // Chip + copy control, built once per card. The copy control copies the
+  // ticket's full Jira link and stays hidden until the chip shows a real
+  // ticket (syncJiraExtras).
+  function buildJiraGroup(serial) {
+    const group = document.createElement('span');
+    group.className = 'eve-jira-group';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'eve-jira-copy';
+    copy.hidden = true;
+    copy.innerHTML = `<span class="eve-alert-copy-hint">${JIRA_COPY_IDLE}</span>`;
+    copy.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (copy.dataset.link) {
+        copyToClipboard(copy.dataset.link, copy, JIRA_COPY_IDLE);
+      }
+    });
+    group.appendChild(buildJiraButton(serial));
+    group.appendChild(copy);
+    return group;
+  }
   const JIRA_TAB_CSS =
     '.eve-opts{display:grid;gap:10px;margin-top:22px;}' +
     '.eve-opt{display:block;padding:12px 16px;border-radius:10px;' +
@@ -1255,15 +1547,33 @@
     'box-shadow:none;transform:scale(.99);transition-duration:.05s;}' +
     '.eve-opt:active .eve-opt-label{color:#8aa9d4;transition-duration:.05s;}' +
     '.eve-opt:active .eve-opt-note{color:#7a8089;transition-duration:.05s;}' +
+    '.eve-howto{margin-top:18px;padding:12px 16px;border-radius:10px;' +
+    'border:1px solid rgba(250,204,21,.45);background:rgba(250,204,21,.07);color:#e8eaed;}' +
+    '.eve-howto-row{display:flex;align-items:center;gap:10px;margin-top:8px;}' +
+    '.eve-howto code{font:600 15px Consolas,monospace;color:#fde68a;background:#0f1013;' +
+    'padding:4px 10px;border-radius:6px;user-select:all;}' +
+    '.eve-howto-note{margin-top:10px;color:#b9c0c9;font-size:13px;}' +
+    '.eve-howto-plain .eve-howto-row{display:inline;}' +
+    '.eve-howto-link{margin-top:6px;}.eve-howto-link a{color:#7f9cc4;}' +
+    '.eve-howto-link a:hover{color:#dbe9ff;}' +
+    '.eve-howto-plain .eve-howto-cmd{font:600 13px Consolas,monospace;color:#e8eaed;' +
+    'background:#0f1013;border:1px solid rgba(255,255,255,.14);border-radius:5px;' +
+    'padding:1px 7px;user-select:all;}' +
+    '.eve-howto-plain button{margin-left:8px;padding:0;border:0;background:none;' +
+    'color:#7f9cc4;font:inherit;text-decoration:underline;cursor:pointer;}' +
+    '.eve-howto button{font:600 12px Segoe UI,Arial,sans-serif;color:#fde68a;cursor:pointer;' +
+    'background:rgba(250,204,21,.15);border:1px solid rgba(250,204,21,.5);border-radius:6px;padding:4px 10px;}' +
     '@media (prefers-reduced-motion:reduce){' +
     '.eve-opt,.eve-opt-label,.eve-opt-note{transition:none;}' +
     '.eve-opt:active{transform:none;}}';
 
-  function writeJiraTab(tab, title, lines, links) {
+  // howto (optional): { text, command } - an instruction box with the exact
+  // command to send and a Copy button (pre-test fails: create by PuTTY).
+  function writeJiraTab(tab, title, lines, links, howto) {
     const list = links || [];
     try {
       const doc = tab.document;
-      const signature = JSON.stringify([title, lines, list]);
+      const signature = JSON.stringify([title, lines, list, howto || null]);
       if (doc.__eveTabSignature === signature) {
         return;
       }
@@ -1289,6 +1599,60 @@
         }
         return row;
       });
+      if (howto) {
+        // plain: one line of ordinary text (before 15 min); otherwise the
+        // highlighted gold box.
+        const box = doc.createElement('div');
+        box.className = howto.plain ? 'eve-howto-plain' : 'eve-howto';
+        box.textContent = howto.text;
+        const row = doc.createElement(howto.plain ? 'span' : 'div');
+        row.className = 'eve-howto-row';
+        const code = doc.createElement(howto.plain ? 'span' : 'code');
+        code.className = 'eve-howto-cmd';
+        code.textContent = howto.command;
+        const copy = doc.createElement('button');
+        copy.type = 'button';
+        copy.textContent = 'Copy';
+        copy.addEventListener('click', () => {
+          const done = ok => {
+            copy.textContent = ok ? '\u{2713} Copied' : 'Select and copy';
+            setTimeout(() => {
+              copy.textContent = 'Copy';
+            }, 2000);
+          };
+          const clip = tab.navigator && tab.navigator.clipboard;
+          if (clip && clip.writeText) {
+            clip.writeText(howto.command).then(
+              () => done(true),
+              () => done(false)
+            );
+          } else {
+            done(false);
+          }
+        });
+        if (howto.plain) {
+          box.appendChild(doc.createTextNode(' '));
+        }
+        row.appendChild(code);
+        row.appendChild(copy);
+        box.appendChild(row);
+        if (howto.link) {
+          const line = doc.createElement('div');
+          line.className = 'eve-howto-link';
+          const a = doc.createElement('a');
+          a.href = howto.link.href;
+          a.textContent = howto.link.text;
+          line.appendChild(a);
+          box.appendChild(line);
+        }
+        if (howto.note) {
+          const note = doc.createElement('div');
+          note.className = 'eve-howto-note';
+          note.textContent = howto.note;
+          box.appendChild(note);
+        }
+        rows.push(box);
+      }
       if (list.length) {
         const options = doc.createElement('div');
         options.className = 'eve-opts';
@@ -1323,8 +1687,10 @@
     }
   }
 
-  function writeJiraWaitPage(tab, serial, failedAt, pretest) {
-    const expecting = jiraExpecting(failedAt);
+  function writeJiraWaitPage(tab, serial, failedAt, pretest, running) {
+    // Any failure: from 15 min without a ticket, say how to raise one.
+    const createByHand = Date.now() - failedAt >= JIRA_CREATE_BY_HAND_MS;
+    const expecting = jiraExpecting(failedAt) && !createByHand;
     const key = jiraLatestKey(serial);
     const time = ms => new Date(ms).toLocaleTimeString();
     const lines = [
@@ -1345,7 +1711,67 @@
         text: 'Most recently created',
         note: `Tickets for ${serial}, newest first`
       }
-    ]);
+    ], ticketHowTo(serial, failedAt, running));
+  }
+
+  // How to raise a missing ticket by hand (PuTTY). Before 15 min: one plain
+  // line with the time; from 15 min: the highlighted gold box.
+  function jiraByHandDue(failedAt) {
+    return new Date(failedAt + JIRA_CREATE_BY_HAND_MS).toLocaleTimeString([], {
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+  }
+
+  function ticketHowTo(serial, failedAt, running) {
+    const command = `ticket ${serial}`;
+    if (running === true) {
+      // PuTTY would refuse it now - never prompt for a ticket mid-test.
+      return {
+        plain: true,
+        text:
+          'This server failed and is being re-tested now (TestView 2.0: RUNNING), so ' +
+          'PuTTY cannot create a ticket yet. If it fails again, after the test finishes use:',
+        command: command,
+        link: testViewRunUrl(serial)
+          ? { href: testViewRunUrl(serial), text: 'Open this run in TestView 2.0' }
+          : null
+      };
+    }
+    if (Date.now() - failedAt < JIRA_CREATE_BY_HAND_MS) {
+      return {
+        plain: true,
+        text: `If there is no ticket by ${jiraByHandDue(failedAt)}, please open PuTTY and create one with:`,
+        command: command
+      };
+    }
+    return {
+      text:
+        `It has been more than ${JIRA_CREATE_BY_HAND_MS / 60000} minutes` +
+        (running === false ? ', the server is not running,' : '') +
+        ' and no ticket has been created. Please make one in PuTTY:',
+      command: command
+    };
+  }
+
+  function jiraPuttyTip(serial, failedAt) {
+    if (testViewRunningCached(serial) === true) {
+      return (
+        'Re-testing now (TestView 2.0: RUNNING) - PuTTY cannot create a ticket until ' +
+        `it finishes. If it fails again: ticket ${serial}`
+      );
+    }
+    if (Date.now() - failedAt < JIRA_CREATE_BY_HAND_MS) {
+      return (
+        `If there is no ticket by ${jiraByHandDue(failedAt)}, please open PuTTY and ` +
+        `create one with: ticket ${serial}`
+      );
+    }
+    return (
+      `It has been more than ${JIRA_CREATE_BY_HAND_MS / 60000} minutes` +
+      (testViewRunningCached(serial) === false ? ', the server is not running,' : '') +
+      ` and no ticket has been created - please make one in PuTTY: ticket ${serial}`
+    );
   }
 
   async function followJiraInTab(tab, serial, failedAt, pretest) {
@@ -1381,7 +1807,12 @@
           return;
         }
       }
-      writeJiraWaitPage(tab, serial, failedAt, pretest);
+      const running =
+        Date.now() - failedAt >= JIRA_CREATE_BY_HAND_MS ? await testViewRunning(serial) : null;
+      if (!jiraTabIsWaiting(tab)) {
+        return;
+      }
+      writeJiraWaitPage(tab, serial, failedAt, pretest, running);
       if (!jiraStillChecking(failedAt)) {
         return;
       }
@@ -3317,6 +3748,9 @@
     if (statesDirty) {
       savePreviousStates();
     }
+    if (headerCount && !slotErrors) {
+      markGoneCards(groups, seenKeys);
+    }
     if (headerCount) {
       lastSectionCounts = sectionCounts;
       renderSectionCounts();
@@ -3768,18 +4202,24 @@
     );
   }
 
+  // The shift a session starting at `date` most likely belongs to: the one
+  // whose LOG WINDOW opened most recently (start - SHIFT_EARLY_MIN, the same
+  // early margin the log uses) among those still open. Near a boundary the
+  // incoming shift wins - someone starting at 9:40 PM is a Graveyard tester
+  // arriving early, not a Swing tester, and 6:00 AM is Day, not the tail of
+  // Graveyard. Outside every window, the next shift to open.
   function guessShift(date) {
     const now = date.getHours() * 60 + date.getMinutes();
     const ids = Object.keys(SHIFTS);
-    const since = id => (now - shiftMinutes(SHIFTS[id].start) + 1440) % 1440;
-    const until = id => (shiftMinutes(SHIFTS[id].start) - now + 1440) % 1440;
-    const running = ids
-      .filter(id => since(id) < shiftLengthMin(SHIFTS[id]))
-      .sort((a, b) => since(a) - since(b));
-    if (running.length) {
-      return running[0];
+    const opens = id => shiftMinutes(SHIFTS[id].start) - SHIFT_EARLY_MIN;
+    const sinceOpen = id => (((now - opens(id)) % 1440) + 1440) % 1440;
+    const open = ids
+      .filter(id => sinceOpen(id) < SHIFT_EARLY_MIN + shiftLengthMin(SHIFTS[id]))
+      .sort((a, b) => sinceOpen(a) - sinceOpen(b));
+    if (open.length) {
+      return open[0];
     }
-    return ids.sort((a, b) => until(a) - until(b))[0];
+    return ids.sort((a, b) => 1440 - sinceOpen(a) - (1440 - sinceOpen(b)))[0];
   }
 
   // ===== AUTO LOG SHIFT =====
@@ -4038,7 +4478,7 @@
 
   function loadAlertLogFromStorage() {
     const parsed = readJSON(localStorage, ALERT_LOG_KEY, null, 'Alert log');
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter(isRecordObject) : [];
   }
 
   function getAlertLog() {
@@ -4740,9 +5180,10 @@
     }
   }
 
-  // ===== COPY SERIAL TO CLIPBOARD =====
+  // ===== COPY TO CLIPBOARD =====
 
-  function copySerialToClipboard(serial, buttonEl) {
+  // Serial numbers and Jira keys. `idle` is the hint text to restore.
+  function copyToClipboard(text, buttonEl, idle) {
     function showCopied(ok) {
       if (!buttonEl) {
         return;
@@ -4754,7 +5195,7 @@
       hint.textContent = ok ? '\u{2713} copied' : '\u{2715} failed';
       buttonEl.classList.add(ok ? 'eve-copied' : 'eve-copy-failed');
       setTimeout(() => {
-        hint.textContent = '\u{29c9} copy';
+        hint.textContent = idle || '\u{29c9} copy';
         buttonEl.classList.remove('eve-copied', 'eve-copy-failed');
       }, 1500);
     }
@@ -4762,7 +5203,7 @@
     function fallbackCopy() {
       try {
         const textarea = document.createElement('textarea');
-        textarea.value = serial;
+        textarea.value = text;
         textarea.style.position = 'fixed';
         textarea.style.opacity = '0';
         let ok = false;
@@ -4773,7 +5214,7 @@
           document.body.removeChild(textarea);
         });
         showCopied(ok);
-        devLog(`Serial ${serial} copied (fallback method).`);
+        devLog(`${text} copied (fallback method).`);
       } catch (error) {
         showCopied(false);
         fail('Clipboard copy failed:', error);
@@ -4781,10 +5222,10 @@
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard
-        .writeText(serial)
+        .writeText(text)
         .then(() => {
           showCopied(true);
-          devLog(`Serial ${serial} copied to clipboard.`);
+          devLog(`${text} copied to clipboard.`);
         })
         .catch(fallbackCopy);
     } else {
@@ -4855,7 +5296,7 @@
 
   function loadActiveAlerts() {
     const parsed = readJSON(sessionStorage, ACTIVE_ALERTS_KEY, null, 'Active alert');
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed.filter(isRecordObject) : [];
   }
 
   function saveActiveAlerts(alerts) {
@@ -4958,7 +5399,13 @@
     if (!alerts.length) {
       return;
     }
-    alerts.forEach(record => renderAlertElement(record, false));
+    alerts.forEach(record => {
+      try {
+        renderAlertElement(record, false);
+      } catch (error) {
+        warn('Skipped a saved alert that could not be shown:', error);
+      }
+    });
     log(`Restored ${alerts.length} alert(s) that survived the page refresh.`);
     const stale = alerts.filter(needsReconfirmation);
     if (!stale.length) {
@@ -4969,6 +5416,49 @@
         'unverified phase or an unresolved result.'
     );
     stale.forEach(record => reconfirmRecord(record));
+  }
+
+  // ===== CARDS WHOSE SERVER HAS LEFT ITS SLOT =====
+  // A card can outlive its server: the unit is pulled or swapped and its
+  // cell now holds another serial, or nothing. Such a card is struck
+  // through and tagged, not removed (it is still the record of what
+  // happened). Only for columns this page shows - a card from a rack not
+  // on this page is left alone. A retest (same serial, new colour) is not
+  // "gone".
+  function markGoneCards(groups, seenKeys) {
+    const columns = new Set();
+    groups.forEach(group => group.headers.forEach(h => columns.add(`${h.section}|${h.eve}`)));
+    document.querySelectorAll('#eve-alert-body .eve-alert[data-slot]').forEach(card => {
+      const slot = card.dataset.slot;
+      const serial = card.dataset.serial;
+      if (!slot || !serial || !columns.has(slot.split('|').slice(0, 2).join('|'))) {
+        return;
+      }
+      const now = seenKeys.has(slot) ? previousStates.get(slot) : null;
+      const gone = !now || now.serial !== serial;
+      card.classList.toggle('eve-alert-gone', gone);
+      // The tag takes the copy hint's place in the serial box, and copying
+      // is off: the serial is no longer in the rack. Jira and TestView stay.
+      const serialBox = card.querySelector('button.eve-alert-serial');
+      if (serialBox) {
+        serialBox.disabled = gone;
+        serialBox.title = gone ? '' : 'Click to copy serial number';
+      }
+      let tag = card.querySelector('.eve-gone-tag');
+      if (gone && !tag && serialBox) {
+        tag = document.createElement('span');
+        tag.className = 'eve-gone-tag';
+        tag.textContent = 'Removed from rack';
+        serialBox.appendChild(tag);
+      } else if (!gone && tag) {
+        tag.remove();
+      }
+      if (gone && tag) {
+        tag.title =
+          `${serial} is no longer in ${slot.split('|').join(' \u{2022} ')}` +
+          (now && now.serial ? ` (now ${now.serial}).` : ' (the slot is empty).');
+      }
+    });
   }
 
   // ===== CREATE PERSISTENT IN-PAGE ALERT =====
@@ -5192,6 +5682,9 @@
         : 'Click anywhere on this alert to open Server Detail';
     }
     alert.dataset.alertId = record.id;
+    alert.dataset.slot =
+      record.section && record.eve && record.unit ? `${record.section}|${record.eve}|${record.unit}` : '';
+    alert.dataset.serial = record.serial || '';
     alert.dataset.debug = isDebugData(record) ? '1' : '0';
     alert.dataset.search = `${record.serial || ''} ${record.location || ''}`;
     const ts = Number(record.ts) || 0;
@@ -5241,14 +5734,14 @@ ${escapeHtml(formatRelativeTime(ts))}
 </div>
 `;
     if (record.serial) {
-      alert.querySelector('.eve-alert-footer').appendChild(buildJiraButton(record.serial));
+      alert.querySelector('.eve-alert-footer').appendChild(buildJiraGroup(record.serial));
     }
     if (clickable) {
       alert.addEventListener('click', event => {
         if (
           event.target.closest('.eve-alert-serial') ||
           event.target.closest('.eve-alert-close') ||
-          event.target.closest('.eve-alert-jira')
+          event.target.closest('.eve-jira-group')
         ) {
           return;
         }
@@ -5263,7 +5756,7 @@ ${escapeHtml(formatRelativeTime(ts))}
     const serialButton = alert.querySelector('button.eve-alert-serial');
     if (serialButton && record.serial) {
       serialButton.addEventListener('click', () =>
-        copySerialToClipboard(record.serial, serialButton)
+        copyToClipboard(record.serial, serialButton)
       );
     }
     container.insertBefore(alert, container.firstChild);
@@ -6061,18 +6554,6 @@ title="Detection is healthy.">OK</span>
 </div>
 <div id="eve-ui-page-main"
 class="eve-ui-page eve-ui-page-active">
-<div id="eve-sleep-banner" class="eve-sleep-banner" role="status" hidden>
-<span class="eve-sleep-icon" aria-hidden="true">\u{23f0}</span>
-<div class="eve-sleep-text">
-<div class="eve-sleep-title"></div>
-<div class="eve-sleep-when"></div>
-<div class="eve-sleep-how"></div>
-</div>
-<div class="eve-sleep-actions">
-<button type="button" class="eve-sleep-close" title="Dismiss" aria-label="Dismiss">\u{d7}</button>
-<button type="button" class="eve-sleep-copy" title="Copy this site's address to paste into the browser setting">Copy site</button>
-</div>
-</div>
 <div class="eve-section-title">
 Tracker Controls
 </div>
@@ -6846,47 +7327,6 @@ aria-label="Notifications for ${escapeHtml(section)}"
   background: linear-gradient(90deg, #16a34a, #4ade80);
   transition: width .2s linear;
 }
-.eve-sleep-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 9px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(245, 158, 11, .45);
-  background: rgba(245, 158, 11, .1);
-  font-size: 12px;
-  line-height: 1.4;
-}
-.eve-sleep-banner[hidden] { display: none; }
-.eve-sleep-icon { flex: 0 0 auto; font-size: 16px; line-height: 1.2; }
-.eve-sleep-text { flex: 1 1 auto; min-width: 0; }
-.eve-sleep-title { font-weight: 700; color: #fcd34d; }
-.eve-sleep-when { color: var(--eve-muted); }
-.eve-sleep-how { margin-top: 3px; color: var(--eve-text); }
-.eve-sleep-actions { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.eve-sleep-close {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: #fcd34d;
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-.eve-sleep-copy {
-  padding: 3px 8px;
-  border: 1px solid rgba(245, 158, 11, .5);
-  border-radius: 6px;
-  background: rgba(245, 158, 11, .15);
-  color: #fde68a;
-  font-family: var(--eve-font);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.eve-sleep-copy:hover { background: rgba(245, 158, 11, .28); }
 .eve-refresh-status {
   font-family: var(--eve-mono);
   font-size: 10.5px;
@@ -7277,12 +7717,58 @@ to { opacity: 1; transform: none; }
   border-color: rgba(var(--eve-accent-rgb), .55);
   box-shadow: inset 3px 0 0 var(--eve-accent), 0 2px 4px rgba(0, 0, 0, .35), 0 10px 24px rgba(0, 0, 0, .3);
 }
-.eve-alert.eve-alert-aged {
-  filter: brightness(.6) saturate(.55);
-  transition: filter .25s ease, border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+/* Old cards dim under a darkening layer (40% black + desaturate = the old
+   brightness(.6) saturate(.55) filter). A layer, not a filter on the card,
+   so the Jira chip can sit above it: a pre-test chip with its gold
+   "create one" outline stays bright on an old card until acknowledged. */
+.eve-alert.eve-alert-gone { border-style: dashed; }
+.eve-alert-gone .eve-alert-serial-value,
+.eve-alert-gone .eve-alert-header > span:first-child,
+.eve-alert-gone .eve-alert-loc {
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+  text-decoration-color: rgba(232, 234, 237, .55);
+  opacity: .6;
 }
-.eve-alert.eve-alert-aged:hover { filter: none; }
-@media (prefers-reduced-motion: reduce) { .eve-alert.eve-alert-aged { transition: none; }
+.eve-alert-gone button.eve-alert-serial { cursor: default; }
+.eve-alert-gone button.eve-alert-serial:hover { background: rgba(0, 0, 0, .3); border-color: transparent; }
+.eve-alert-gone .eve-alert-serial .eve-alert-copy-hint { display: none; }
+.eve-gone-tag {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--eve-line-strong);
+  background: rgba(255, 255, 255, .06);
+  color: var(--eve-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.eve-alert.eve-alert-aged { isolation: isolate; }
+.eve-alert.eve-alert-aged::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  border-radius: inherit;
+  background: rgba(0, 0, 0, .4);
+  -webkit-backdrop-filter: saturate(.55);
+  backdrop-filter: saturate(.55);
+  pointer-events: none;
+  transition: opacity .25s ease;
+}
+.eve-alert.eve-alert-aged:hover::after { opacity: 0; }
+/* Lifted above the layer, on the card's own base colour, so its translucent
+   fill blends exactly as on an undimmed card. */
+.eve-alert.eve-alert-aged .eve-jira-group:has(.eve-jira-attn) {
+  position: relative;
+  z-index: 2;
+  border-radius: 999px;
+  background: #1c1d22;
+}
+@media (prefers-reduced-motion: reduce) { .eve-alert.eve-alert-aged::after { transition: none; }
 }
 .eve-success { --eve-accent: #09e68a; --eve-accent-rgb: 9, 230, 138; }
 .eve-failure { --eve-accent: #e60956; --eve-accent-rgb: 230, 9, 86; }
@@ -7425,6 +7911,79 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
 }
 .eve-alert-jira:hover { background: #0c66e4; border-color: #0c66e4; color: #fff; text-decoration: none; }
 .eve-alert-jira:focus-visible { outline: 2px solid #4c9aff; outline-offset: 2px; }
+.eve-jira-group { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; }
+.eve-jira-group .eve-alert-jira { position: relative; }
+.eve-jira-copy {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.eve-jira-copy[hidden] { display: none; }
+.eve-jira-copy .eve-alert-copy-hint { padding: 4px 8px; }
+.eve-jira-copy:hover .eve-alert-copy-hint { color: var(--eve-text); background: rgba(255, 255, 255, .1); }
+.eve-jira-copy:focus-visible { outline: 2px solid #4c9aff; outline-offset: 1px; border-radius: 999px; }
+.eve-jira-copy.eve-copied .eve-alert-copy-hint { color: #86efac; background: rgba(34, 197, 94, .16); }
+.eve-jira-copy.eve-copy-failed .eve-alert-copy-hint { color: #fca5a5; background: rgba(239, 68, 68, .16); }
+.eve-jira-new {
+  position: absolute;
+  top: -6px;
+  right: -5px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #22c55e;
+  color: #052e16;
+  box-shadow: 0 0 0 2px #141518;
+  font-family: var(--eve-font);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 15px;
+  text-align: center;
+  animation: eve-jira-new-pulse 1.6s ease-out 3;
+}
+@keyframes eve-jira-new-pulse {
+  0% { box-shadow: 0 0 0 2px #141518, 0 0 0 2px rgba(34, 197, 94, .6); }
+  100% { box-shadow: 0 0 0 2px #141518, 0 0 0 9px rgba(34, 197, 94, 0); }
+}
+/* Pre-test "No ticket (create one)": a yellow light traces the outline. */
+@property --eve-trace-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+.eve-alert-jira.eve-jira-attn { position: relative; border-color: rgba(250, 204, 21, .35); }
+.eve-alert-jira.eve-jira-attn::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  padding: 2px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--eve-trace-angle), transparent 0 62%,
+    rgba(250, 204, 21, .15) 72%, #facc15 88%, rgba(250, 204, 21, .15) 96%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  filter: drop-shadow(0 0 3px rgba(250, 204, 21, .7));
+  animation: eve-jira-trace 2.4s linear infinite;
+  pointer-events: none;
+}
+@keyframes eve-jira-trace { to { --eve-trace-angle: 360deg; } }
+/* The whole chip glows green while the ticket is new (same lifetime as the badge). */
+.eve-alert-jira.eve-jira-fresh {
+  border-color: rgba(34, 197, 94, .85);
+  color: #bbf7d0;
+  animation: eve-jira-fresh-glow 1.8s ease-in-out infinite;
+}
+@keyframes eve-jira-fresh-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, .15), 0 0 4px rgba(34, 197, 94, .25); }
+  50% { box-shadow: 0 0 0 3px rgba(34, 197, 94, .28), 0 0 14px rgba(34, 197, 94, .55); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eve-jira-new { animation: none; }
+  .eve-alert-jira.eve-jira-fresh { animation: none; box-shadow: 0 0 10px rgba(34, 197, 94, .5); }
+  .eve-alert-jira.eve-jira-attn::before { animation: none; }
+}
 .eve-jira-ext { flex: 0 0 auto; opacity: .85; }
 .eve-jira-dot {
   flex: 0 0 auto;
@@ -7523,6 +8082,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       startMasterTick();
       startCountdownAnimation();
       holdKeepAliveLock();
+      holdScreenWakeLock();
       wireSleepDetection();
       observePage();
       window.addEventListener('beforeunload', () => {
@@ -7541,6 +8101,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
           return;
         }
         blindScans = 0;
+        holdScreenWakeLock();
         restartAutoRefresh();
         scan();
       });
@@ -7594,18 +8155,16 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   // ===== KEEP AWAKE + SLEEP DETECTION =====
   const HEARTBEAT_EVERY_TICKS = 5;
   const SLEEP_GAP_MS = 120000;
-  const SLEEP_BANNER_MIN_MS = 30000;
-  const SLEEP_TOAST_MIN_MS = 60000;
-  const SLEEP_TOAST_INTERVAL_MS = 600000;
   const keepAwake = {
     lock: 'not tried',
+    screen: 'not tried',
     ticker: 'not started'
   };
+  let screenWakeLock = null;
   let lastTickAt = 0;
   let frozenAt = 0;
   let sleepCount = 0;
   let lastSleep = null;
-  let lastSleepToastAt = 0;
 
   function writeHeartbeat(now) {
     try {
@@ -7637,6 +8196,37 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         keepAwake.lock = 'failed';
         renderKeepAwakeStatus();
         devLog('Keep-alive Web Lock failed:', error);
+      });
+  }
+
+  // Screen Wake Lock: while the tracker tab is the one on screen, the display
+  // and the PC do not go to sleep (a sleeping PC runs nothing). The browser
+  // drops it whenever the tab is hidden, so it is re-taken each time the tab
+  // is visible again (initialize's visibilitychange handler, noteWake).
+  function holdScreenWakeLock() {
+    if (!navigator.wakeLock || typeof navigator.wakeLock.request !== 'function') {
+      keepAwake.screen = window.isSecureContext ? 'unsupported' : 'unavailable (page is not https)';
+      renderKeepAwakeStatus();
+      return;
+    }
+    if (document.hidden || (screenWakeLock && !screenWakeLock.released)) {
+      return;
+    }
+    navigator.wakeLock
+      .request('screen')
+      .then(lock => {
+        screenWakeLock = lock;
+        keepAwake.screen = 'held';
+        lock.addEventListener('release', () => {
+          keepAwake.screen = 'released (tab hidden)';
+          renderKeepAwakeStatus();
+        });
+        renderKeepAwakeStatus();
+      })
+      .catch(error => {
+        keepAwake.screen = 'denied';
+        renderKeepAwakeStatus();
+        devLog('Screen wake lock not granted:', error);
       });
   }
 
@@ -7695,57 +8285,21 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     return ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))}s` : formatDuration(ms);
   }
 
-  function sleepFixPath() {
-    return /Edg\//.test(navigator.userAgent)
-      ? 'Edge Settings \u{203a} System and performance \u{203a} Performance'
-      : 'Chrome Settings \u{203a} Performance';
-  }
-
   function noteWake(kind, fromTs, toTs, refresh) {
     const sleptMs = fromTs ? Math.max(0, toTs - fromTs) : 0;
     sleepCount += 1;
     lastSleep = { kind: kind, from: fromTs, to: toTs };
-    warn(
-      `Tab was ${kind === 'discarded' ? 'put to sleep and unloaded' : 'asleep'}` +
+    // No banner and no notification: catch up immediately and quietly.
+    devLog(
+      `Tab was ${kind === 'discarded' ? 'unloaded' : 'asleep'}` +
         (sleptMs ? ` for ${formatSleep(sleptMs)}` : '') +
-        ' - nothing was tracked meanwhile. Catching up now. Keep this ' +
-        `site awake: ${sleepFixPath()} \u{203a} "Always keep these sites active".`
+        ' - catching up now.'
     );
     if (refresh) {
       refreshNow();
     }
-    if (!sleptMs ? kind === 'discarded' : sleptMs >= SLEEP_BANNER_MIN_MS) {
-      showSleepBanner(sleptMs, fromTs, toTs);
-    }
-    if (sleptMs >= SLEEP_TOAST_MIN_MS && Date.now() - lastSleepToastAt > SLEEP_TOAST_INTERVAL_MS) {
-      lastSleepToastAt = Date.now();
-      sendDesktopNotification(
-        'EVE TRACKER WAS ASLEEP \u{23f0}',
-        `The EVE tab was asleep for ${formatSleep(sleptMs)} - results ` +
-          'from that time were caught up late.\n' +
-          'Keep it awake: add this site to "Always keep these sites active".',
-        ICON_FAIL,
-        null
-      );
-    }
+    holdScreenWakeLock();
     renderKeepAwakeStatus();
-  }
-
-  function showSleepBanner(sleptMs, fromTs, toTs) {
-    const banner = document.getElementById('eve-sleep-banner');
-    if (!banner) {
-      return;
-    }
-    const time = ts => new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    banner.querySelector('.eve-sleep-title').textContent = sleptMs
-      ? `Tab was asleep ${formatSleep(sleptMs)}`
-      : 'Tab was put to sleep by the browser';
-    banner.querySelector('.eve-sleep-when').textContent = sleptMs
-      ? `${time(fromTs)} \u{2013} ${time(toTs)} \u{b7} caught up on wake`
-      : 'Caught up on wake';
-    banner.querySelector('.eve-sleep-how').textContent =
-      `Stop it: ${sleepFixPath()} \u{203a} Always keep these sites active \u{203a} Add`;
-    banner.hidden = false;
   }
 
   function renderKeepAwakeStatus() {
@@ -7761,7 +8315,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       : '0';
     setTextIfChanged(
       el,
-      `Keep-awake: lock ${keepAwake.lock} \u{2022} tick ${keepAwake.ticker} ` +
+      `Keep-awake: lock ${keepAwake.lock} \u{2022} screen ${keepAwake.screen} ` +
+        `\u{2022} tick ${keepAwake.ticker} ` +
         `\u{2022} sleeps ${sleeps}`
     );
   }
@@ -7783,30 +8338,6 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       const last = readHeartbeat();
       noteWake('discarded', last, Date.now(), false);
     }
-    const banner = document.getElementById('eve-sleep-banner');
-    if (banner) {
-      banner.querySelector('.eve-sleep-close').addEventListener('click', () => {
-        banner.hidden = true;
-      });
-      banner.querySelector('.eve-sleep-copy').addEventListener('click', event => {
-        const button = event.currentTarget;
-        const site = location.origin;
-        const done = ok => {
-          button.textContent = ok ? '\u{2713} Copied' : site;
-          setTimeout(() => {
-            button.textContent = 'Copy site';
-          }, 2000);
-        };
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(site).then(
-            () => done(true),
-            () => done(false)
-          );
-        } else {
-          done(false);
-        }
-      });
-    }
     renderKeepAwakeStatus();
   }
 
@@ -7827,6 +8358,25 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
 
   // ===== MASTER TICK =====
 
+  // One step that throws (every tick, say, on unexpected markup) must not
+  // skip the steps after it - the shift rollover and the watchdog share
+  // ticks with scan. Each failing step is reported once, until it recovers.
+  const failingTickSteps = new Set();
+
+  function runTickStep(name, fn) {
+    try {
+      fn();
+      if (failingTickSteps.delete(name)) {
+        log(`Tick step "${name}" recovered.`);
+      }
+    } catch (error) {
+      if (!failingTickSteps.has(name)) {
+        failingTickSteps.add(name);
+        fail(`Tick step "${name}" failed; the other steps keep running:`, error);
+      }
+    }
+  }
+
   function startMasterTick() {
     const SCAN_TICKS = 4;
     const RELATIVE_TICKS = 15;
@@ -7836,32 +8386,36 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     let tick = 0;
     startTicker(() => {
       const now = Date.now();
-      if (lastTickAt && now - lastTickAt > SLEEP_GAP_MS && !frozenAt) {
-        noteWake('paused', lastTickAt, now, true);
-      }
+      runTickStep('wake check', () => {
+        if (lastTickAt && now - lastTickAt > SLEEP_GAP_MS && !frozenAt) {
+          noteWake('paused', lastTickAt, now, true);
+        }
+      });
       lastTickAt = now;
-      if (autoRefreshTimer && autoRefreshDueAt && now > autoRefreshDueAt + 2000) {
-        fireAutoRefresh();
-      }
+      runTickStep('auto refresh', () => {
+        if (autoRefreshTimer && autoRefreshDueAt && now > autoRefreshDueAt + 2000) {
+          fireAutoRefresh();
+        }
+      });
       tick += 1;
-      updateRefreshCountdown();
+      runTickStep('countdown', updateRefreshCountdown);
       if (tick % HEARTBEAT_EVERY_TICKS === 0) {
         writeHeartbeat(now);
       }
       if (tick % SCAN_TICKS === 0) {
-        scan();
+        runTickStep('scan', () => scan());
       }
       if (tick % RELATIVE_TICKS === 0) {
-        refreshRelativeTimes();
+        runTickStep('relative times', refreshRelativeTimes);
       }
       if (tick % WATCHDOG_TICKS === 0) {
-        autoRefreshWatchdog();
+        runTickStep('watchdog', autoRefreshWatchdog);
       }
       if (tick % RECONFIRM_TICKS === 0) {
-        retryPendingConfirmations();
+        runTickStep('reconfirm', retryPendingConfirmations);
       }
       if (tick % LOG_SHIFT_TICKS === 0) {
-        checkLogShiftRollover();
+        runTickStep('log shift', checkLogShiftRollover);
       }
     });
   }
