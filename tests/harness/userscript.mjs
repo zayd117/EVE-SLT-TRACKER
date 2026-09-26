@@ -28,7 +28,8 @@ export const HOOK_NAMES = [
   'shiftWindowAt', 'guessShift', 'isDuplicateAlert', 'scan', 'performSoftRefresh',
   'getAlertLog', 'buildAlertLogCsv', 'buildAlertLogText',
   'buildTestViewUrl', 'isTestViewOrigin', 'readTestViewSerial', 'retryPendingConfirmations', 'isoDateParts',
-  'checkLogShiftRollover', 'setLogShiftChoice', 'currentShiftId'
+  'checkLogShiftRollover', 'setLogShiftChoice', 'currentShiftId',
+  'paintJiraButton', 'refreshCardTicket', 'refreshRelativeTimes', 'noteWake', 'writeJiraWaitPage', 'testViewRunning'
 ];
 
 const TAIL = '  bootstrap();\n})();';
@@ -102,6 +103,8 @@ export async function launchBrowser() {
 //
 // options.context  reuse another tm's browser context: a SECOND TAB of the same
 //                  browser session (shared localStorage, own sessionStorage).
+// options.prelude  extra source run in the 'tm' world before the script.
+// options.rawLocalStorage / rawSessionStorage  seed values stored verbatim.
 // options.copies   inject the script N times into the same tab, each in its own
 //                  world with its own GM_* stubs - like two installed copies.
 //                  World names: 'tm', 'tm2', ...
@@ -110,7 +113,8 @@ export async function openWithScript(browser, url, server, options = {}) {
   const context = options.context || await browser.newContext({
     viewport: { width: 1400, height: 900 },
     // The container runs in UTC, where local time == UTC and timezone bugs hide.
-    ...(options.timezoneId ? { timezoneId: options.timezoneId } : {})
+    ...(options.timezoneId ? { timezoneId: options.timezoneId } : {}),
+    ...(options.userAgent ? { userAgent: options.userAgent } : {})
   });
   const page = await context.newPage();
   const logs = [];
@@ -118,22 +122,35 @@ export async function openWithScript(browser, url, server, options = {}) {
   page.on('console', m => logs.push(`${m.type()}: ${m.text()}`));
   page.on('pageerror', e => errors.push(e.message));
   if (!reuse) await context.route('**/*', route => server.handle(route));
-  if ((options.localStorage || options.sessionStorage) && !reuse) {
+  const seeds = [options.localStorage, options.sessionStorage, options.rawLocalStorage, options.rawSessionStorage];
+  if (seeds.some(Boolean) && !reuse) {
     // Seed once per test (not again on reload), before the script runs.
+    // raw*Storage values are stored as given (corrupt-data tests).
     await context.addInitScript(seed => {
       if (location.host === seed.host && !sessionStorage.getItem('__seeded')) {
         sessionStorage.setItem('__seeded', '1');
         for (const [k, v] of Object.entries(seed.local)) localStorage.setItem(k, JSON.stringify(v));
         for (const [k, v] of Object.entries(seed.session)) sessionStorage.setItem(k, JSON.stringify(v));
+        for (const [k, v] of Object.entries(seed.rawLocal)) localStorage.setItem(k, v);
+        for (const [k, v] of Object.entries(seed.rawSession)) sessionStorage.setItem(k, v);
       }
-    }, { host: new URL(url).host, local: options.localStorage || {}, session: options.sessionStorage || {} });
+    }, {
+      host: new URL(url).host,
+      local: options.localStorage || {}, session: options.sessionStorage || {},
+      rawLocal: options.rawLocalStorage || {}, rawSession: options.rawSessionStorage || {}
+    });
   }
 
   const cdp = await context.newCDPSession(page);
+  // The top frame only: the script (like @noframes) is also injected into
+  // subframes, and a frame's context must not replace the page's.
+  const { frameTree } = await cdp.send('Page.getFrameTree');
+  const topFrameId = frameTree.frame.id;
   await cdp.send('Runtime.enable');
   const worlds = {};
   cdp.on('Runtime.executionContextCreated', ({ context: c }) => {
-    if (/^tm\d*$/.test(c.name) && c.auxData && c.auxData.isDefault === false) {
+    if (/^tm\d*$/.test(c.name) && c.auxData && c.auxData.isDefault === false &&
+        c.auxData.frameId === topFrameId) {
       worlds[c.name] = c.id;
     }
   });
@@ -145,6 +162,9 @@ export async function openWithScript(browser, url, server, options = {}) {
       worldName: i === 1 ? 'tm' : `tm${i}`,
       source:
         gmPrelude({ version: SCRIPT_VERSION, gmStore: options.gmStore }) +
+        // options.prelude: extra code run in the script's world first
+        // (e.g. counting timers/listeners, or making storage throw).
+        (i === 1 && options.prelude ? options.prelude : '') +
         wrapInSandboxWindow(source)
     });
   }

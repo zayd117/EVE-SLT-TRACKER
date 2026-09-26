@@ -44,11 +44,12 @@ test('Auto is the default and the dropdown offers Auto plus the three shifts', a
   } finally { await tm.close(); }
 });
 
-test('Auto, new session: picks the running shift (the one that started most recently)', async () => {
+test('Auto, new session: picks the shift whose window opened most recently (early arrivals get the incoming shift)', async () => {
   const tm = await openWithLog();
   try {
-    for (const [t, want] of [['2030-01-10T10:00', 'day'], ['2030-01-10T16:00', 'swing'], ['2030-01-10T21:30', 'swing'],
-      ['2030-01-10T23:00', 'graveyard'], ['2030-01-11T05:30', 'graveyard'], ['2030-01-11T14:45', 'swing']]) {
+    // v1.0.1 boundary rule: the shift whose log window opened most recently.
+    for (const [t, want] of [['2030-01-10T10:00', 'day'], ['2030-01-10T16:00', 'swing'], ['2030-01-10T21:30', 'graveyard'],
+      ['2030-01-10T23:00', 'graveyard'], ['2030-01-11T05:30', 'day'], ['2030-01-11T14:45', 'swing']]) {
       await newSession(tm);
       assert.equal(await shiftAt(tm, t), want, t);
     }
