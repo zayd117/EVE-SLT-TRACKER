@@ -86,7 +86,8 @@ for (const [name, opts] of [
       const opened = await popup;
       assert.deepEqual(await opens(tm), [], 'tracker did not open TestView');
       if (opened) {
-        await opened.waitForLoadState('domcontentloaded').catch(() => {});
+        // A new tab starts at about:blank; wait for the browser's own navigation.
+        await opened.waitForURL(/eveserverdetail/, { timeout: 5000 }).catch(() => {});
         assert.match(opened.url(), /eveserverdetail/, 'browser opened the link itself');
         await opened.close();
       }
