@@ -25,6 +25,6 @@ could not be verified (real site, real Tampermonkey, visuals).
 
 ## Commands
 
-- `npm ci` then `npm test` (~40 s, headless Chromium via Playwright)
+- `npm ci` then `npm test` (~4 min, headless Chromium via Playwright)
 - `npm run check` (syntax + header)
-- `npm run test:mutation` (~3 min, every mutant must be KILLED)
+- `npm run test:mutation` (~45 min, every mutant must be KILLED)
