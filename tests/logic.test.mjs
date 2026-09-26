@@ -175,6 +175,25 @@ test('shiftWindowAt: graveyard crosses midnight; windows include early/late marg
   assert.equal(await tm.eval(`__eve.guessShift(new Date(2026, 0, 2, 3, 0))`), 'graveyard');
 });
 
+// v1.0.1: a new session belongs to the shift whose log window (start - 60 min)
+// opened most recently, so early arrivals get the incoming shift.
+test('guessShift: boundary rule - early arrivals get the incoming shift', async () => {
+  const at = (h, m) => tm.eval(`__eve.guessShift(new Date(2026, 0, 2, ${h}, ${m}))`);
+  const cases = [
+    [10, 0, 'day', 'normal day'], [18, 0, 'swing', 'normal swing'], [2, 0, 'graveyard', 'normal graveyard'],
+    [21, 40, 'graveyard', 'early graveyard arrival (swing still running)'],
+    [21, 0, 'graveyard', 'graveyard window opens'], [20, 59, 'swing', 'one minute before it opens'],
+    [6, 0, 'day', 'day start, graveyard still running'], [5, 30, 'day', 'early day arrival'],
+    [5, 0, 'day', 'day window opens'], [4, 59, 'graveyard', 'one minute before'],
+    [14, 30, 'swing', 'day ends, swing window opens'], [14, 29, 'day', 'last minute of day'],
+    [14, 45, 'swing', 'between day and swing'], [23, 0, 'graveyard', 'overlap: newest window'],
+    [0, 30, 'graveyard', 'after swing ends'], [0, 0, 'graveyard', 'midnight'], [12, 0, 'day', 'noon']
+  ];
+  for (const [h, m, want, why] of cases) {
+    assert.equal(await at(h, m), want, `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')} ${why}`);
+  }
+});
+
 test('isDuplicateAlert: same slot+serial+transition within cooldown is suppressed', async () => {
   assert.equal(await call('isDuplicateAlert', 'A7|EVE01|U9', '2699YW7777', 'TEST_FAILURE'), false);
   assert.equal(await call('isDuplicateAlert', 'A7|EVE01|U9', '2699YW7777', 'TEST_FAILURE'), true);

@@ -8,6 +8,109 @@ userscript header increases, so every entry below corresponds to a version
 that was actually shipped. The script itself carries no change notes; they
 all live here.
 
+## [1.0.1] - 2026-09-25
+
+First stable release. Monitoring stays read-only: nothing on the EVE /
+SLT pages, in TestView or in Jira is changed by the tracker. (1.0.0 was
+prepared but never published; everything it contained ships here, together
+with the fixes from the 1.0.1 stability review.)
+
+### Added
+- **New-ticket badge.** When a failure card's Jira chip goes from "No ticket
+  yet" / "Ticket pending" to a real ticket, the chip glows and pulses green
+  and a small green **!** appears on it. It stays until you hover the chip,
+  then fades 3 seconds after the hover starts - and it is remembered, so a page reload
+  neither drops it before you have seen it nor brings it back after. It
+  only fires on that real change - never on a rescan, a
+  refresh, a repaint, the same ticket again, or a ticket that already
+  existed when the card appeared.
+- **Copy Jira link.** A small copy control next to the chip copies the
+  ticket's full link (e.g. https://jira.synnex.com/browse/MFGS-123456, the
+  same link the chip opens) and shows "copied". It exists only once a real
+  ticket is found; the chip still opens the ticket, and copying opens
+  nothing.
+
+### Changed
+- **Sleeping tabs: no more banner, tip or "was asleep" notification.** The
+  tracker keeps its own tab awake: it holds a Web Lock (Chromium does not
+  freeze a page holding one), runs its clock in a Worker (not throttled in
+  the background) and, while its tab is on screen, holds a Screen Wake Lock
+  so the display and PC do not go to sleep. If the browser still puts the
+  tab to sleep, it catches up the moment the tab wakes, silently. (A
+  userscript cannot add the site to Edge's "Always keep these sites active"
+  list itself; see README.)
+- **Log shift, Auto:** a new session now gets the shift whose log window
+  (60 min before the shift starts) opened most recently, so early arrivals
+  get the incoming shift: 9:40 PM is Graveyard (was Swing), 6:00 AM is Day
+  (was Graveyard). An open session still keeps its shift until its window
+  ends. Logs already written are not touched.
+- Pre-test failure with no ticket reads **No ticket (create one)** from 15
+  minutes after the failure (was 20), with a subtle yellow light tracing the
+  chip's outline until you hover it (it then fades 10 seconds later). It
+  fires once per failure: a page reload does not bring it back once seen.
+  On a card older than 45 minutes the rest of the card dims as usual but
+  that chip stays bright while its outline shows. Nothing is created from
+  the tracker; clicking still searches Jira as before.
+- **Raise a missing ticket:** the page a failure's Jira chip opens (test or
+  pre-test fail) says in plain text "If there is no ticket by <time>, please
+  open PuTTY and create one with: **ticket <serial>**" (15 minutes after the
+  failure, giving the Jira bot its chance). From 15 minutes it becomes a
+  highlighted box: "It has been more than 15 minutes and no ticket has been
+  created. Please make one in PuTTY: **ticket <serial>**". Both have a Copy
+  button; an open page switches by itself. The no-ticket tooltip says the same.
+  Before prompting, the tracker asks TestView 2.0 for the serial's latest
+  status: while it is **RUNNING** (every step, power off included) PuTTY
+  refuses a ticket, so the page, tooltip and pre-test chip ("No ticket
+  (re-testing)", no gold) say it is being re-tested instead; once TestView
+  shows it finished, the box says "…, the server is not running, and no
+  ticket has been created". If TestView cannot be
+  reached, the prompt shows as before. While it is running, the page links
+  straight to that run in TestView 2.0. New header line
+  `@connect testview-eve-fmt.hyvesolutions.org` for this lookup.
+- **Cards whose server has left its slot** (pulled, swapped for another
+  serial, or the cell is empty) are struck through and dashed; the serial box shows
+  **Removed from rack** in place of copy (hover it for what is there now)
+  and copying is off - Jira and TestView still work instead of
+  looking live. A retest of the same serial is not "removed". Cards for rack
+  columns this page does not show are left alone.
+- Old (45 min+) cards now dim under a darkening layer instead of a filter,
+  so a chip that still needs attention can stay bright above it; the look
+  is the same (40% darker, desaturated; full brightness on hover).
+
+### Fixed
+- **A damaged saved card stopped the tracker from starting.** One bad
+  entry in the tab's saved cards (for example `null`) made startup fail
+  with "FAILED TO START", and because that data survives a reload the tab
+  stayed unmonitored until it was closed. Bad entries in the saved cards
+  and the shift log are now skipped, and a card that cannot be shown is
+  skipped instead of stopping the tracker.
+- **One failing step no longer stalls the others.** The once-a-second loop
+  runs the scan, refresh watchdog, re-confirmation and shift rollover in
+  turn; an error in one (for example the scan, on unexpected page markup)
+  skipped the rest, so the shift rollover could stop for as long as the
+  error lasted. Each step now runs on its own; a failing step is reported
+  once in the console and again when it recovers.
+- The TestView status cache (used before suggesting a PuTTY ticket) is
+  capped at 200 serials, like the other caches, so a tab left open for
+  days does not keep growing it.
+
+### Docs
+- README rewritten for new testers: shorter sections, a table of what each
+  Jira chip means, when notifications do and do not fire, a
+  troubleshooting table, and advanced details moved to the end. Out-of-date
+  steps removed (picking your log shift by hand at install; two
+  overlapping "keep awake" sections) and the privacy section now lists the
+  TestView status check.
+
+### Tests
+- New suites tests/jiraux.test.mjs (badge, copy control, pre-test label) and
+  tests/keepawake.test.mjs (no sleep UI, keep-awake locks, silent catch-up);
+  shift boundary cases in tests/logic.test.mjs.
+- New tests/stability.test.mjs: corrupt, wrong-shaped and unwritable
+  storage; 40 soft refreshes without growth in listeners, observers,
+  timers, UI or state; repeated reloads with exactly one tracker; a step
+  that keeps throwing; the TestView cache bound.
+
 ## [0.9.12] - 2026-09-24
 
 ### Changed
@@ -20,7 +123,7 @@ all live here.
   link, so the old detail page stays one Ctrl+click away. One listener for
   the whole page: nothing is added to the table and nothing is re-attached
   after a refresh.
-- Card Jira chip reads **JIRA - 587632** instead of **MFGS-587632**, so it is
+- Card Jira chip reads **JIRA - 123456** instead of **MFGS-123456**, so it is
   clear the click opens Jira. Label only: the tooltip, link and search still
   use the real key.
 

@@ -69,7 +69,9 @@ export class FixtureServer {
         const sn = url.searchParams.get('server_sn') || '';
         const items = tv.api.get(sn) || [];
         return {
-          status: 200, contentType: 'application/json',
+          // CORS only for the test harness: the rack page asks via
+          // GM_xmlhttpRequest, which the harness runs as a page fetch.
+          status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
           body: JSON.stringify({ code: 200, msg: 'OK', data: { page_info: { count: items.length }, items } })
         };
       }

@@ -7,7 +7,7 @@ most notes record a real failure seen on the floor and the rule that stops it co
 Every `// ===== TITLE =====` marker in the script has a matching heading below. Each note is
 labelled with the function, constant or line it belongs to.
 
-> Written for **v0.9.12**. When code changes, update the matching note here in the same commit.
+> Written for **v1.0.1**. When code changes, update the matching note here in the same commit.
 
 ## Contents
 
@@ -137,6 +137,10 @@ _No notes - the code is self-explanatory._
 Every persisted value here is JSON in web storage, read and written behind the same try/catch. Only the SHELL is shared - each caller keeps its own migration, shape guard or filter, because those are the parts that are not boilerplate.
 
 label === null means "fail silently". The flap-protection save is deliberately silent: worst case a flap slips through after a reload, and a console warning per failed write would be noise.
+
+### `isRecordObject()`
+
+v1.0.1. Saved LISTS (active cards, alert log) are filtered to plain objects on load. Before, one `null` in the saved cards made `renderAlertElement()` throw inside `initialize()`: "FAILED TO START", and since sessionStorage survives a reload, the tab stayed unmonitored until closed. Maps (baselines, flap, claims, attention marks) already survive bad values: a non-object baseline is treated as a new server and re-baselined, stale or odd entries are pruned. Proven for every key by tests/stability.test.mjs (invalid JSON, null, number, string, array, {}, wrong-shaped values, storage that throws).
 
 **`const PANEL_MARGIN`**
 
@@ -563,7 +567,7 @@ Asked once: the serial's latest ticket is the one the two searches open on.
 
 ### `indexJiraKey()`
 
-The card's search text gains the ticket key, so the alert search box finds a card by "MFGS-584283" as well as by serial.
+The card's search text gains the ticket key, so the alert search box finds a card by "MFGS-123456" as well as by serial.
 
 **In `syncJiraForCard()`, at `const failedAt`**
 
@@ -1546,7 +1550,7 @@ Minutes from start to end; an end at or before the start means the shift runs pa
 
 ### `guessShift()`
 
-First-run default: the running shift that started most recently (23:00 -&gt; Graveyard, not Swing); between shifts, the next one.
+Which shift a new session belongs to (Auto log shift). v1.0.1: the shift whose log window (start - SHIFT_EARLY_MIN) opened most recently, among windows still open - so near a boundary the incoming shift wins: 21:40 -&gt; Graveyard (early arrival), 06:00 -&gt; Day, 05:30 -&gt; Day, 14:45 -&gt; Swing, 23:00 -&gt; Graveyard. Before 1.0.1 it used shift START times, so 21:40 was Swing and 06:00 Graveyard. No per-time exceptions: the early-arrival window is the log's own early margin. Only a NEW session is classified this way; an open session keeps its shift until its window closes (autoShiftId).
 
 ### `shiftWindowAt()`
 
@@ -1786,9 +1790,9 @@ Counted the same way the exports count, so the number in the confirmation always
 
 Shared marker: another EVE tab still holding these entries drops them at its next write instead of writing them back.
 
-## COPY SERIAL TO CLIPBOARD
+## COPY TO CLIPBOARD
 
-Triggered by an actual click, which satisfies the browser's transient-user-activation requirement. Falls back to a hidden textarea + execCommand where navigator.clipboard is unavailable (locked-down builds, or a non-secure-context intranet page).
+`copyToClipboard(text, button, idle)` - serial numbers and (v1.0.1) Jira keys. `idle` is the hint text restored after the feedback. Triggered by an actual click, which satisfies the browser's transient-user-activation requirement. Falls back to a hidden textarea + execCommand where navigator.clipboard is unavailable (locked-down builds, or a non-secure-context intranet page).
 
 ## RELATIVE TIME LABELS
 
@@ -1823,6 +1827,10 @@ sessionStorage (not localStorage) so alerts are scoped to this tab and do not re
 **In `storeAlert()`, at `while (alerts.length > MAX_STORED_ALERTS) {`**
 
 Evict DEBUG/test records first. The old blind shift() meant that pressing the test buttons a few times could push real, undismissed alerts out of storage entirely.
+
+### `restorePersistedAlerts()`
+
+Each saved card is rendered in its own try/catch (v1.0.1): a record that cannot be shown is skipped with a warning; it must never stop `initialize()` - everything after it (scan, ticker, observer, auto refresh) is the monitoring.
 
 ### `infoFromRecord()`
 
@@ -1873,6 +1881,12 @@ RE-CONFIRM WHAT WAS NEVER CONFIRMED
 v0.9.5. Confirmation used to happen exactly once, in surfaceAlert(), at the moment the colour changed. A card stored before that succeeded came back out of sessionStorage with its stale phaseSource and its stale reason text and was rendered as-is, for ever. Cards raised by an older build therefore kept saying "phase NOT verified" after an update that fixed the confirmation - the update could not reach them, because nothing ever asked again.
 
 A confirmation is also worth retrying on its own merits: the usual reason it failed is a detail page that was slow or briefly unreachable, and a reload is a free second attempt.
+
+## CARDS WHOSE SERVER HAS LEFT ITS SLOT
+
+### `markGoneCards()`
+
+v1.0.1. After every complete scan (tables found, no slot errors), each card is compared with its slot (`data-slot` = section|eve|unit, `data-serial`): if the slot is empty or holds another serial, the card gets `eve-alert-gone` (dashed border, struck-through title / serial / location) and one "Removed from rack" tag in the serial box, in place of the copy hint (tooltip: what is there now); the serial button is disabled - copying a serial that is no longer in the rack is pointless - while the Jira chip and the card's TestView click keep working. Unmarked again if the serial comes back. A retest (same serial, other colour) is not gone. Cards whose column is not on this page (another rack) are never touched - unknown is not gone. No extra DOM scan: it uses the scan's own `seenKeys` and `previousStates`.
 
 ## CREATE PERSISTENT IN-PAGE ALERT
 
@@ -2082,6 +2096,26 @@ Two clicks within 3s. One stray click used to wipe every card on screen with no 
 **In `getAlertContainer()`, at `document.getElementById('eve-alert-export')`**
 
 EXPORTS. Each menu item closes the menu first, then acts.
+
+### `syncJiraExtras()` / `showJiraNewBadge()` / attention marks
+
+v1.0.1. The copy control and the "new ticket" badge hang off `paintJiraButton()`, which runs on every lookup, rescan, soft refresh and card update - so both are idempotent. The badge needs a REAL change on this chip: `dataset.wasPending` is set when the chip was painted waiting / noticket / none, and the badge is shown only when a found key differs from `dataset.noticedKey` while wasPending is set. So: no badge for a repaint, for the same key again, or for a card whose ticket already existed at the first look (loading -> found). At most one badge (checked before creating). While it exists the chip also carries `eve-jira-fresh` (a green pulsing glow); the paint rewrites the chip's class list, so `syncJiraExtras()` re-applies it from the badge's presence, and `clearJiraNewBadge()` removes both together. The first `mouseenter` (listener added once, when the chip is built) arms a single fade - JIRA_NEW_FADE_MS (3 s, counted from the start of the hover) for the green mark, JIRA_HOVER_FADE_MS (10 s) for the gold outline - later hovers neither re-arm nor extend it. There is no other timeout: the mark stays until someone hovers the chip.
+
+Both attention marks are remembered per failure in localStorage (JIRA_ATTENTION_KEY, id `serial|failedAt|new` or `|attn`, pruned after 24 h, shared by all tabs): the green one is stored as `new` (with its key) when it fires and as `seen` when its fade completes; the gold one only as `seen`. A reload rebuilds every chip, so without this the gold outline came back on every page refresh and an unseen green mark was lost; now the paint restores an unseen green mark and never re-shows either once seen (another tab's acknowledgement applies at this tab's next repaint).
+
+Pre-test "No ticket (create one)" gets `eve-jira-attn` (a yellow light tracing the outline: a masked conic-gradient `::before` rotated through the registered `--eve-trace-angle` property). The paint adds it unless the failure's stored `attn` mark is `seen`; the same first-hover rule stores `seen` 10 s later, so neither repaints nor reloads bring it back. Reduced motion: static. While it shows, only that chip escapes the 45 min dim: since v1.0.1 the dim is a darkening layer (`.eve-alert-aged::after`, 40% black + backdrop desaturate - the same look as the old `filter: brightness(.6) saturate(.55)`, which no child could escape) and the chip's group is lifted above it (z-index 2 - it is a flex item, so no positioning is needed for that) on the card's base colour, so its translucent fill blends as on a bright card. Once the outline goes the chip dims with the rest.
+
+How to raise a ticket by hand: `ticketHowTo(serial, failedAt)` - before 15 min a plain line (`plain: true`: ordinary text, underlined Copy) "If there is no ticket by <time>, please open PuTTY and create one with: `ticket <serial>`"; from 15 min the gold box "It has been more than 15 minutes and no ticket has been created. Please make one in PuTTY: `ticket <serial>`" - the gold box is shown, for ANY failure (test or pre-test) still without a ticket JIRA_CREATE_BY_HAND_MS (15 min) after it, on the page the chip's click opens (`writeJiraWaitPage()` -> `writeJiraTab(..., howto)`) as a box with the command and a Copy button (the tab is our own about:blank document, so its button is wired from here); before 15 min the Jira bot gets its chance and only the plain line shows. The page is rewritten on every check of the follow loop, so an open tab switches by itself at 15 min. `jiraPuttyTip()` is the tooltip version (waiting and no-ticket chips): "by <time>" before 15 min, "more than 15 minutes" after. (Sent too soon, PuTTY queues the request - "Your request is saved"; deliberately not explained on the page, to keep it to what the user needs. The chip keeps polling Jira up to JIRA_TICKET_LATE_MS and shows the ticket, with the green mark, once it exists.) Nothing is sent or created by the tracker.
+
+### `testViewRunning()` / `testViewRunningCached()`
+
+Cache bound (v1.0.1): at most MAX_TESTVIEW_STATUS_ENTRIES (200) serials; a new lookup is re-inserted at the end and the oldest is dropped, like the Jira cache - a tab open for days does not grow it.
+
+v1.0.1. PuTTY refuses `ticket <serial>` while the server is testing ("The test is still running. No ticket was created.") and TestView 2.0 counts every step - power off included - as RUNNING, which the rack cell does not always show. So before any "make a ticket" prompt the tracker asks TestView's own API (`/api/v1/server_level_tests/view`, `fields` id/server_sn/started/status, newest `started` wins) through GM_xmlhttpRequest (cross-site from the rack page: `@connect testview-eve-fmt.hyvesolutions.org`, the TestView login cookie). STATUS values seen: RUNNING, FAILED. Returns true (RUNNING / in progress), false (any other status) or null (unknown: error, no login, serial not found, no status field) - unknown never blocks the prompt. Cached per serial for 60 s, one request in flight. The newest run's id is kept (`testViewRunUrl()`) so the "testing again" line links to `/slt/testdetail/<id>`. Used by the no-ticket page (follow loop, only from 15 min), the tooltip, and the pre-test chip ("No ticket (re-testing)", no gold outline; repainted when the answer changes).
+
+Pre-test "No ticket (create one)" starts at JIRA_CREATE_BY_HAND_MS (15 min) instead of JIRA_TICKET_EXPECT_MS (20 min): the paint shows a pre-test 'waiting' result older than that as 'noticket'. Display only - lookups, polling and the cache are unchanged; the 60 s pending poll repaints the chip, so the switch shows within a minute.
+
+The copy control (`buildJiraGroup()`) is a sibling of the chip, not inside the link, so it can never open Jira; it is hidden unless the chip shows a real key, copies the ticket's full link (`jiraIssueUrl()`, the same link the chip opens), and its clicks stop there. The card click ignores the whole `.eve-jira-group`.
 
 ### `jiraChipText()`
 
@@ -2399,8 +2433,9 @@ Edge "Sleeping tabs" and Chrome "Memory Saver" put a background tab to sleep: FR
    setInterval if the worker cannot start.
 3. Detects sleep - document.wasDiscarded on load, the Page
    Lifecycle freeze/resume events, and gaps in the tick - then
-   refreshes immediately and says so, with the exact setting
-   that stops it. Baselines live in sessionStorage, which
+   refreshes immediately (silently since v1.0.1).
+4. Holds a Screen Wake Lock while its tab is visible, so the
+   display and PC do not sleep (v1.0.1). Baselines live in sessionStorage, which
    survives a discard, so whatever changed while asleep is
    still caught - just late.
 ```
@@ -2427,32 +2462,21 @@ kind: 'discarded' (page was unloaded and reloaded), 'frozen' (resume event), 'pa
 
 **In `noteWake()`, at `if (!sleptMs ? kind === 'discarded' : sleptMs >= SLEEP_BANNER_MIN_M...`**
 
-Unknown duration (no heartbeat) still gets the banner after a discard: the page going blank is the thing to fix.
+Catches up at once (refreshNow when the page is still loaded; a discarded page is already fresh) and re-takes the screen wake lock. No banner and no notification since v1.0.1 - only a Dev log line and the Dev status counter.
 
-**In `wireSleepDetection()`, at `document.addEventListener('freeze', () => {`**
+### `holdScreenWakeLock()`
 
-Page Lifecycle API (Chromium). 'freeze' is the last chance to run; 'resume' is the first after.
+v1.0.1. Screen Wake Lock while the tracker tab is visible: the display and the PC stay awake (a sleeping PC runs nothing). The browser releases it whenever the tab is hidden, so it is re-taken on every visibilitychange to visible and after every wake (noteWake). Needs https; failures only change the Dev status line. Side effect: while the tracker tab is on screen, the monitor does not turn off on its own.
 
-**In `wireSleepDetection()`, at `if (document.wasDiscarded) {`**
-
-This load IS the wake-up: the page is already fresh, so no refresh - just report it.
-
-### `startCountdownAnimation()`
-
-The 1s tick is too coarse for a decimal countdown. While the tab is visible, animation frames (capped at ~10/s) repaint it; hidden tabs get no frames, and the tick keeps it current.
-
-**Inline notes**
-
-- `const HEARTBEAT_EVERY_TICKS   = 5;` - sessionStorage write cadence
-- `const SLEEP_GAP_MS            = 120000;` - tick silence that means "was asleep"
-- `const SLEEP_BANNER_MIN_MS     = 30000;` - shorter naps are not worth a banner
-- `const SLEEP_TOAST_INTERVAL_MS = 600000;` - at most one sleep toast per 10 min
-- `let lastSleep        = null;` - { kind, from, to }
-- `try { worker.terminate(); } catch (error) { /* already gone */` - already gone
+v1.0.1 also removed the sleep banner, the first-run "keep this page awake" tip and the "was asleep" desktop notification: sleeps are handled silently (catch-up refresh), with nothing asking the user to act.
 
 ## MASTER TICK
 
 One timer with counters instead of three intervals.
+
+### `runTickStep()`
+
+v1.0.1. Each step of the tick runs in its own try/catch. Before, a step that threw every time (say scan() on unexpected markup, outside its per-slot guard) skipped every step after it on the same tick - and since every multiple of 60 is a multiple of 4, the shift rollover never ran while scan kept failing. A failing step is logged once (`Tick step "<name>" failed`) and once more when it recovers (`failingTickSteps`), not every tick. The heartbeat write has its own try/catch already.
 
 scan() does not need to run every second: the MutationObserver fires on any real page change, and a soft refresh scans immediately after swapping content. The interval is only a safety net for changes neither catches.
 
