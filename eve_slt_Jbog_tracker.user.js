@@ -1,13 +1,16 @@
 // ==UserScript==
-// @name         EVE SLT Tracker
+// @name         eve_slt_Jbog_tracker
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      1.0.1
-// @description  Monitors an EVE SLT rack page for server test-result colour changes and raises in-page + desktop alerts.
+// @version      2.0.1
+// @description  Monitors EVE SLT racks and Lion King tests with in-page and desktop completion alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
 // @supportURL   https://github.com/zayd117/EVE-SLT-TRACKER/issues
 // @match        *://*/out/out.eveslt.php*
+// @match        *://*/out/out.evelionking_all.php*
 // @match        *://*/slt/list*
+// @match        *://*/uut/gpu_jbog_test/list*
+// @match        http://hyve-cmd101-ramses.hyvesolutions.org/*
 // @run-at       document-start
 // @noframes
 // @grant        GM_notification
@@ -17,13 +20,14 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
+// @grant        GM_addValueChangeListener
 // @connect      jira.synnex.com
 // @connect      testview-eve-fmt.hyvesolutions.org
-// @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
-// @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_Tracker.user.js
+// @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/eve_slt_Jbog_tracker.user.js
+// @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/eve_slt_Jbog_tracker.user.js
 // ==/UserScript==
 
-// EVE SLT Tracker - by Zay Davidson
+// eve_slt_Jbog_tracker - by Zay Davidson
 // Docs, changelog and design notes: https://github.com/zayd117/EVE-SLT-TRACKER
 // Every "// ===== SECTION =====" marker below has notes in docs/CODE_NOTES.md.
 // Bugs: https://github.com/zayd117/EVE-SLT-TRACKER/issues
@@ -35,26 +39,38 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '1.0.1';
-  const LOG_PREFIX = '[EVE Tracker]';
+      : '2.0.1';
+  const LOG_PREFIX = '[eve_slt_Jbog_tracker]';
+
+  // ===== SOURCE PROFILE =====
+  const LION_RAMSES_URL = 'http://hyve-cmd101-ramses.hyvesolutions.org:8001/?dashboard=jbog';
+  const IS_LION_RAMSES_PAGE = window.location.origin === new URL(LION_RAMSES_URL).origin &&
+    window.location.pathname === '/' && new URLSearchParams(window.location.search).get('dashboard') === 'jbog';
+  const IS_LION_KING_PAGE = IS_LION_RAMSES_PAGE || window.location.pathname === '/out/out.evelionking_all.php';
+  let lionInitialDocumentComplete = document.readyState !== 'loading';
+  const TRACKER_LABEL = 'eve_slt_Jbog_tracker';
+
+  function trackerStorageKey(legacyKey) {
+    return IS_LION_KING_PAGE ? legacyKey.replace(/^eveRackTracker/, 'lionKingTracker') : legacyKey;
+  }
 
   // ===== STORAGE KEYS =====
-  const SETTINGS_KEY = 'eveRackTrackerSettings';
-  const PREV_STATES_KEY = 'eveRackTrackerPreviousStates';
-  const ACTIVE_ALERTS_KEY = 'eveRackTrackerActiveAlerts';
-  const RECENT_ALERTS_KEY = 'eveRackTrackerRecentAlerts';
-  const ALERT_LOG_KEY = 'eveRackTrackerAlertLog';
-  const LOG_SHIFT_KEY = 'eveRackTrackerAlertLogDay';
-  const LOG_AUTO_SHIFT_KEY = 'eveRackTrackerAutoShift';
-  const LOG_CLEARED_KEY = 'eveRackTrackerAlertLogClearedAt';
-  const ALERTS_COLLAPSED_KEY = 'eveRackTrackerAlertsCollapsed';
-  const PANEL_POSITION_KEY = 'eveRackTrackerPanelPosition';
-  const DEBUG_SNAPSHOT_KEY = 'eveRackTrackerDebugSnapshot';
-  const ALERT_PANEL_POSITION_KEY = 'eveRackTrackerAlertPanelPosition';
-  const JIRA_CACHE_KEY = 'eveRackTrackerJiraCache';
-  const JIRA_ATTENTION_KEY = 'eveRackTrackerJiraAttention';
-  const HEARTBEAT_KEY = 'eveRackTrackerHeartbeat';
-  const EVENT_CLAIMS_KEY = 'eveRackTrackerEventClaims';
+  const SETTINGS_KEY = trackerStorageKey('eveRackTrackerSettings');
+  const PREV_STATES_KEY = trackerStorageKey('eveRackTrackerPreviousStates');
+  const ACTIVE_ALERTS_KEY = trackerStorageKey('eveRackTrackerActiveAlerts');
+  const RECENT_ALERTS_KEY = trackerStorageKey('eveRackTrackerRecentAlerts');
+  const ALERT_LOG_KEY = trackerStorageKey('eveRackTrackerAlertLog');
+  const LOG_SHIFT_KEY = trackerStorageKey('eveRackTrackerAlertLogDay');
+  const LOG_AUTO_SHIFT_KEY = trackerStorageKey('eveRackTrackerAutoShift');
+  const LOG_CLEARED_KEY = trackerStorageKey('eveRackTrackerAlertLogClearedAt');
+  const ALERTS_COLLAPSED_KEY = trackerStorageKey('eveRackTrackerAlertsCollapsed');
+  const PANEL_POSITION_KEY = trackerStorageKey('eveRackTrackerPanelPosition');
+  const DEBUG_SNAPSHOT_KEY = trackerStorageKey('eveRackTrackerDebugSnapshot');
+  const ALERT_PANEL_POSITION_KEY = trackerStorageKey('eveRackTrackerAlertPanelPosition');
+  const JIRA_CACHE_KEY = trackerStorageKey('eveRackTrackerJiraCache');
+  const JIRA_ATTENTION_KEY = trackerStorageKey('eveRackTrackerJiraAttention');
+  const HEARTBEAT_KEY = trackerStorageKey('eveRackTrackerHeartbeat');
+  const EVENT_CLAIMS_KEY = trackerStorageKey('eveRackTrackerEventClaims');
 
   // ===== STORAGE I/O =====
 
@@ -197,7 +213,7 @@
     }
     lastHealthToastAt = now;
     sendDesktopNotification(
-      `EVE TRACKER ${state}`,
+      `eve_slt_Jbog_tracker ${state}`,
       `${healthDetail}\nThis page may NOT be monitored.`,
       ICON_FAIL,
       null
@@ -568,7 +584,7 @@
         );
       }
       say(`gave up after ${TESTVIEW_MAX_TRIES} tries.`);
-      showTestViewBanner(`EVE Tracker: typed SN ${serial} but the list did not filter. Press Query.`);
+      showTestViewBanner(`eve_slt_Jbog_tracker: typed SN ${serial} but the list did not filter. Press Query.`);
     } finally {
       document.removeEventListener('keydown', onUserKey, true);
     }
@@ -640,6 +656,7 @@
 
   // The TestView 2.0 page of the serial's latest run, if known.
   function testViewRunUrl(serial) {
+    if (IS_LION_KING_PAGE) return buildLionKingTestViewUrl(serial, '');
     const hit = testViewStatusCache.get(serial);
     return hit && /^\d+$/.test(hit.id || '')
       ? `${new URL(TESTVIEW_LIST_URL).origin}${TESTVIEW_DETAIL_PATH}${hit.id}`
@@ -647,11 +664,13 @@
   }
 
   function testViewRunningCached(serial) {
+    if (IS_LION_KING_PAGE) return lionKingRunningOnPage(serial);
     const hit = testViewStatusCache.get(serial);
     return hit ? hit.running : null;
   }
 
   function testViewRunning(serial) {
+    if (IS_LION_KING_PAGE) return Promise.resolve(lionKingRunningOnPage(serial));
     const hit = testViewStatusCache.get(serial);
     if (hit && Date.now() - hit.at < TESTVIEW_STATUS_CACHE_MS) {
       return hit.promise || Promise.resolve(hit.running);
@@ -771,14 +790,14 @@
         if (Date.now() - startedAt > TESTVIEW_WAIT_MS) {
           finish();
           console.warn(LOG_PREFIX + ' TestView: SN input not found; auto-query skipped.');
-          showTestViewBanner(`EVE Tracker: could not auto-fill SN ${serial}. Enter it manually.`);
+          showTestViewBanner(`eve_slt_Jbog_tracker: could not auto-fill SN ${serial}. Enter it manually.`);
         }
         return;
       }
       finish();
       submitTestViewQuery(input, serial).catch(error => {
         console.error(LOG_PREFIX + ' TestView: auto-query crashed:', error);
-        showTestViewBanner(`EVE Tracker: auto-query failed (${error && error.message}). Press Query.`);
+        showTestViewBanner(`eve_slt_Jbog_tracker: auto-query failed (${error && error.message}). Press Query.`);
       });
     };
     observer = new MutationObserver(attempt);
@@ -902,11 +921,14 @@
 
   function jiraLookupKey(serial, failedAt) {
     const id = jiraSerialKey(serial);
+    // Lion King board timestamps are detection times, not ticket creation
+    // times. Separate this unrestricted lookup from earlier filtered misses.
+    if (IS_LION_KING_PAGE) return id ? `${id}@lion-latest` : '';
     return id && failedAt ? `${id}@${failedAt}` : id;
   }
 
   function jiraOrderedJql(serial, failedAt) {
-    if (!failedAt) {
+    if (IS_LION_KING_PAGE || !failedAt) {
       return jiraJql(serial) + ' ORDER BY updated DESC';
     }
     const minutes = Math.max(1, Math.ceil((Date.now() - failedAt + JIRA_TICKET_LEAD_MS) / 60000));
@@ -930,7 +952,7 @@
   }
 
   function jiraSearchUrl(serial, failedAt) {
-    return jiraListUrl(serial, failedAt ? 'created' : 'updated', jiraLatestKey(serial));
+    return jiraListUrl(serial, !IS_LION_KING_PAGE && failedAt ? 'created' : 'updated', jiraLatestKey(serial));
   }
 
   function jiraIssueUrl(key) {
@@ -957,7 +979,7 @@
 
   function jiraCardResult(serial, failedAt) {
     const hit = jiraCached(serial, failedAt || 0);
-    if (failedAt && hit && hit.state === 'none') {
+    if (!IS_LION_KING_PAGE && failedAt && hit && hit.state === 'none') {
       return { ...hit, state: jiraExpecting(failedAt) ? 'waiting' : 'noticket' };
     }
     return hit;
@@ -1081,7 +1103,7 @@
 
   function requestJira(serial, failedAt) {
     return new Promise(resolve => {
-      const done = result => resolve({ ...result, at: Date.now(), failure: !!failedAt });
+      const done = result => resolve({ ...result, at: Date.now(), failure: !IS_LION_KING_PAGE && !!failedAt });
       const url =
         `${jiraBaseUrl()}/rest/api/2/search?jql=` +
         encodeURIComponent(jiraOrderedJql(serial, failedAt || 0)) +
@@ -1302,6 +1324,7 @@
         '\nClick for the PuTTY command and the Jira searches.';
     } else if (result && result.state === 'none') {
       cls += ' eve-jira-none';
+      if (IS_LION_KING_PAGE) text = 'Search Jira';
       tip =
         `No Jira ticket mentions ${serial} yet \u{2014} click to ` + 'search Jira (newest first)';
     } else if (result && result.state === 'auth') {
@@ -1782,7 +1805,7 @@
         tab.location.href = url;
       }
     };
-    if (!failedAt) {
+    if (IS_LION_KING_PAGE || !failedAt) {
       go(await resolveJiraUrl(serial, 0));
       return;
     }
@@ -1858,7 +1881,20 @@
     }
     button.dataset.passed = '';
     const failedAt = jiraFailedAt(record);
-    button.dataset.failedAt = failedAt ? String(failedAt) : '';
+    if (IS_LION_RAMSES_PAGE && record.tracker === 'lionking') {
+      const board = getRamsesFailedBoard();
+      const row = board?.usable ? board.rows.find(entry => entry.serial === record.serial &&
+        (jiraIsPretest(record) ? lionIsPretestOperation(entry.operation) :
+          entry.operation === 'GPU_JBOG_TEST')) : null;
+      if (row?.jiraKey) record.jiraKey = row.jiraKey;
+    }
+    if (record.tracker === 'lionking' && JIRA_KEY_PATTERN.test(String(record.jiraKey || '')) &&
+        jiraCached(record.serial, failedAt)?.state !== 'found') {
+      storeJiraResult(jiraLookupKey(record.serial, failedAt), {
+        state: 'found', key: record.jiraKey, at: Date.now(), failure: true, count: 1
+      });
+    }
+    button.dataset.failedAt = !IS_LION_KING_PAGE && failedAt ? String(failedAt) : '';
     button.dataset.pretest = jiraIsPretest(record) ? '1' : '';
     const shown = jiraCardResult(record.serial, failedAt);
     paintJiraButton(button, record.serial, shown);
@@ -1894,7 +1930,7 @@
     };
     const pollAgain = result => {
       const own = jiraCached(serial, failedAt);
-      const delay = jiraPollDelay(failedAt);
+      const delay = IS_LION_KING_PAGE ? JIRA_MISS_TTL_MS : jiraPollDelay(failedAt);
       const settled =
         (own && own.state === 'found') || (result && result.state === 'auth') || !delay;
       if (!settled) {
@@ -1950,7 +1986,9 @@
     if (wantDetail) {
       openFromNotification(detailUrl);
     } else if (wantTestView) {
-      openTestView(serial, openFromNotification);
+      if (record.tracker === 'lionking') openLionKingTestView(serial, record.started, openFromNotification,
+        record.operation || (record.transition === 'PRETEST_FAILURE' ? 'PRETEST' : undefined));
+      else openTestView(serial, openFromNotification);
     }
     if (wantJira) {
       return openJiraFromToast(serial, jiraFailedAt(record), jiraIsPretest(record));
@@ -1959,8 +1997,8 @@
   }
 
   async function openJiraFromToast(serial, failedAt, pretest) {
-    if (!failedAt || !jiraLookupAvailable()) {
-      openFromNotification(await resolveJiraUrl(serial, failedAt));
+    if (IS_LION_KING_PAGE || !failedAt || !jiraLookupAvailable()) {
+      openFromNotification(await resolveJiraUrl(serial, IS_LION_KING_PAGE ? 0 : failedAt));
       return;
     }
     const own = jiraFoundUrl(serial, failedAt)
@@ -2139,7 +2177,8 @@
     if (!element || !element.closest) {
       return false;
     }
-    return OWN_UI_IDS.some(id => element.closest('#' + id));
+    return OWN_UI_IDS.some(id => element.closest('#' + id)) ||
+      (IS_LION_KING_PAGE && !!element.closest('[data-lion-tracker-ui]'));
   }
 
   // ===== OBSERVER SUPPRESSION =====
@@ -2248,6 +2287,9 @@
   }
 
   function refreshNow() {
+    if (IS_LION_KING_PAGE) {
+      return refreshLionKing();
+    }
     if (softRefreshInFlight) {
       return;
     }
@@ -2666,7 +2708,7 @@
     }
     const timeoutMs = getNotificationTimeoutMs();
     notificationTagCounter += 1;
-    const tag = `eve-slt-${Date.now()}-${notificationTagCounter}`;
+    const tag = `${IS_LION_KING_PAGE ? 'eve-lion' : 'eve-slt'}-${Date.now()}-${notificationTagCounter}`;
     const payload = {
       title: title,
       text: text,
@@ -4405,7 +4447,7 @@
         'shift were cleared.'
     );
     sendDesktopNotification(
-      `EVE TRACKER \u{2014} NEW ${win.shift.label.toUpperCase()} SHIFT LOG`,
+      `eve_slt_Jbog_tracker \u{2014} NEW ${win.shift.label.toUpperCase()} SHIFT LOG`,
       `${count} from the previous shift were cleared.\n` + `Now logging: ${shiftWindowLabel(win)}.`,
       null,
       null
@@ -4874,12 +4916,13 @@
   // ===== .TXT REPORT =====
 
   function buildAlertLogText() {
+    if (IS_LION_KING_PAGE) return buildLionKingLog(false);
     const logEntries = loadRealAlertLog();
     const win = currentShiftWindow();
     const lines = [];
     lines.push(
       LOG_RULE,
-      'EVE SLT TRACKER \u{2014} ALERT LOG',
+      'eve_slt_Jbog_tracker \u{2014} ALERT LOG',
       'by Zay Davidson',
       `Tracker version: ${SCRIPT_VERSION}`,
       LOG_RULE,
@@ -5037,6 +5080,7 @@
   }
 
   function buildAlertLogCsv() {
+    if (IS_LION_KING_PAGE) return buildLionKingLog(true);
     const logEntries = loadRealAlertLog();
     const rows = [];
     rows.push(
@@ -5111,7 +5155,7 @@
       const link = document.createElement('a');
       link.href = url;
       link.download =
-        `eve-slt-tracker-log-${localDateKey(win.starts)}-${win.id}-` + `${time}.${extension}`;
+        `eve_slt_Jbog_tracker-log-${localDateKey(win.starts)}-${win.id}-` + `${time}.${extension}`;
       withoutObserver(() => {
         document.body.appendChild(link);
         link.click();
@@ -5254,7 +5298,10 @@
     } else {
       relative = `${Math.floor(seconds / 86400)}d ago`;
     }
-    return `\u{1f552} ${relative} \u{b7} ${new Date(ts).toLocaleTimeString()}`;
+    const clock = IS_LION_KING_PAGE
+      ? new Date(ts).toLocaleTimeString('en-US', { timeZone: SITE_TIME_ZONE, timeZoneName: 'short' })
+      : new Date(ts).toLocaleTimeString();
+    return `\u{1f552} ${relative} \u{b7} ${clock}`;
   }
   const ALERT_AGED_MS = 45 * 60 * 1000;
 
@@ -5335,6 +5382,9 @@
   }
 
   function needsReconfirmation(record) {
+    if (record && record.tracker === 'lionking') {
+      return false;
+    }
     if (!record || !record.detailUrl || isDebugData(record)) {
       return false;
     }
@@ -5653,6 +5703,12 @@
   }
 
   function openCardTarget(record) {
+    if (record.tracker === 'lionking') {
+      if (isDebugData(record)) return;
+      openLionKingTestView(record.tailSerial || record.serial, record.started, openExternal,
+        record.operation || (record.transition === 'PRETEST_FAILURE' ? 'PRETEST' : undefined));
+      return;
+    }
     if (record.serial) {
       openTestView(record.serial, openExternal);
       return;
@@ -5672,12 +5728,17 @@
   }
 
   function renderAlertElement(record, shouldStore) {
+    if (IS_LION_KING_PAGE && record.tracker === 'lionking' && !isDebugData(record)) {
+      record = { ...record, ...lionPhysicalLocation(record) };
+    }
     const container = getAlertContainer();
     const alert = document.createElement('div');
     const clickable = isCardClickable(record);
     applyCardState(alert, record);
     if (clickable) {
-      alert.title = record.serial
+      alert.title = record.tracker === 'lionking'
+        ? record.started ? 'Open this Lion King run in TestView 2.0' : 'Open the latest Lion King test in TestView 2.0'
+        : record.serial
         ? 'Click anywhere on this alert to open this serial in TestView'
         : 'Click anywhere on this alert to open Server Detail';
     }
@@ -5685,11 +5746,22 @@
     alert.dataset.slot =
       record.section && record.eve && record.unit ? `${record.section}|${record.eve}|${record.unit}` : '';
     alert.dataset.serial = record.serial || '';
+    if (record.tracker === 'lionking') {
+      alert.dataset.tracker = 'lionking';
+      alert.dataset.headSerial = record.headSerial || '';
+    }
     alert.dataset.debug = isDebugData(record) ? '1' : '0';
-    alert.dataset.search = `${record.serial || ''} ${record.location || ''}`;
+    alert.dataset.search = `${record.serial || ''} ${record.location || ''}` +
+      (record.tracker === 'lionking' ? ` ${record.headSerial || ''} ${record.started || ''}` : '');
     const ts = Number(record.ts) || 0;
     const phaseNote = buildPhaseNote(record);
-    const serialBlock = record.serial
+    const serialBlock = record.tracker === 'lionking'
+      ? ['tail', 'head'].filter(node => record[node + 'Serial']).map(node => `<button class="eve-alert-serial lion-node-serial"
+          data-node="${node}" title="Copy ${node} node serial">
+          <span>${record.source === 'ramses' ? 'JBOG' : node === 'tail' ? 'Tail' : 'Head'}: </span>
+          <span class="eve-alert-serial-value">${escapeHtml(record[node + 'Serial'])}</span>
+          <span class="eve-alert-copy-hint">copy</span></button>`).join('')
+      : record.serial
       ? `
 <button
 class="eve-alert-serial"
@@ -5720,6 +5792,8 @@ ${serialBlock}
 <div class="eve-alert-loc">
 \u{1f4cd} ${escapeHtml(record.location || '')}
 </div>
+${record.tracker === 'lionking' && record.started ? `<div class="eve-alert-started">Started: ${escapeHtml(record.started)}</div>` : ''}
+${record.tracker === 'lionking' && record.finished ? `<div class="eve-alert-started">Finished: ${escapeHtml(record.finished)}${Number.isFinite(record.durationMs) ? ' - ' + escapeHtml(lionHoursMinutes(record.durationMs)) : ''}</div>` : ''}
 <div class="eve-alert-status">
 ${escapeHtml(record.statusLine || '')}
 </div>
@@ -5754,13 +5828,18 @@ ${escapeHtml(formatRelativeTime(ts))}
       refreshAlertChrome();
     });
     const serialButton = alert.querySelector('button.eve-alert-serial');
-    if (serialButton && record.serial) {
+    if (record.tracker === 'lionking') {
+      alert.querySelectorAll('.lion-node-serial').forEach(button => {
+        button.addEventListener('click', () =>
+          copyToClipboard(record[button.dataset.node + 'Serial'], button));
+      });
+    } else if (serialButton && record.serial) {
       serialButton.addEventListener('click', () =>
         copyToClipboard(record.serial, serialButton)
       );
     }
     container.insertBefore(alert, container.firstChild);
-    while (container.children.length > MAX_RENDERED_ALERTS) {
+    while (container.children.length > (record.tracker === 'lionking' ? MAX_STORED_ALERTS : MAX_RENDERED_ALERTS)) {
       container.lastElementChild.remove();
     }
     syncJiraForCard(alert, record);
@@ -6231,7 +6310,9 @@ placeholder="Search serial, location or Jira\u{2026}"
         !alertSearch || (card.dataset.search || '').toLowerCase().indexOf(alertSearch) !== -1;
       const matchesDebugVisibility =
         showDebug || (card.dataset.debug !== '1' && card.dataset.diagnostic !== '1');
-      if (matchesDebugVisibility) {
+      const matchesLionWork = card.dataset.tracker !== 'lionking' || card.dataset.debug === '1' ||
+        lionRowShow({ tailSerial: card.dataset.serial || '', headSerial: card.dataset.headSerial || '' });
+      if (matchesDebugVisibility && matchesLionWork) {
         Object.keys(chipCounts).forEach(key => {
           if (
             key === 'all' ||
@@ -6241,7 +6322,7 @@ placeholder="Search serial, location or Jira\u{2026}"
           }
         });
       }
-      const show = matchesType && matchesSearch && matchesDebugVisibility;
+      const show = matchesType && matchesSearch && matchesDebugVisibility && matchesLionWork;
       card.style.display = show ? '' : 'none';
       if (show) {
         visible += 1;
@@ -6285,6 +6366,10 @@ placeholder="Search serial, location or Jira\u{2026}"
   function refreshAlertChrome() {
     updateAlertContainerVisibility();
     applyAlertFilter();
+    if (IS_LION_KING_PAGE) {
+      const count = [...document.querySelectorAll('#eve-alert-body .eve-alert')].filter(card => card.style.display !== 'none').length;
+      setTextIfChanged(document.getElementById('lion-rack-back'), 'Back to tracker' + (count ? ' · ' + count + ' alerts' : ''));
+    }
   }
 
   // ===== SAFE BUTTON WIRING =====
@@ -6389,7 +6474,7 @@ placeholder="Search serial, location or Jira\u{2026}"
         }
         if (collapseButton) {
           collapseButton.textContent = '\u{ff0b}';
-          collapseButton.title = 'Expand EVE SLT Tracker';
+          collapseButton.title = 'Expand ' + TRACKER_LABEL;
         }
       }
     }
@@ -6412,7 +6497,7 @@ placeholder="Search serial, location or Jira\u{2026}"
     collapseButton.type = 'button';
     collapseButton.className = 'eve-collapse-btn';
     collapseButton.textContent = '\u{2212}';
-    collapseButton.title = 'Collapse EVE SLT Tracker';
+    collapseButton.title = 'Collapse ' + TRACKER_LABEL;
     title.appendChild(collapseButton);
     const body = document.createElement('div');
     body.className = 'eve-tracker-body';
@@ -6426,7 +6511,7 @@ placeholder="Search serial, location or Jira\u{2026}"
       const collapsed = panel.classList.toggle('eve-tracker-collapsed');
       body.style.display = collapsed ? 'none' : '';
       collapseButton.textContent = collapsed ? '\u{ff0b}' : '\u{2212}';
-      collapseButton.title = collapsed ? 'Expand EVE SLT Tracker' : 'Collapse EVE SLT Tracker';
+      collapseButton.title = collapsed ? 'Expand ' + TRACKER_LABEL : 'Collapse ' + TRACKER_LABEL;
       savePanelPosition(panel);
     });
     let dragState = null;
@@ -6515,6 +6600,7 @@ placeholder="Search serial, location or Jira\u{2026}"
     panel.classList.add('eve-tracker-window');
     panel.innerHTML = buildTrackerPanelMarkup();
     withoutObserver(() => document.body.appendChild(panel));
+    addProfileNavigation(panel);
     setupTrackerWindowUX(panel);
     buildSectionControls();
     wireTrackerSettings();
@@ -6540,7 +6626,7 @@ placeholder="Search serial, location or Jira\u{2026}"
     return `
 <div class="eve-panel-title">
 <div class="eve-title-info">
-<div class="eve-title-name">EVE SLT Tracker</div>
+<div class="eve-title-name">${TRACKER_LABEL}</div>
 <div class="eve-title-meta">
 by Zay Davidson <span class="eve-version">v${SCRIPT_VERSION}</span>
 </div>
@@ -8037,7 +8123,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     const running = root.getAttribute(RUNNING_ATTR);
     if (running) {
       warn(
-        `Another copy of EVE SLT Tracker (v${running}) is already running in this ` +
+        `Another copy of eve_slt_Jbog_tracker (v${running}) is already running in this ` +
           `tab. This copy (v${SCRIPT_VERSION}) stays idle so every alert is not ` +
           'logged and notified twice. Remove the extra copy in the Tampermonkey ' +
           'Dashboard.'
@@ -8109,7 +8195,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         persistBeforeUnload(false);
       });
       log(
-        `EVE SLT Tracker v${SCRIPT_VERSION} running\n` +
+        `eve_slt_Jbog_tracker v${SCRIPT_VERSION} running\n` +
           '  by Zay Davidson\n' +
           '  Report bugs: ' +
           'https://github.com/zayd117/EVE-SLT-TRACKER/issues'
@@ -8145,7 +8231,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         'background:#7f1d1d;color:#fff;border:2px solid #ef4444;' +
         'font:13px Arial,Helvetica,sans-serif;';
       banner.textContent =
-        `EVE SLT Tracker v${SCRIPT_VERSION} FAILED TO START. ` +
+        `eve_slt_Jbog_tracker v${SCRIPT_VERSION} FAILED TO START. ` +
         'This page is NOT being monitored. ' +
         `Error: ${error && error.message ? error.message : error}`;
       document.body.appendChild(banner);
@@ -8420,9 +8506,3072 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     });
   }
 
+  // ===== LION KING TESTVIEW HANDOFF =====
+  // Resolve UUT IDs through the observed list API, then verify identity with
+  // by_id. The user's browser session supplies authentication for both.
+  const LION_TESTVIEW_LIST_PATH = '/uut/gpu_jbog_test/list';
+  const LION_TESTVIEW_API_PATH = '/api/v1/uut_status/view';
+  const LION_TESTVIEW_HANDOFF_KEY = 'eveLionTestViewHandoff';
+  const LION_TESTVIEW_HANDOFF_TTL_MS = 120000;
+  const LION_TESTVIEW_HASH_SERIAL = 'eveLionSn';
+  const LION_TESTVIEW_HASH_STARTED = 'eveLionStarted';
+  const LION_TESTVIEW_HASH_OPERATION = 'eveLionOperation';
+  const lionDetailLookups = new Map();
+
+  function lionTestViewOperation(operation) {
+    const value = String(operation || '').trim().toUpperCase();
+    if (value === 'PRETEST' || value === 'GPU_JBOG_TEST_PRETEST') return 'GPU_JBOG_TEST_PRETEST';
+    return !value || value === 'GPU_JBOG_TEST' ? 'GPU_JBOG_TEST' : '';
+  }
+
+  function lionTestViewAPIRecords(body) {
+    const records = [];
+    const inspect = (value, depth) => {
+      if (!value || typeof value !== 'object' || depth > 3 || records.length >= 1000) return;
+      if (Array.isArray(value)) { value.slice(0, 1000).forEach(item => inspect(item, depth + 1)); return; }
+      if (Object.prototype.hasOwnProperty.call(value, 'id')) records.push(value);
+      for (const key of ['data', 'item', 'items', 'result', 'results']) {
+        if (Object.prototype.hasOwnProperty.call(value, key)) inspect(value[key], depth + 1);
+      }
+    };
+    inspect(body, 0);
+    return records;
+  }
+
+  async function requestLionKingAPI(url) {
+    const origin = new URL(TESTVIEW_LIST_URL).origin;
+    if (url.origin !== origin || !/^\/api\/v1\/uut_status\/view(?:\/\d+\/by_id)?$/.test(url.pathname)) return null;
+    const parse = (status, text, finalURL) => {
+      if (Number(status) !== 200 || typeof text !== 'string' || text.length > 2 * 1024 * 1024) return null;
+      try {
+        if (finalURL) {
+          const final = new URL(finalURL);
+          if (final.origin !== origin || final.pathname !== url.pathname) return null;
+        }
+        return JSON.parse(text);
+      } catch (error) { return null; }
+    };
+    if (isTestViewOrigin()) {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timeout = setTimeout(() => controller?.abort(), TESTVIEW_LOOKUP_TIMEOUT_MS);
+      try {
+        const response = await fetch(url.href, { credentials: 'include', headers: { Accept: 'application/json' },
+          signal: controller?.signal });
+        return parse(response.status, await response.text(), response.url);
+      } catch (error) { return null; }
+      finally { clearTimeout(timeout); }
+    }
+    if (typeof GM_xmlhttpRequest !== 'function') return null;
+    return new Promise(resolve => {
+      let finished = false, request;
+      const done = value => { if (!finished) { finished = true; clearTimeout(timeout); resolve(value); } };
+      const timeout = setTimeout(() => { done(null); try { request?.abort(); } catch (error) {} }, TESTVIEW_LOOKUP_TIMEOUT_MS + 1000);
+      try {
+        request = GM_xmlhttpRequest({ method: 'GET', url: url.href, anonymous: false,
+          headers: { Accept: 'application/json' }, timeout: TESTVIEW_LOOKUP_TIMEOUT_MS,
+          onload: response => done(parse(response.status, response.responseText, response.finalUrl)),
+          onerror: () => done(null), ontimeout: () => done(null), onabort: () => done(null) });
+      } catch (error) { done(null); }
+    });
+  }
+
+  function lionTestViewAPIRun(record, serial, operation) {
+    const wantedOperation = lionTestViewOperation(operation);
+    return !!record && /^[1-9]\d{0,15}$/.test(String(record.id || '')) &&
+      typeof record.uut_sn === 'string' && record.uut_sn.trim().toUpperCase() === serial &&
+      !!wantedOperation && typeof record.operation === 'string' &&
+      record.operation.trim().toUpperCase() === wantedOperation &&
+      typeof record.started === 'string' && Number.isFinite(lionStartedAt(record.started.trim()));
+  }
+
+  async function lookupLionKingDirect(serial, started, operation) {
+    const sn = String(serial || '').trim().toUpperCase();
+    const requested = String(started || '').trim();
+    const wantedOperation = lionTestViewOperation(operation);
+    const wantStarted = requested ? lionStartedAt(requested) : null;
+    if (!wantedOperation || !/^[A-Z0-9_-]{1,120}$/.test(sn) || (requested && !Number.isFinite(wantStarted))) return '';
+    const key = JSON.stringify([sn, requested, wantedOperation]);
+    if (lionDetailLookups.has(key)) return lionDetailLookups.get(key);
+    const lookup = async () => {
+      const query = async (latest, page) => {
+        const url = new URL(LION_TESTVIEW_API_PATH, TESTVIEW_LIST_URL);
+        for (const field of ['id', 'uut_sn', 'fixture_sn', 'status', 'finished', 'started', 'operation']) {
+          url.searchParams.append('fields', field);
+        }
+        url.searchParams.set('only_latest_uut_status', String(latest));
+        url.searchParams.set('operation', wantedOperation);
+        url.searchParams.set('operation_is_exact', 'true');
+        url.searchParams.set('page_num', String(page));
+        url.searchParams.set('page_size', '10');
+        url.searchParams.set('return_page_info', 'true');
+        url.searchParams.set('uut_sn', sn);
+        const body = await requestLionKingAPI(url);
+        return body ? lionTestViewAPIRecords(body) : null;
+      };
+      const select = rows => {
+        const matches = rows.filter(row => lionTestViewAPIRun(row, sn, wantedOperation) &&
+          (wantStarted === null || lionStartedAt(row.started.trim()) === wantStarted));
+        matches.sort((a, b) => lionStartedAt(b.started.trim()) - lionStartedAt(a.started.trim()));
+        if (!matches.length) return null;
+        const newest = lionStartedAt(matches[0].started.trim());
+        const ids = new Set(matches.filter(row => lionStartedAt(row.started.trim()) === newest).map(row => String(row.id)));
+        return ids.size === 1 ? matches[0] : null;
+      };
+      const latest = await query(true, 1);
+      if (!latest) return '';
+      let selected = select(latest);
+      // A PASS card can describe an earlier attempt. Search API history for
+      // that exact Started value rather than opening a newer retest.
+      if (!selected && requested) {
+        for (let page = 1; page <= 5; page += 1) {
+          const rows = await query(false, page);
+          if (!rows) return '';
+          selected = select(rows);
+          if (selected || rows.length < 10) break;
+        }
+      }
+      if (!selected) return '';
+      const verified = await lookupLionKingDetail(String(selected.id), sn, selected.started, wantedOperation);
+      return verified ? new URL(`/uut/detail/${selected.id}`, TESTVIEW_LIST_URL).href : '';
+    };
+    const pending = lookup().catch(() => '').finally(() => lionDetailLookups.delete(key));
+    lionDetailLookups.set(key, pending);
+    return pending;
+  }
+
+  function buildLionKingTestViewUrl(serial, started, operation) {
+    const url = new URL(LION_TESTVIEW_LIST_PATH, TESTVIEW_LIST_URL);
+    url.hash = new URLSearchParams({ [LION_TESTVIEW_HASH_SERIAL]: String(serial || '').trim(),
+      [LION_TESTVIEW_HASH_STARTED]: String(started || '').trim(),
+      [LION_TESTVIEW_HASH_OPERATION]: lionTestViewOperation(operation) }).toString();
+    return url.href;
+  }
+
+  async function openLionKingTestView(serial, started, opener, operation) {
+    const target = { serial: String(serial || '').trim(), started: String(started || '').trim(),
+      operation: lionTestViewOperation(operation) };
+    if (!target.serial || !target.operation) return;
+    const open = typeof opener === 'function' ? opener : openExternal;
+    let popup = null;
+    if (open === openExternal || (open === openFromNotification && typeof GM_openInTab !== 'function')) {
+      // Reserve the user's click before awaiting the API to avoid popup blocking.
+      try {
+        popup = window.open('about:blank', '_blank');
+        if (popup) {
+          popup.opener = null;
+          popup.document.title = 'Opening Lion King TestView';
+          popup.document.body.textContent = 'Opening TestView...';
+        }
+      } catch (error) {}
+    }
+    const navigate = url => {
+      if (popup) {
+        if (popup.closed) return;
+        try {
+          if (popup.location.href !== 'about:blank') return;
+          popup.location.replace(url);
+        } catch (error) {}
+      } else if (open === openExternal && typeof GM_openInTab === 'function') {
+        GM_openInTab(url, { active: true, insert: true });
+      } else open(url);
+    };
+    const detail = await lookupLionKingDirect(target.serial, target.started, target.operation);
+    if (popup?.closed) return;
+    if (detail) { navigate(detail); return; }
+    // Retry from the signed-in TestView origin if cross-origin session cookies
+    // are unavailable. That helper also uses the API; it never types or clicks Query.
+    try {
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(LION_TESTVIEW_HANDOFF_KEY, JSON.stringify({ ...target, ts: Date.now() }));
+      }
+    } catch (error) {}
+    navigate(buildLionKingTestViewUrl(target.serial, target.started, target.operation));
+  }
+
+  function readLionKingTestViewTarget() {
+    let handoff = null;
+    try {
+      if (typeof GM_getValue === 'function') {
+        handoff = JSON.parse(GM_getValue(LION_TESTVIEW_HANDOFF_KEY, 'null'));
+      }
+    } catch (error) {}
+    try {
+      if (typeof GM_deleteValue === 'function') GM_deleteValue(LION_TESTVIEW_HANDOFF_KEY);
+    } catch (error) {}
+    const hash = new URLSearchParams(String(window.location.hash || '').replace(/^#/, ''));
+    if (hash.has(LION_TESTVIEW_HASH_SERIAL)) {
+      const serial = (hash.get(LION_TESTVIEW_HASH_SERIAL) || '').trim();
+      const started = (hash.get(LION_TESTVIEW_HASH_STARTED) || '').trim();
+      const operation = lionTestViewOperation(hash.get(LION_TESTVIEW_HASH_OPERATION));
+      hash.delete(LION_TESTVIEW_HASH_SERIAL);
+      hash.delete(LION_TESTVIEW_HASH_STARTED);
+      hash.delete(LION_TESTVIEW_HASH_OPERATION);
+      try {
+        const rest = hash.toString();
+        history.replaceState(null, '', window.location.pathname + window.location.search +
+          (rest ? `#${rest}` : ''));
+      } catch (error) {}
+      return { serial, started, operation };
+    }
+    const age = handoff && Date.now() - Number(handoff.ts);
+    if (handoff && typeof handoff.serial === 'string' && Number.isFinite(age) &&
+        age >= 0 && age < LION_TESTVIEW_HANDOFF_TTL_MS) {
+      return { serial: handoff.serial.trim(),
+        started: typeof handoff.started === 'string' ? handoff.started.trim() : '',
+        operation: lionTestViewOperation(handoff.operation) };
+    }
+    return { serial: '', started: '', operation: 'GPU_JBOG_TEST' };
+  }
+
+  function findLionKingTestViewSnInput() {
+    const input = document.getElementById('uut_sn');
+    return input && input.tagName === 'INPUT' ? input : findTestViewSnInput();
+  }
+
+  function lionTestViewElementVisible(element) {
+    return !!element && element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== 'hidden';
+  }
+
+  function lionTestViewRows() {
+    return [...document.querySelectorAll('.ant-table-tbody tr.ant-table-row, tbody tr')]
+      .filter(row => lionTestViewElementVisible(row) && row.querySelector('td') &&
+        !row.classList.contains('ant-table-placeholder'));
+  }
+
+  function lionTestViewExactSerial(row, serial) {
+    const want = String(serial || '').trim().toUpperCase();
+    if (!want) return false;
+    return Array.from(row.cells).some(cell => cell.textContent.trim().toUpperCase() === want ||
+      Array.from(cell.querySelectorAll('a')).some(anchor => anchor.textContent.trim().toUpperCase() === want));
+  }
+
+  function lionTestViewResultsFiltered(serial) {
+    const rows = lionTestViewRows();
+    if (rows.length) return rows.every(row => lionTestViewExactSerial(row, serial));
+    return [...document.querySelectorAll('.ant-table-placeholder')]
+      .some(lionTestViewElementVisible);
+  }
+
+  function lionTestViewRowStarted(row) {
+    // Read the Started column, never another date such as Finished. Some
+    // Ant Design tables keep the header in a separate table above the body.
+    const table = row.closest('table');
+    const scope = table && table.querySelector('thead') ? table : row.closest('.ant-table');
+    if (!scope) return NaN;
+    for (const header of scope.querySelectorAll('thead tr')) {
+      const cells = [...header.children];
+      if (cells.some(cell => Number(cell.getAttribute('colspan') || 1) !== 1 ||
+          Number(cell.getAttribute('rowspan') || 1) !== 1)) continue;
+      const index = cells.findIndex(cell =>
+        /^STARTED(?:TIME)?$/.test(cell.textContent.replace(/\s+/g, '').toUpperCase()));
+      if (index !== -1 && row.children[index]) {
+        return lionStartedAt(row.children[index].textContent.replace(/\s+/g, ' ').trim());
+      }
+    }
+    return NaN;
+  }
+
+  function lionTestViewDetailCandidates(serial, started) {
+    const wantStarted = lionStartedAt(String(started || '').trim());
+    if (!Number.isFinite(wantStarted)) return [];
+    const found = new Map();
+    for (const row of lionTestViewRows()) {
+      if (!lionTestViewExactSerial(row, serial) || lionTestViewRowStarted(row) !== wantStarted) continue;
+      for (const anchor of row.querySelectorAll('a[href]')) {
+        if (!lionTestViewElementVisible(anchor)) continue;
+        try {
+          const url = new URL(anchor.getAttribute('href'), window.location.href);
+          const match = /^\/uut\/detail\/(\d+)\/?$/.exec(url.pathname);
+          if (url.origin === new URL(TESTVIEW_LIST_URL).origin && match) {
+            found.set(match[1], url.href);
+          }
+        } catch (error) {}
+      }
+    }
+    return [...found.values()];
+  }
+
+  async function lookupLionKingDetail(id, serial, started, operation) {
+    const runId = String(id || '');
+    const sn = String(serial || '').trim().toUpperCase();
+    const wantedOperation = lionTestViewOperation(operation);
+    const wantStarted = lionStartedAt(String(started || '').trim());
+    if (!wantedOperation || !/^[1-9]\d{0,15}$/.test(runId) || !sn ||
+        !Number.isFinite(wantStarted)) return null;
+    const url = new URL(`${LION_TESTVIEW_API_PATH}/${runId}/by_id`, TESTVIEW_LIST_URL);
+    for (const field of ['id', 'uut_sn', 'fixture_sn', 'status', 'operation', 'started',
+      'finished', 'duration']) url.searchParams.append('fields', field);
+    try {
+      const body = await requestLionKingAPI(url);
+      if (!body) return null;
+      const matches = lionTestViewAPIRecords(body).filter(record =>
+        String(record.id) === runId && lionTestViewAPIRun(record, sn, wantedOperation) &&
+        lionStartedAt(record.started.trim()) === wantStarted);
+      // Verify the serial, operation and Started value of the requested run.
+      return matches.length === 1 ? matches[0] : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  async function runLionKingTestViewAutoQuery() {
+    if (!isTestViewOrigin() || window.location.pathname !== LION_TESTVIEW_LIST_PATH) return;
+    const target = readLionKingTestViewTarget();
+    if (!target.serial || !target.operation) return;
+    let userTookOver = false;
+    const onUserInput = event => { if (event.isTrusted) userTookOver = true; };
+    document.addEventListener('keydown', onUserInput, true);
+    document.addEventListener('paste', onUserInput, true);
+    try {
+      const detail = await lookupLionKingDirect(target.serial, target.started, target.operation);
+      if (userTookOver) return;
+      if (detail) {
+        window.location.replace(detail);
+        return;
+      }
+      showTestViewBanner(`eve_slt_Jbog_tracker: could not resolve the ${target.operation} detail for ${target.serial}. ` +
+        'Check your TestView login and try again.');
+    } catch (error) {
+      if (!userTookOver) {
+        showTestViewBanner(`eve_slt_Jbog_tracker: could not resolve the test for ${target.serial}. ` +
+          'Check your TestView login and try again.');
+      }
+    } finally {
+      document.removeEventListener('keydown', onUserInput, true);
+      document.removeEventListener('paste', onUserInput, true);
+    }
+  }
+
+  // ===== PROFILE NAVIGATION =====
+
+  function addProfileNavigation(panel) {
+    const nav = document.createElement('nav');
+    nav.className = 'eve-profile-navigation';
+    nav.setAttribute('aria-label', 'Tracker pages');
+    const collector = IS_LION_RAMSES_PAGE ? 'https://mfg-collector.hyvesolutions.org' : '';
+    nav.innerHTML = `<a href="${collector}/out/out.eveslt.php">EVE SLT</a> | ` +
+      `<a href="${collector}/out/out.evelionking_all.php">Lion King</a> | ` +
+      `<a href="${LION_RAMSES_URL}">Ramses JBOG</a>`;
+    panel.appendChild(nav);
+  }
+
+  // ===== LION KING ROW MONITOR =====
+  const LION_DAY_MS = 24 * 60 * 60 * 1000;
+  const LION_MAX_RUNS = 12000;
+  const LION_AREAS = { b6: 'B6', b7: 'B7', lionking2: 'E2/E4/BL',
+    unassigned: 'Unassigned' };
+
+  // ===== LION KING PHYSICAL RACK BOARD =====
+  // The source supplies test identity, not physical location. Only scans made
+  // on this board assign locations; sorting or test status never moves a JBOG.
+  const LION_RACK_BOARD_KEY = 'eveLionRackBoardV1';
+  const LION_RACK_WINDOW_KEY = 'lionKingTrackerRackBoardWindow';
+  const LION_RACK_LAYOUT_REVISION = 2;
+  const LION_WORK_PREFS_REVISION = 1;
+  const LION_RACK_SEEN_KEY = 'lionKingTrackerRackSeenTimesV1';
+  let lionRackSeenTimes = null;
+  const LION_RACK_ROWS = [
+    { area: 'b6', racks: ['TA.B6-EVE03', 'TA.B6-EVE02', 'TA.B6-EVE01', 'TA.B6-EVE04', 'TA.B7-EVE05'] },
+    { area: 'b7', racks: ['TA.B7-EVE02', 'TA.B6-EVE05', 'TA.B7-EVE01', 'TA.B7-EVE03', 'TA.B7-EVE04'] },
+    { area: 'lionking2', racks: ['TA.E2-EVE04', 'TA.E4-EVE06', 'TA.E2-EVE06', 'TA.E4-EVE01', 'TA.BL-EVE03',
+      'TA.E4-EVE05', 'TA.E2-EVE03', 'TA.E4-EVE04', 'TA.E2-EVE02', 'TA.E2-EVE05', 'TA.E4-EVE02'] }
+  ];
+  const LION_SLOT_LABELS = ['Top middle', 'Bottom middle', 'Left middle', 'Right middle'];
+  let lionRackBoard = null;
+  let lionRackIndex = new Map();
+  let lionRackSnapshot = null;
+  let lionRackDisplay = new Map();
+  let lionRackNodeDisplay = new Map();
+  let lionRackUI = null;
+  let lionRackDragging = false;
+  let lionRackSelected = null;
+  // Visibility, expansion and notifications share one saved Enabled state.
+  let lionRackPairedScrollLeft = 0;
+  let lionRackPairedScrollFrame = 0;
+  const lionRackExpectedScroll = new WeakMap();
+  let lionRackSelectionLoading = false;
+  let lionRackSelectionNextAt = 0;
+
+  function lionRackSerial(value) {
+    const text = String(value || '').trim().toUpperCase();
+    return /^[A-Z0-9_-]{1,120}$/.test(text) ? text : '';
+  }
+
+  function lionRackBarcode(value) {
+    const text = String(value || '').trim().toUpperCase();
+    return /^TA\.[A-Z0-9]{1,12}-EVE\d{1,3}$/.test(text) ? text : '';
+  }
+
+  function normalizeLionRackBoard(value) {
+    const valid = isRecordObject(value) && value.version === 1 && Array.isArray(value.rows) && value.rows.length === 3;
+    const usedRacks = new Set(), usedSerials = new Set(), slots = {};
+    const rows = LION_RACK_ROWS.map((defaults, index) => {
+      const source = valid && Array.isArray(value.rows[index]?.racks) ? value.rows[index].racks : defaults.racks;
+      const racks = source.slice(0, 96).map(lionRackBarcode).filter(rack => {
+        if (!rack || usedRacks.has(rack) || usedRacks.size >= 96) return false;
+        usedRacks.add(rack); return true;
+      });
+      racks.forEach(rack => {
+        slots[rack] = Array.from({ length: 4 }, (_, position) => {
+          const saved = valid && Array.isArray(value.slots?.[rack]) ? value.slots[rack][position] : null;
+          let serial = lionRackSerial(saved?.serial), partner = lionRackSerial(saved?.partner);
+          if (usedSerials.has(serial)) serial = '';
+          if (!serial) return { serial: '', partner: '' };
+          usedSerials.add(serial);
+          if (partner === serial || usedSerials.has(partner)) partner = '';
+          if (partner) usedSerials.add(partner);
+          return { serial, partner };
+        });
+      });
+      return { area: defaults.area, racks };
+    });
+    const work = { racks: {}, slots: {} };
+    const currentWorkPrefs = valid && value.workRevision === LION_WORK_PREFS_REVISION;
+    rows.forEach(row => row.racks.forEach(rack => {
+      const rackPrefs = valid ? value.work?.racks?.[rack] : null;
+      // Old releases enabled every rack by default. Start that layout off
+      // once, preserving scans and all choices made after this migration.
+      const enabled = currentWorkPrefs && rackPrefs?.show === true && rackPrefs?.watch === true;
+      work.racks[rack] = { show: enabled, watch: enabled };
+      work.slots[rack] = Array.from({ length: 4 }, (_, position) => {
+        const prefs = valid ? value.work?.slots?.[rack]?.[position] : null;
+        return { show: prefs?.show !== false, watch: prefs?.watch !== false };
+      });
+    }));
+    return { version: 1, kind: 'eve-lion-rack-board', workRevision: LION_WORK_PREFS_REVISION,
+      layoutRevision: valid ? (value.layoutRevision === LION_RACK_LAYOUT_REVISION ? LION_RACK_LAYOUT_REVISION : 0) : LION_RACK_LAYOUT_REVISION,
+      rows, slots, work };
+  }
+
+  function restoreLionRackScanOrder(board) {
+    if (board.layoutRevision === LION_RACK_LAYOUT_REVISION) return board;
+    // Repair older layouts once. Assignments and work preferences are keyed
+    // by rack barcode, so restoring scan order does not move any JBOG slots.
+    // Row names describe the physical rows, never the barcode prefix.
+    const scannedRacks = new Set(LION_RACK_ROWS.flatMap(row => row.racks));
+    const rows = LION_RACK_ROWS.map((defaults, index) => ({ area: defaults.area,
+      racks: [...defaults.racks.filter(rack => Object.prototype.hasOwnProperty.call(board.slots, rack)),
+        ...board.rows[index].racks.filter(rack => !scannedRacks.has(rack))] }));
+    return normalizeLionRackBoard({ ...board, rows, layoutRevision: LION_RACK_LAYOUT_REVISION });
+  }
+
+  function readLionRackBoard() {
+    let shared = null;
+    try {
+      if (typeof GM_getValue === 'function') {
+        const raw = GM_getValue(LION_RACK_BOARD_KEY, null);
+        shared = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      }
+    } catch (error) {}
+    const stored = shared || readJSON(localStorage, LION_RACK_BOARD_KEY, null, 'Rack board');
+    const migrateWork = !isRecordObject(stored) || stored.workRevision !== LION_WORK_PREFS_REVISION;
+    const saved = normalizeLionRackBoard(stored);
+    const board = restoreLionRackScanOrder(saved);
+    if (board !== saved || migrateWork) {
+      try { if (typeof GM_setValue === 'function') GM_setValue(LION_RACK_BOARD_KEY, JSON.stringify(board)); } catch (error) {}
+      writeJSON(localStorage, LION_RACK_BOARD_KEY, board, 'Rack board');
+    }
+    return board;
+  }
+
+  function indexLionRacks() {
+    lionRackIndex = new Map();
+    lionRackBoard.rows.forEach(row => row.racks.forEach(rack => {
+      lionRackBoard.slots[rack].forEach((entry, position) => {
+        const location = { rackId: rack, rackSlot: position + 1, area: row.area };
+        if (entry.serial) lionRackIndex.set(entry.serial, location);
+        if (entry.partner) lionRackIndex.set(entry.partner, location);
+      });
+    }));
+  }
+
+  function lionRackPlacement(row) {
+    const tail = lionRackIndex.get(lionRackSerial(row.tailSerial || row.serial));
+    const head = lionRackIndex.get(lionRackSerial(row.headSerial));
+    if (tail && head && (tail.rackId !== head.rackId || tail.rackSlot !== head.rackSlot)) return { conflict: true };
+    return tail || head || null;
+  }
+
+  function lionPhysicalLocation(row) {
+    const placement = lionRackPlacement(row);
+    const area = lionAreaForRow(row);
+    return { area, rackId: placement && !placement.conflict ? placement.rackId : '',
+      rackSlot: placement && !placement.conflict ? placement.rackSlot : null,
+      location: placement?.conflict ? 'Conflicting rack assignments - check tail and head nodes' :
+        placement ? placement.rackId + ' · JBOG ' + placement.rackSlot + ' (' + LION_SLOT_LABELS[placement.rackSlot - 1] + ')' :
+          LION_AREAS[area] + ' - JBOG ' + (row.jbog || row.tailSerial || row.serial || '') };
+  }
+
+  function lionRackAreaSettings(rack) {
+    const area = lionRackBoard?.rows.find(row => row.racks.includes(rack))?.area || 'unassigned';
+    return lionAreaSettings(area);
+  }
+
+  function lionRowPreference(row, property) {
+    return lionAreaSettings(lionAreaForRow(row))[property];
+  }
+
+  function lionRowShow(row) { return lionRowPreference(row, 'show'); }
+  function lionRowWatch(row) { return lionRowPreference(row, 'watch'); }
+
+  function renderLionRackWorkControls() {
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board) return;
+    board.querySelectorAll('[data-lion-area-controls]').forEach(holder => {
+      const area = holder.dataset.lionAreaControls, name = LION_AREAS[area];
+      const prefs = lionAreaSettings(area), counts = lastSectionCounts?.[area] || {};
+      const stats = [['testing', 'test', 'Testing'], ['pretest', 'pre', 'Running pre-test'],
+        ['failed', 'fail', 'Test failures'], ['pretestFailed', 'pre-fail', 'Pre-test failures'], ['passed', 'pass', 'Passed']]
+        .filter(([field]) => counts[field] > 0).map(([field, label, title]) =>
+          '<span class="lion-work-count lion-work-count-' + field + '" title="' + title + '">' +
+          counts[field] + ' ' + label + '</span>').join('') || '<span class="lion-work-count">0 active</span>';
+      const markup = '<label class="lion-work-toggle" title="Visibility and notifications for ' + escapeHtml(name) +
+        '"><input type="checkbox" data-work-area="' + area + '" data-work-property="enabled" aria-label="Enable ' +
+        escapeHtml(name) + ' visibility and notifications"' + (prefs.show ? ' checked' : '') +
+        '><span>Enabled</span></label><span class="lion-work-counts">' + stats + '</span>';
+      if (holder.innerHTML !== markup) holder.innerHTML = markup;
+      const row = board.querySelector('#lion-rack-row-' + area);
+      if (row) { row.open = prefs.show; row.hidden = !prefs.show; }
+      const toggle = board.querySelector('[data-lion-row-toggle="' + area + '"]');
+      if (toggle) toggle.setAttribute('aria-expanded', String(prefs.show));
+    });
+  }
+
+  function refreshLionRackAlertLocations() {
+    const records = loadActiveAlerts().map(record =>
+      record.tracker === 'lionking' && !isDebugData(record) ? { ...record, ...lionPhysicalLocation(record) } : record);
+    saveActiveAlerts(records);
+    const byId = new Map(records.map(record => [record.id, record]));
+    document.querySelectorAll('#eve-alert-body .eve-alert').forEach(card => {
+      const record = byId.get(card.dataset.alertId);
+      if (!record || record.tracker !== 'lionking' || isDebugData(record)) return;
+      setTextIfChanged(card.querySelector('.eve-alert-loc'), '\u{1f4cd} ' + record.location);
+      const oldBase = card.dataset.searchBase || '';
+      const suffix = oldBase && (card.dataset.search || '').startsWith(oldBase)
+        ? card.dataset.search.slice(oldBase.length) : '';
+      const base = (record.serial || '') + ' ' + record.location + ' ' +
+        (record.headSerial || '') + ' ' + (record.started || '');
+      card.dataset.searchBase = base; card.dataset.search = base + suffix;
+    });
+    applyAlertFilter();
+  }
+
+  function lionRackFeedback(message) {
+    setTextIfChanged(document.getElementById('lion-rack-feedback'), message);
+  }
+
+  function saveLionRackBoard(next) {
+    const candidate = restoreLionRackScanOrder(normalizeLionRackBoard(next));
+    let sharedSaved = false;
+    try {
+      if (typeof GM_setValue === 'function') {
+        GM_setValue(LION_RACK_BOARD_KEY, JSON.stringify(candidate)); sharedSaved = true;
+      }
+    } catch (error) {}
+    const localSaved = writeJSON(localStorage, LION_RACK_BOARD_KEY, candidate, 'Rack board');
+    if (!sharedSaved && !localSaved) { lionRackFeedback('Could not save the rack board. Assignment was not changed.'); return false; }
+    lionRackBoard = candidate; indexLionRacks();
+    const board = document.getElementById('eve-lion-rack-board');
+    if (board) board.dataset.signature = '';
+    refreshLionRackAlertLocations();
+    refreshLionRackBoard(lionRackSnapshot);
+    scanLionKing();
+    return true;
+  }
+
+  function assignLionRackSlot(rack, position, serial, partner, options = {}) {
+    const sn = lionRackSerial(serial), other = partner ? lionRackSerial(partner) : '';
+    if (!sn || (partner && !other) || other === sn) {
+      lionRackFeedback('Scan a JBOG serial. The optional other node must be a different serial.'); return false;
+    }
+    const next = readLionRackBoard();
+    if (!next.slots[rack] || !Number.isInteger(position) || position < 0 || position > 3) return false;
+    const target = next.slots[rack][position];
+    if (target.serial && target.serial !== sn && target.partner !== sn && !options.replace) {
+      lionRackFeedback(rack + ' slot ' + (position + 1) + ' is occupied by ' + target.serial + '. Clear it or choose an empty slot.');
+      return false;
+    }
+    // Move the whole physical assignment, including a previously saved second
+    // node, and remove its old slot before storing the new one.
+    let companion = other;
+    Object.values(next.slots).forEach(entries => entries.forEach(entry => {
+      if (entry.serial === sn || entry.partner === sn) {
+        if (!companion) companion = entry.serial === sn ? entry.partner : entry.serial;
+      }
+    }));
+    Object.values(next.slots).forEach(entries => entries.forEach((entry, index) => {
+      if ([entry.serial, entry.partner].some(value => value && (value === sn || value === companion))) {
+        entries[index] = { serial: '', partner: '' };
+      }
+    }));
+    next.slots[rack][position] = { serial: sn, partner: companion || '' };
+    if (!saveLionRackBoard(next)) return false;
+    lionRackFeedback(sn + ' saved in ' + rack + ' · JBOG ' + (position + 1) + '.');
+    return true;
+  }
+
+  function clearLionRackSlot(rack, position, expectedSerial) {
+    const next = readLionRackBoard(), entry = next.slots[rack]?.[position];
+    if (!Number.isInteger(position) || !entry?.serial) return false;
+    if (expectedSerial && entry.serial !== expectedSerial) {
+      // Another tab may have assigned a different JBOG since this was drawn.
+      lionRackBoard = next; indexLionRacks();
+      refreshLionRackAlertLocations(); refreshLionRackBoard(lionRackSnapshot);
+      lionRackFeedback('This slot changed. Use the × on its current JBOG.');
+      return false;
+    }
+    next.slots[rack][position] = { serial: '', partner: '' };
+    if (!saveLionRackBoard(next)) return false;
+    if (lionRackSelected?.rack === rack && lionRackSelected.position === position) {
+      const input = document.getElementById('lion-rack-serial');
+      if (input) input.value = '';
+      renderLionRackSelection();
+      lionRackFeedback('Slot cleared. Ready for a new JBOG.');
+    }
+    return true;
+  }
+
+  function updateLionRackSeenTimes(snapshot) {
+    if (!snapshot?.attention?.usable) return;
+    const now = Date.now();
+    if (!lionRackSeenTimes) {
+      const saved = readJSON(localStorage, LION_RACK_SEEN_KEY, {}, 'Rack observation times');
+      lionRackSeenTimes = Object.fromEntries(Object.entries(isRecordObject(saved) ? saved : {})
+        .filter(([key, value]) => key.length <= 300 && isRecordObject(value) && Number.isFinite(value.at) &&
+          value.at > 0 && value.at <= now + 600000 && Number.isSafeInteger(value.episode) &&
+          value.episode >= 0 && typeof value.present === 'boolean').slice(0, LION_MAX_RUNS));
+    }
+    const alerts = new Map(loadActiveAlerts().filter(record => record.tracker === 'lionking' &&
+      record.phaseSource === 'ramses-failed-board' && Number.isFinite(record.ts))
+      .map(record => [record.runKey, record.ts]));
+    const present = new Set();
+    let changed = false;
+    snapshot.attention.rows.forEach(row => {
+      const episode = ramsesFailedState?.members[row.key]?.episode || 0;
+      const eventKey = JSON.stringify(['ramses-failed-board', row.serial, row.operation, episode]);
+      const alertAt = alerts.get(eventKey);
+      const prior = lionRackSeenTimes[row.key];
+      present.add(row.key);
+      if (!prior || !prior.present || prior.episode !== episode) {
+        lionRackSeenTimes[row.key] = { at: Number.isFinite(alertAt) ? alertAt : now, episode, present: true };
+        changed = true;
+      } else if (Number.isFinite(alertAt) && alertAt < prior.at) {
+        prior.at = alertAt; changed = true;
+      }
+    });
+    Object.entries(lionRackSeenTimes).forEach(([key, value]) => {
+      if (value.present && !present.has(key)) { value.present = false; changed = true; }
+    });
+    const excess = Object.keys(lionRackSeenTimes).length - LION_MAX_RUNS;
+    if (excess > 0) Object.entries(lionRackSeenTimes).filter(([, value]) => !value.present)
+      .sort((a, b) => a[1].at - b[1].at).slice(0, excess).forEach(([key]) => { delete lionRackSeenTimes[key]; changed = true; });
+    if (changed) writeJSON(localStorage, LION_RACK_SEEN_KEY, lionRackSeenTimes, 'Rack observation times');
+  }
+
+  function lionRackObservations(snapshot) {
+    const result = new Map();
+    const hours = settings.lionHistoryHours === 'all' ? Infinity : Number(settings.lionHistoryHours);
+    const dated = (snapshot?.rows || []).concat((snapshot?.pretestRows || []).map(row => ({
+      ...row, status: 'PRETEST', startedAt: lionStartedAt(row.started || ''), statusText: 'Running PRETEST'
+    })));
+    dated.forEach(row => {
+      if (['PASS', 'FAIL'].includes(row.status) &&
+          (row.finishedAt || row.startedAt || 0) < Date.now() - hours * 3600000) return;
+      const sn = lionRackSerial(row.tailSerial || row.serial);
+      if (!sn) return;
+      const prior = result.get(sn);
+      if (!prior || (row.startedAt || 0) > (prior.startedAt || 0)) result.set(sn, row);
+    });
+    if (snapshot?.attention?.usable) snapshot.attention.rows.forEach(row => {
+      const sn = lionRackSerial(row.tailSerial || row.serial), prior = result.get(sn);
+      if (!sn) return;
+      if (prior && ['RUNNING', 'PRETEST'].includes(prior.status)) {
+        result.set(sn, { ...prior, boardNote: 'Also on failed action board' });
+      } else {
+        result.set(sn, { ...row, status: row.operation === 'GPU_JBOG_TEST' ? 'FAIL' : 'PRETEST_FAIL',
+          started: '', observedAt: lionRackSeenTimes?.[row.key]?.at || null,
+          statusText: 'Failed action board · ' + (row.route || row.statusText || 'Online') });
+      }
+    });
+    return result;
+  }
+
+  // Rack-only metadata: these observations never enter source snapshots or alerts.
+  const lionRackInfoCache = new Map();
+  const lionRackInfoRequests = new Map();
+  const LION_RACK_INFO_TTL_MS = 60000;
+
+  function lionRackSourceInfo(serial) {
+    const sn = lionRackSerial(serial);
+    if (!sn) return null;
+    const indexed = lionRackNodeDisplay.get(sn);
+    if (indexed) return indexed;
+    const candidates = [...lionRackObservations(lionRackSnapshot).values()].filter(row =>
+      [row.tailSerial || row.serial, row.headSerial].some(value => lionRackSerial(value) === sn));
+    candidates.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    return candidates[0] || null;
+  }
+
+  function lionRackInfoForSerial(serial) {
+    const sn = lionRackSerial(serial), source = lionRackSourceInfo(sn);
+    const cached = lionRackInfoCache.get(sn)?.row;
+    if (!cached) return source;
+    if (!source) return cached;
+    if ((source.startedAt || 0) < cached.startedAt && source.started) return cached;
+    const sameRun = source.startedAt === cached.startedAt || !source.started;
+    return sameRun ? { ...cached, ...source, headSerial: source.headSerial || cached.headSerial,
+      detailURL: cached.detailURL, uutId: cached.uutId, lookupAt: cached.lookupAt,
+      model: source.model || cached.model, customer_ipn: source.customer_ipn || cached.customer_ipn,
+      customer: source.customer || cached.customer,
+      jiraKey: source.jiraKey || cached.jiraKey } : source;
+  }
+
+  function lionRackAPIRow(record, serial) {
+    const tail = lionRackSerial(record?.uut_sn), head = lionRackSerial(record?.fixture_sn);
+    if (!tail || ![tail, head].includes(serial) || !lionTestViewAPIRun(record, tail)) return null;
+    const raw = typeof record.status === 'string' ? record.status.trim() : '';
+    const word = raw.toUpperCase().replace(/[\s_-]+/g, '');
+    const status = ['PASS', 'PASSED', 'SUCCESS', 'TESTPASS', 'TESTSUCCESS'].includes(word) ? 'PASS' :
+      ['FAIL', 'FAILED', 'FAILURE', 'TESTFAIL', 'TESTFAILURE'].includes(word) ? 'FAIL' :
+      ['RUNNING', 'INTEST', 'TESTING', 'INPROGRESS'].includes(word) ? 'RUNNING' : 'UNKNOWN';
+    const started = record.started.trim(), startedAt = lionStartedAt(started);
+    const finished = typeof record.finished === 'string' ? record.finished.trim() : '';
+    const finish = finished ? lionStartedAt(finished) : NaN;
+    if (startedAt > Date.now() + 600000) return null;
+    const finishedAt = Number.isFinite(finish) && finish >= startedAt && finish <= Date.now() + 600000 ? finish : null;
+    const text = field => typeof record[field] === 'string' ? record[field].trim().slice(0, 160) : '';
+    return { source: 'rack-api', jbog: tail, tailSerial: tail, headSerial: head,
+      started, startedAt, finished: finishedAt === null ? '' : finished, finishedAt,
+      durationMs: finishedAt === null ? null : finishedAt - startedAt, status,
+      statusText: 'GPU_JBOG_TEST · ' + (raw || 'Unknown status'), operation: 'GPU_JBOG_TEST',
+      model: text('model'), customer_ipn: text('customer_ipn'), customer: text('customer'),
+      uutId: String(record.id), detailURL: new URL('/uut/detail/' + record.id, TESTVIEW_LIST_URL).href,
+      lookupAt: Date.now() };
+  }
+
+  async function lookupLionRackInfo(serial) {
+    const sn = lionRackSerial(serial);
+    if (!sn) return null;
+    const cached = lionRackInfoCache.get(sn);
+    if (cached && Date.now() - cached.at < LION_RACK_INFO_TTL_MS) return cached.row;
+    if (lionRackInfoRequests.has(sn)) return lionRackInfoRequests.get(sn);
+    const pending = (async () => {
+      for (const field of ['uut_sn', 'fixture_sn']) {
+        const url = new URL(LION_TESTVIEW_API_PATH, TESTVIEW_LIST_URL);
+        for (const name of ['id', 'uut_sn', 'fixture_sn', 'status', 'started', 'finished', 'operation',
+          'model', 'customer_ipn', 'customer'])
+          url.searchParams.append('fields', name);
+        for (const [key, value] of Object.entries({ only_latest_uut_status: 'true',
+          operation: 'GPU_JBOG_TEST', operation_is_exact: 'true', page_num: '1',
+          page_size: '10', return_page_info: 'true', [field]: sn })) url.searchParams.set(key, value);
+        const body = await requestLionKingAPI(url);
+        if (!body) break;
+        const rows = lionTestViewAPIRecords(body).map(record => lionRackAPIRow(record, sn)).filter(Boolean);
+        rows.sort((a, b) => b.startedAt - a.startedAt);
+        if (!rows.length) continue;
+        const latest = rows.filter(row => row.startedAt === rows[0].startedAt);
+        if (new Set(latest.map(row => row.uutId)).size !== 1) break;
+        const row = latest[0];
+        lionRackInfoCache.set(sn, { at: Date.now(), row });
+        return row;
+      }
+      return null;
+    })().catch(() => null).finally(() => lionRackInfoRequests.delete(sn));
+    lionRackInfoRequests.set(sn, pending);
+    return pending;
+  }
+
+  async function loadLionRackSlotInfo(rack, position, serial, onUpdate) {
+    const sn = lionRackSerial(serial);
+    const current = () => {
+      const entry = lionRackBoard?.slots[rack]?.[position];
+      return !!sn && !!entry && [entry.serial, entry.partner].includes(sn);
+    };
+    const update = (loading, message) => {
+      if (!current() || typeof onUpdate !== 'function') return;
+      const row = lionRackInfoForSerial(sn);
+      const key = row?.jiraKey || jiraLatestKey(row?.tailSerial || sn), validKey = JIRA_KEY_PATTERN.test(String(key || '')) ? key : '';
+      onUpdate({ row, loading, message, jiraKey: validKey,
+        jiraURL: validKey ? jiraIssueUrl(validKey) : jiraUrlFor(row?.tailSerial || sn, 0) });
+    };
+    if (!current()) return;
+    update(true, 'Saved · loading test details…');
+    const row = await lookupLionRackInfo(sn);
+    if (!current()) return;
+    update(false, row || lionRackSourceInfo(sn) ? 'Saved · live details ready' :
+      'Saved · no matching test details available. Your rack assignment is kept.');
+    const jiraSerial = lionRackInfoForSerial(sn)?.tailSerial || sn;
+    try { await resolveJiraUrl(jiraSerial, 0); } catch (error) {}
+    const cached = lionRackInfoCache.get(sn), jiraKey = jiraLatestKey(jiraSerial);
+    if (cached && JIRA_KEY_PATTERN.test(String(jiraKey || ''))) cached.row.jiraKey = jiraKey;
+    update(false, '');
+  }
+
+  function lionRackStatusText(row, average) {
+    if (!row) return 'Not in current source';
+    if (row.status === 'RUNNING') {
+      const finish = average ? row.startedAt + average : null;
+      return 'Running' + (finish ? ' · ETA ' + siteDateTime(new Date(finish)) : ' · no estimate yet');
+    }
+    if (row.status === 'PRETEST') return 'Running PRETEST';
+    if (row.status === 'PRETEST_FAIL') return 'PRETEST · failed action board';
+    if (row.status === 'FAIL') return row.started ? 'Failed' : 'Failed action board';
+    if (row.status === 'PASS') return 'Passed' + (row.durationMs ? ' · ' + lionHoursMinutes(row.durationMs) : '');
+    return 'Unknown result';
+  }
+
+  function setLionRackPairedScroll(element, left) {
+    element.scrollLeft = left;
+    lionRackExpectedScroll.set(element, element.scrollLeft);
+  }
+
+  function updateLionRackPairedScroll() {
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board || board.hidden) return;
+    const group = board.querySelector('.lion-rack-linked-rows');
+    const shared = group?.querySelector('.lion-rack-shared-scroll');
+    if (!shared) return;
+    const scrollers = [...group.querySelectorAll('details.lion-rack-row')]
+      .filter(row => row.open && !row.hidden).map(row => row.querySelector('.lion-rack-row-scroll'));
+    const range = Math.max(0, ...scrollers.map(row => row.scrollWidth - row.clientWidth));
+    shared.hidden = range <= 1;
+    if (shared.hidden) return;
+    shared.firstElementChild.style.width = (shared.clientWidth + range) + 'px';
+    lionRackPairedScrollLeft = Math.max(0, Math.min(lionRackPairedScrollLeft, range));
+    setLionRackPairedScroll(shared, lionRackPairedScrollLeft);
+    scrollers.forEach(row => setLionRackPairedScroll(row, lionRackPairedScrollLeft));
+  }
+
+  function queueLionRackPairedScroll() {
+    if (lionRackPairedScrollFrame) return;
+    lionRackPairedScrollFrame = requestAnimationFrame(() => {
+      lionRackPairedScrollFrame = 0;
+      updateLionRackPairedScroll();
+    });
+  }
+
+  function refreshLionRackBoard(snapshot) {
+    if (snapshot) lionRackSnapshot = snapshot;
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board || !lionRackBoard || lionRackDragging) return;
+    updateLionRackSeenTimes(lionRackSnapshot);
+    lionRackDisplay = lionRackObservations(lionRackSnapshot);
+    lionRackNodeDisplay = new Map(lionRackDisplay);
+    lionRackDisplay.forEach(row => {
+      const head = lionRackSerial(row.headSerial);
+      const prior = lionRackNodeDisplay.get(head);
+      if (head && (!prior || (row.startedAt || 0) > (prior.startedAt || 0))) lionRackNodeDisplay.set(head, row);
+    });
+    const average = lionKingPassAverage(lionRackSnapshot?.rows || []).averageMs;
+    const rackCount = lionRackBoard.rows.reduce((total, row) => total + row.racks.length, 0);
+    const occupied = Object.values(lionRackBoard.slots).flat().filter(entry => entry.serial).length;
+    setTextIfChanged(board.querySelector('#lion-rack-count'), occupied + '/' + rackCount * 4 + ' slots assigned · ' + rackCount + ' racks');
+    setTextIfChanged(board.querySelector('#lion-rack-source'), !lionHasCompletedSnapshot
+      ? 'Waiting for the live source; assignments are saved.' : 'Last source update: ' + siteDateTime(new Date(rackDataAt)));
+    const signature = JSON.stringify([lionRackBoard, [...lionRackDisplay].map(([sn, row]) =>
+      [sn, row.headSerial, row.status, row.started, row.finished, row.durationMs, row.statusText, row.boardNote, row.jiraKey, row.observedAt]), average, settings.sections,
+      lionRackSelected, Math.floor(Date.now() / 60000), Object.values(lionRackBoard.slots).flat().filter(entry => entry.serial).map(entry => {
+        const info = lionRackInfoForSerial(entry.serial);
+        return [entry.serial, info?.status, info?.started, info?.finished, info?.durationMs,
+          info?.jiraKey || jiraLatestKey(info?.tailSerial || entry.serial), info?.lookupAt];
+      })]);
+    const grid = board.querySelector('#lion-rack-grid');
+    if (board.dataset.signature !== signature) {
+      const scrolls = [...grid.querySelectorAll('.lion-rack-row-scroll')].map(row => row.scrollLeft);
+      board.dataset.signature = signature;
+      const renderedRows = lionRackBoard.rows.map((row, rowIndex) =>
+        '<section class="lion-rack-area" data-area="' + row.area + '"><div class="lion-rack-area-head">' +
+        '<button type="button" class="lion-rack-row-toggle" data-lion-row-toggle="' + row.area +
+        '" aria-controls="lion-rack-row-' + row.area + '" aria-expanded="' + lionAreaSettings(row.area).show +
+        '" title="Enable or disable ' + escapeHtml(LION_AREAS[row.area]) + ' visibility and notifications">' +
+        '<span class="lion-rack-row-chevron" aria-hidden="true">›</span><strong>' + escapeHtml(LION_AREAS[row.area]) +
+        '</strong><small>' + row.racks.length + ' racks</small></button>' +
+        '<div class="lion-rack-area-controls" data-lion-area-controls="' + row.area + '"></div></div>' +
+        '<details id="lion-rack-row-' + row.area + '" class="lion-rack-row" data-area="' + row.area + '" data-row="' + rowIndex + '"' +
+        (lionAreaSettings(row.area).show ? ' open' : ' hidden') + '>' +
+        '<summary hidden>' + escapeHtml(LION_AREAS[row.area]) + ' racks</summary>' +
+        '<div class="lion-rack-row-scroll"><div class="lion-rack-row-content">' +
+        row.racks.map(rack => {
+          const occupied = lionRackBoard.slots[rack].filter(entry => entry.serial).length;
+          return '<article class="lion-physical-rack" data-rack="' + rack + '">' +
+            '<header draggable="true" data-rack-drag="' + rack + '"><strong>' + rack + '</strong>' +
+            '<span class="lion-rack-assigned">' + occupied + '/4</span><span class="lion-rack-layout-actions">' +
+            '<button type="button" data-rack-action="left" title="Move rack left" aria-label="Move ' + rack + ' left">‹</button>' +
+            '<button type="button" data-rack-action="right" title="Move rack right" aria-label="Move ' + rack + ' right">›</button>' +
+            '<button type="button" data-rack-action="remove" title="Remove empty rack" aria-label="Remove empty ' + rack + '">×</button></span></header>' +
+            '<div id="lion-rack-positions-' + rack + '" class="lion-rack-positions">' +
+            [0, 2, 3, 1].map(position => renderLionRackSlot(rack, position, lionRackBoard.slots[rack][position])).join('') +
+            '</div></article>';
+        }).join('') + '</div></div></details></section>');
+      grid.innerHTML = '<section class="lion-rack-linked-rows" aria-label="B6 and B7 racks">' + renderedRows.slice(0, 2).join('') +
+        '<div class="lion-rack-shared-scroll" role="region" tabindex="0" aria-label="Scroll B6 and B7 racks together" hidden>' +
+        '<div class="lion-rack-shared-scroll-content"></div></div></section>' +
+        renderedRows.slice(2).join('');
+      grid.querySelectorAll('.lion-rack-row-scroll').forEach((row, index) => {
+        if (row.closest('.lion-rack-linked-rows')) setLionRackPairedScroll(row, lionRackPairedScrollLeft);
+        else row.scrollLeft = scrolls[index] || 0;
+      });
+      board.querySelector('#lion-rack-options').innerHTML = lionRackBoard.rows.flatMap(row => row.racks)
+        .map(rack => '<option value="' + rack + '"></option>').join('');
+    }
+    const query = board.querySelector('#lion-rack-find').value.trim().toUpperCase();
+    const unplaced = [...lionRackDisplay].filter(([, row]) => lionRowShow(row) && (!lionRackPlacement(row) || lionRackPlacement(row).conflict))
+      .filter(([sn, row]) => !query || (sn + ' ' + (row.headSerial || '') + ' ' + (row.status || '')).toUpperCase().includes(query));
+    const pool = board.querySelector('#lion-rack-unplaced');
+    const poolHTML = unplaced.map(([sn, row]) => '<button type="button" draggable="true" data-unplaced="' + escapeHtml(sn) +
+      '" class="lion-rack-pool-item lion-rack-' + row.status.toLowerCase() + '">' + escapeHtml(sn) +
+      '<small>' + escapeHtml(lionRackStatusText(row, null)) + '</small></button>').join('') ||
+      '<span class="lion-rack-note">' + (query ? 'No matching unassigned JBOGs.' : 'No unassigned JBOGs in the current source.') + '</span>';
+    if (pool.innerHTML !== poolHTML) pool.innerHTML = poolHTML;
+    setTextIfChanged(board.querySelector('#lion-rack-unplaced-count'), String(unplaced.length));
+    renderLionRackWorkControls();
+    renderLionRackSelection();
+    queueLionRackPairedScroll();
+    if (!board.hidden && lionRackSelected && Date.now() >= lionRackSelectionNextAt) hydrateLionRackSelection();
+  }
+
+  function lionRackTimestampMarkup(row) {
+    if (!row) return '';
+    const startedAt = row.started ? lionStartedAt(row.started) : NaN;
+    const finishedAt = row.finished ? lionStartedAt(row.finished) : NaN;
+    const completed = ['PASS', 'FAIL'].includes(row.status) && Number.isFinite(startedAt) &&
+      Number.isFinite(finishedAt) && finishedAt >= startedAt;
+    const today = isoDateParts(new Date().toISOString()).date;
+    const stamp = (label, at, relative) => {
+      const date = new Date(at);
+      const age = relative ? formatRelativeTime(at).split(' \u{b7} ')[0].replace(/^\S+\s+/, '') : '';
+      const parts = isoDateParts(date.toISOString());
+      const clock = (parts.date === today ? '' : parts.date.slice(5).replace('-', '/') + ' ') + parts.time.slice(0, 5);
+      const shortLabel = label === 'Started' ? 'Start' : label === 'Finished' ? 'End' : label;
+      return '<small class="lion-rack-stamp" title="' + escapeHtml(label + ': ' + siteDateTime(date) + (age ? ' · ' + age : '')) + '"><span>' +
+        escapeHtml(shortLabel + (!completed && age ? ' · ' + age : '')) + '</span><time datetime="' + date.toISOString() + '">' +
+        escapeHtml(clock) + '</time></small>';
+    };
+    let html = Number.isFinite(startedAt) ? stamp('Started', startedAt, false) : '';
+    if (completed) html += stamp('Finished', finishedAt, true);
+    // The failed action board has no test start/finish. Keep its observation
+    // time distinct from a completed test's actual timestamp.
+    if (!Number.isFinite(startedAt) && Number.isFinite(row.observedAt)) html += stamp('Seen', row.observedAt, true);
+    return html ? '<span class="lion-rack-stamps' + (completed ? ' has-two' : '') + '">' + html + '</span>' : '';
+  }
+
+  function renderLionRackSlot(rack, position, entry) {
+    const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
+    const conflict = row && lionRackPlacement(row)?.conflict;
+    const state = conflict ? 'CONFLICT' : row?.status || (entry.serial ? 'ABSENT' : 'EMPTY');
+    const work = lionRackAreaSettings(rack);
+    const selected = lionRackSelected?.rack === rack && lionRackSelected.position === position;
+    const label = { RUNNING: 'Running', PASS: 'Passed', FAIL: 'Test fail',
+      PRETEST: 'Pre-test', PRETEST_FAIL: 'Pre-test fail', CONFLICT: 'Check location', ABSENT: 'No current data',
+      UNKNOWN: 'Status unavailable' }[state] || 'Empty';
+    const timing = row?.status === 'RUNNING' && Number.isFinite(row.startedAt)
+      ? lionHoursMinutes(Date.now() - row.startedAt)
+      : row?.status === 'PASS' && row.durationMs ? lionHoursMinutes(row.durationMs) : '';
+    const jira = row?.jiraKey || jiraLatestKey(row?.tailSerial || entry.serial);
+    const muted = work.show && entry.serial && !lionRowWatch(row || { tailSerial: entry.serial, headSerial: entry.partner });
+    const description = escapeHtml(rack + ', ' + LION_SLOT_LABELS[position] + ', ' + (entry.serial || 'scan a JBOG'));
+    return '<div class="lion-rack-slot lion-rack-' + (work.show ? state.toLowerCase() : 'hidden-slot') + (selected ? ' is-selected' : '') +
+      (entry.serial ? ' has-remove' : '') +
+      '" data-slot="' + position + '" role="group" aria-label="' + description + '">' +
+      (entry.serial ? '<button type="button" class="lion-rack-slot-remove" data-slot-action="remove" data-slot-serial="' +
+        escapeHtml(entry.serial) + '" draggable="false" title="Remove ' + escapeHtml(entry.serial) +
+        ' from this slot" aria-label="Remove ' + description + ' from slot">×</button>' : '') +
+      '<button type="button" class="lion-rack-slot-select" data-slot-action="select" aria-label="Select ' + description + '"' +
+      (entry.serial ? ' draggable="true"' : '') + '>' +
+      '<span class="lion-rack-slot-label">' + ['Top', 'Bottom', 'Left', 'Right'][position] + '</span>' +
+      (!work.show ? '<span class="lion-rack-scan-hint">Hidden · click to show</span>' :
+      entry.serial ? '<strong class="lion-rack-sn">' + escapeHtml(entry.serial) + '</strong>' +
+        '<span class="lion-rack-result"><i></i>' + escapeHtml(label) +
+        (muted ? '<span class="lion-rack-muted" role="img" aria-label="Alerts muted" title="Alerts muted">\u{1f515}</span>' : '') + '</span>' +
+        (timing ? '<small class="lion-rack-time">' + escapeHtml(timing) + '</small>' : '') +
+        lionRackTimestampMarkup(row) :
+        '<span class="lion-rack-plus">+</span><span class="lion-rack-scan-hint">Scan</span>') +
+      '</button>' +
+      (entry.serial ? '<div class="lion-rack-slot-links"><button type="button" data-slot-action="jira" draggable="false" title="Open Jira for ' +
+        escapeHtml(entry.serial + (JIRA_KEY_PATTERN.test(String(jira || '')) ? ' · ' + jira : '')) + '" aria-label="Open Jira for ' + description + '">' +
+        'Jira ↗</button>' +
+        '<button type="button" data-slot-action="testview" draggable="false" title="Open this JBOG in TestView 2.0" aria-label="Open TestView for ' +
+        description + '">TestView ↗</button></div>' : '') + '</div>';
+  }
+
+  function renderLionRackSelection() {
+    const board = document.getElementById('eve-lion-rack-board');
+    const drawer = board?.querySelector('#lion-rack-drawer');
+    if (!drawer || !lionRackSelected) return;
+    const { rack, position } = lionRackSelected, entry = lionRackBoard.slots[rack]?.[position];
+    if (!entry) { closeLionRackSelection(); return; }
+    const area = lionRackBoard.rows.find(item => item.racks.includes(rack))?.area || 'unassigned';
+    const parent = lionAreaSettings(area);
+    setTextIfChanged(drawer.querySelector('#lion-rack-work-note'), !parent.show ? 'This row is disabled: hidden and alerts muted.' : '');
+    const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
+    setTextIfChanged(drawer.querySelector('#lion-rack-selected-name'), rack);
+    setTextIfChanged(drawer.querySelector('#lion-rack-selected-position'), LION_SLOT_LABELS[position] + ' · JBOG ' + (position + 1));
+    setTextIfChanged(drawer.querySelector('#lion-rack-scan-label'), entry.serial ? 'Scan a new serial to replace this JBOG' : 'Scan the JBOG serial');
+    setTextIfChanged(drawer.querySelector('#lion-rack-scan-save'), entry.serial ? 'Replace JBOG' : 'Add JBOG');
+    const detail = drawer.querySelector('#lion-rack-selected-info');
+    const average = lionKingPassAverage(lionRackSnapshot?.rows || []).averageMs;
+    const finish = row?.status === 'RUNNING' && average && Number.isFinite(row.startedAt) ? row.startedAt + average : null;
+    const key = row?.jiraKey || jiraLatestKey(row?.tailSerial || entry.serial);
+    const paired = row ? [row.tailSerial, row.headSerial].find(sn => lionRackSerial(sn) && lionRackSerial(sn) !== entry.serial) : entry.partner;
+    const data = [
+      ['Started', row?.started], ['Finished', row?.finished],
+      ['Elapsed', row?.status === 'RUNNING' && Number.isFinite(row.startedAt) ? lionHoursMinutes(Date.now() - row.startedAt) : ''],
+      ['Pass time', row?.status === 'PASS' && row.durationMs ? lionHoursMinutes(row.durationMs) : ''],
+      ['Estimated finish', finish ? siteDateTime(new Date(finish)) : ''],
+      ['Paired node', paired], ['Model', row?.model], ['Part number', row?.customer_ipn],
+      ['Route', row?.route], ['Ticket', JIRA_KEY_PATTERN.test(String(key || '')) ? key : '']
+    ].filter(([, value]) => value);
+    const html = entry.serial ? '<div class="lion-selected-serial">' + escapeHtml(entry.serial) + '</div>' +
+      '<div class="lion-selected-status lion-rack-' + (row?.status || 'absent').toLowerCase() + '">' +
+      escapeHtml(row ? lionRackStatusText(row, null) : 'Assignment saved · waiting for test data') + '</div>' +
+      '<dl class="lion-selected-facts">' + data.map(([name, value]) => '<div><dt>' + escapeHtml(name) +
+        '</dt><dd>' + escapeHtml(value) + '</dd></div>').join('') + '</dl>' +
+      (finish ? '<p class="lion-rack-note">Estimate based on ' + lionKingPassAverage(lionRackSnapshot?.rows || []).samples + ' recent passed runs.</p>' : '') +
+      (row?.boardNote ? '<p class="lion-rack-note">' + escapeHtml(row.boardNote) + '</p>' : '') :
+      '<div class="lion-scan-empty"><span>⌁</span><strong>Ready to scan</strong><p>Scan one serial. Its test details appear here automatically.</p></div>';
+    if (detail.innerHTML !== html) detail.innerHTML = html;
+    drawer.querySelector('#lion-rack-open-test').hidden = !entry.serial;
+    drawer.querySelector('#lion-rack-open-jira').hidden = !entry.serial;
+    drawer.querySelector('#lion-rack-copy-selected').hidden = !entry.serial;
+    drawer.querySelector('#lion-rack-clear-selected').hidden = !entry.serial;
+    setTextIfChanged(drawer.querySelector('#lion-rack-open-jira'),
+      JIRA_KEY_PATTERN.test(String(key || '')) ? key : 'Search Jira');
+  }
+
+  function closeLionRackSelection() {
+    const board = document.getElementById('eve-lion-rack-board');
+    lionRackSelected = null;
+    if (!board) return;
+    board.classList.remove('has-selection'); board.querySelector('#lion-rack-drawer').hidden = true;
+    board.dataset.signature = ''; refreshLionRackBoard(lionRackSnapshot);
+  }
+
+  function linkLionRackPartner(rack, position, serial, row) {
+    if (!row) return;
+    const companion = [row.tailSerial, row.headSerial].map(lionRackSerial).find(value => value && value !== serial);
+    if (!companion) return;
+    const current = lionRackBoard.slots[rack]?.[position];
+    if (!current || current.serial !== serial || current.partner === companion) return;
+    const otherLocation = lionRackIndex.get(companion);
+    if (otherLocation && (otherLocation.rackId !== rack || otherLocation.rackSlot !== position + 1)) return;
+    const next = readLionRackBoard(), entry = next.slots[rack]?.[position];
+    if (entry?.serial !== serial || (entry.partner && entry.partner !== companion)) return;
+    entry.partner = companion; saveLionRackBoard(next);
+  }
+
+  async function hydrateLionRackSelection() {
+    if (!lionRackSelected) return;
+    const { rack, position } = lionRackSelected, serial = lionRackBoard.slots[rack]?.[position]?.serial;
+    if (!serial) return;
+    const identity = JSON.stringify([rack, position, serial]);
+    if (lionRackSelectionLoading === identity) return;
+    lionRackSelectionLoading = identity; lionRackSelectionNextAt = Date.now() + LION_RACK_INFO_TTL_MS;
+    try {
+      await loadLionRackSlotInfo(rack, position, serial, info => {
+        linkLionRackPartner(rack, position, serial, info.row);
+        refreshLionRackBoard(lionRackSnapshot);
+        if (lionRackSelected?.rack === rack && lionRackSelected.position === position) {
+          renderLionRackSelection();
+          if (info.message) lionRackFeedback(info.message);
+        }
+      });
+    } finally {
+      if (lionRackSelectionLoading === identity) lionRackSelectionLoading = false;
+    }
+  }
+
+  function submitLionRackScan() {
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board || board.hidden || !lionRackSelected) return;
+    const input = board.querySelector('#lion-rack-serial'), serial = lionRackSerial(input.value);
+    if (!serial || serial.length < 6) { lionRackFeedback('Scan the complete JBOG serial, then press Enter.'); input.focus(); return; }
+    const { rack, position } = lionRackSelected;
+    const known = lionRackInfoForSerial(serial);
+    let companion = known ? [known.tailSerial, known.headSerial].map(lionRackSerial).find(value => value && value !== serial) : '';
+    const companionLocation = companion && lionRackIndex.get(companion);
+    if (companionLocation && (companionLocation.rackId !== rack || companionLocation.rackSlot !== position + 1)) companion = '';
+    if (!assignLionRackSlot(rack, position, serial, companion || '', { replace: true })) return;
+    input.value = ''; input.focus();
+    lionRackSelectionNextAt = 0;
+    renderLionRackSelection(); hydrateLionRackSelection();
+  }
+
+  function setLionRackView(open) {
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board) return;
+    if (open) {
+      board.hidden = false; fitLionRackWindow(board); saveLionRackWindow(board);
+    } else {
+      if (!board.hidden) saveLionRackWindow(board);
+      board.hidden = true;
+      lionRackUI = { ...(lionRackUI || {}), open: false };
+      writeJSON(localStorage, LION_RACK_WINDOW_KEY, lionRackUI, 'Rack board window');
+    }
+    document.documentElement.classList.toggle('lion-rack-map-active', open);
+    if (open) refreshLionRackBoard(lionRackSnapshot);
+    else refreshAlertChrome();
+  }
+
+  function selectLionRackSlot(rack, position, serial) {
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board || !lionRackBoard.slots[rack]?.[position]) return;
+    lionRackSelected = { rack, position }; lionRackSelectionNextAt = 0;
+    board.classList.add('has-selection'); board.querySelector('#lion-rack-drawer').hidden = false;
+    const input = board.querySelector('#lion-rack-serial');
+    input.value = serial || '';
+    board.dataset.signature = ''; refreshLionRackBoard(lionRackSnapshot);
+    renderLionRackSelection();
+    input.focus(); input.select();
+    lionRackFeedback('Selected ' + rack + ' · ' + LION_SLOT_LABELS[position] + '. Scan one serial.');
+    if (lionRackBoard.slots[rack][position].serial) hydrateLionRackSelection();
+  }
+
+  async function openLionRackJira(serial) {
+    let tab = null;
+    try { tab = window.open('about:blank', '_blank'); if (tab) tab.opener = null; } catch (error) {}
+    let url = jiraSearchUrl(serial, 0);
+    try { url = await resolveJiraUrl(serial, 0) || url; } catch (error) {}
+    if (tab) {
+      if (!tab.closed) try { if (tab.location.href === 'about:blank') tab.location.replace(url); } catch (error) {}
+    } else openFromNotification(url);
+  }
+
+  function openLionRackSlotLink(rack, position, action) {
+    const entry = lionRackBoard?.slots[rack]?.[position];
+    if (!entry?.serial) return;
+    const row = lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner);
+    const serial = row?.tailSerial || entry.serial;
+    if (action === 'jira') openLionRackJira(serial);
+    else if (action === 'testview') {
+      const pretest = ['PRETEST', 'PRETEST_FAIL'].includes(row?.status) ||
+        ['PRETEST', 'GPU_JBOG_TEST_PRETEST'].includes(row?.operation);
+      if (row?.detailURL && !pretest) openExternal(row.detailURL);
+      else openLionKingTestView(serial, row?.started || '', openExternal,
+        pretest ? 'GPU_JBOG_TEST_PRETEST' : 'GPU_JBOG_TEST');
+    }
+  }
+
+  function saveLionRackWindow(board) {
+    // Persist whether the map is open, never the browser's temporary size.
+    lionRackUI = { layout: 'viewport-fit-v1', open: !board.hidden };
+    writeJSON(localStorage, LION_RACK_WINDOW_KEY, lionRackUI, 'Rack board window');
+  }
+
+  function fitLionRackWindow(board) {
+    // Viewport units grow again when a restored/maximized browser grows.
+    // Old saved pixel dimensions must not keep the map at its smaller size.
+    board.style.width = 'max(1px, calc(100vw - 20px))';
+    board.style.height = 'max(1px, calc(100vh - 20px))';
+    board.style.minWidth = 'min(280px, max(1px, calc(100vw - 20px)))';
+    board.style.minHeight = 'min(240px, max(1px, calc(100vh - 20px)))';
+    board.style.left = '10px'; board.style.top = '10px';
+    queueLionRackPairedScroll();
+  }
+
+  function mountLionRackBoard() {
+    const board = document.createElement('section');
+    board.id = 'eve-lion-rack-board'; board.setAttribute('data-lion-tracker-ui', 'physical-racks');
+    board.setAttribute('aria-label', 'Lion King physical rack board');
+    board.innerHTML = '<header id="lion-rack-title"><div><span class="lion-rack-eyebrow">LION KING · LIVE OPERATIONS</span>' +
+      '<strong>Rack Board</strong><small id="lion-rack-count" title="Click a slot, then scan its serial"></small>' +
+      '<span id="lion-rack-source" hidden></span></div><div class="lion-rack-window-actions">' +
+      '<details class="lion-rack-board-options"><summary aria-label="Board controls" title="Board controls">⋯</summary>' +
+      '<div class="lion-rack-all-controls"><button type="button" data-all-work="enabled:true">Enable all</button>' +
+      '<button type="button" data-all-work="enabled:false">Disable all</button>' +
+      '<button type="button" id="lion-rack-edit-layout" aria-pressed="false">Edit layout</button></div></details>' +
+      '<button type="button" id="lion-rack-back" title="Show tracker controls and alert cards">Back to tracker</button>' +
+      '<button type="button" id="lion-rack-expand" title="Fit board to screen" aria-label="Expand rack board">⛶</button>' +
+      '<button type="button" id="lion-rack-close" aria-label="Close rack board">×</button></div></header>' +
+      '<div id="lion-rack-workspace"><div class="lion-rack-body"><div id="lion-rack-grid"></div>' +
+      '<section class="lion-rack-area lion-rack-unplaced-section" data-area="unassigned"><div class="lion-rack-area-head">' +
+      '<button type="button" class="lion-rack-row-toggle" data-lion-row-toggle="unassigned" aria-controls="lion-rack-row-unassigned" aria-expanded="false">' +
+      '<span class="lion-rack-row-chevron" aria-hidden="true">›</span><strong>Unassigned</strong><small id="lion-rack-unplaced-count">0</small></button>' +
+      '<div class="lion-rack-area-controls" data-lion-area-controls="unassigned"></div></div>' +
+      '<details id="lion-rack-row-unassigned"><summary hidden>Unassigned JBOGs</summary>' +
+      '<input id="lion-rack-find" placeholder="Find a serial or status" aria-label="Find an unassigned JBOG">' +
+      '<p>Choose a rack slot, then click a serial here to place it.</p><div id="lion-rack-unplaced"></div></details></section>' +
+      '<section id="lion-rack-layout-tools" hidden><h3>Layout &amp; backup</h3><div class="lion-rack-layout-controls">' +
+      '<input id="lion-rack-barcode" list="lion-rack-options" autocomplete="off" placeholder="New rack barcode" aria-label="New rack barcode" maxlength="40">' +
+      '<datalist id="lion-rack-options"></datalist><select id="lion-rack-new-row" aria-label="Row for new rack">' +
+      '<option value="0">Row 1 · B6</option><option value="1">Row 2 · B7</option><option value="2">Row 3 · E2/E4/BL</option></select>' +
+      '<button type="button" id="lion-rack-add">Add rack</button><button type="button" id="lion-rack-backup">Backup</button>' +
+      '<button type="button" id="lion-rack-restore">Restore</button><input type="file" id="lion-rack-file" accept=".json,application/json" hidden></div>' +
+      '<p class="lion-rack-note">Drag rack headers to arrange them. Drag a JBOG to an empty slot to move it. Each rack holds four JBOGs.</p></section></div>' +
+      '<aside id="lion-rack-drawer" hidden><header><div><span class="lion-rack-eyebrow">SELECTED SLOT</span>' +
+      '<strong id="lion-rack-selected-name"></strong><small id="lion-rack-selected-position"></small></div>' +
+      '<button type="button" id="lion-rack-drawer-close" aria-label="Close slot details">×</button></header>' +
+      '<div class="lion-rack-drawer-body">' +
+      '<div id="lion-rack-work-note" class="lion-rack-note"></div><div id="lion-rack-selected-info"></div>' +
+      '<form id="lion-rack-scan"><label id="lion-rack-scan-label" for="lion-rack-serial">Scan the JBOG serial</label>' +
+      '<div class="lion-rack-scan-input"><span aria-hidden="true">⌁</span><input id="lion-rack-serial" autocomplete="off" spellcheck="false" placeholder="Scan serial here" maxlength="120" required></div>' +
+      '<button type="submit" id="lion-rack-scan-save">Add JBOG</button><small>Scanner Enter saves automatically. You can also type a serial and press Enter.</small></form>' +
+      '<div id="lion-rack-feedback" role="status">Ready to scan.</div><div class="lion-rack-detail-actions">' +
+      '<button type="button" id="lion-rack-open-test">TestView ↗</button><button type="button" id="lion-rack-open-jira">Jira ↗</button>' +
+      '<button type="button" id="lion-rack-copy-selected">Copy serial</button></div>' +
+      '<button type="button" id="lion-rack-clear-selected">Remove from slot</button></div></aside></div>';
+    const style = document.createElement('style');
+    style.textContent = [
+      '.lion-rack-map-active #eve-tracker-panel,.lion-rack-map-active #eve-alert-container{display:none!important}',
+      '#eve-lion-rack-board{--lr-bg:#14181f;--lr-line:#2c3544;--lr-muted:#91a0b7;position:fixed;z-index:1000000;display:flex;flex-direction:column;resize:both;overflow:hidden;box-sizing:border-box;background:var(--lr-bg);color:#eaf0fa;border:1px solid #39475e;border-radius:16px;box-shadow:0 20px 65px #0008;font:13px Segoe UI,Arial,sans-serif;min-width:280px;min-height:240px;max-width:calc(100vw - 20px);max-height:calc(100vh - 20px)}',
+      '#eve-lion-rack-board[hidden],#eve-lion-rack-board [hidden]{display:none!important}#eve-lion-rack-board *{box-sizing:border-box}',
+      '#eve-lion-rack-board button,#eve-lion-rack-board input,#eve-lion-rack-board select{font:inherit;color:inherit;border:1px solid #354155;background:#202938;border-radius:8px;padding:7px 10px}#eve-lion-rack-board button{cursor:pointer}#eve-lion-rack-board button:hover{background:#2c3950}#eve-lion-rack-board button:focus-visible,#eve-lion-rack-board input:focus,#eve-lion-rack-board select:focus,.lion-rack-slot:focus-visible{outline:2px solid #6caeff;outline-offset:2px}',
+      '#lion-rack-title{display:flex;align-items:center;justify-content:space-between;padding:17px 20px;background:#1b222d;cursor:move;touch-action:none;flex-shrink:0;border-bottom:1px solid var(--lr-line)}#lion-rack-title strong{display:block;font-size:22px;letter-spacing:-.4px;margin-top:3px}#lion-rack-title small{display:block;color:var(--lr-muted);margin-top:4px;font-size:11px}.lion-rack-eyebrow{display:block;font-size:9px;letter-spacing:1.4px;font-weight:700;color:#8cafdf}.lion-rack-window-actions{display:flex;gap:6px}.lion-rack-window-actions button{font-size:19px!important;padding:2px 9px!important}',
+      '.lion-rack-toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--lr-line);font-size:12px;color:#c6d2e4}.lion-rack-toolbar>span{flex:1}.lion-rack-toolbar>button{font-size:11px!important}.lion-rack-legend{display:flex;gap:12px;font-size:10px;color:var(--lr-muted)}.lion-rack-legend span{display:flex;gap:5px;align-items:center}.lion-rack-legend i{width:6px;height:6px;border-radius:50%;display:inline-block}.is-running{background:#a7e548}.is-pass{background:#37cf91}.is-fail{background:#fb6385}',
+      '#lion-rack-workspace{display:flex;flex:1;min-height:0;overflow:hidden}.lion-rack-body{overflow:auto;padding:14px 18px 20px;flex:1;min-width:0}.lion-rack-note{font-size:11px;line-height:1.6;color:var(--lr-muted)}#eve-lion-rack-board h3{margin:20px 0 10px;font-size:12px;font-weight:600;color:#cbd7e8}',
+      '.lion-rack-row-scroll{overflow-x:auto;padding-bottom:10px;scrollbar-color:#3d4f6a transparent;scrollbar-width:thin}.lion-rack-row-content{display:flex;gap:14px;align-items:stretch;min-height:100px}.lion-physical-rack{flex:0 0 340px;border:1px solid #303c4f;border-radius:13px;background:#1a212c;padding:10px;overflow:hidden}.lion-physical-rack>header{display:flex;align-items:center;justify-content:space-between;min-height:28px;margin:0 2px 12px;font-size:12px}.lion-physical-rack>header strong{font-size:12px;letter-spacing:.3px}.lion-rack-assigned{font-size:10px;color:var(--lr-muted)}.lion-rack-layout-actions{display:none}.lion-layout-editing .lion-rack-layout-actions{display:flex;gap:3px}.lion-layout-editing .lion-rack-assigned{display:none}.lion-layout-editing [data-rack-drag]{cursor:grab}.lion-rack-layout-actions button{padding:0 6px!important}',
+      '.lion-rack-positions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:104px 104px;gap:8px;position:relative}.lion-rack-positions:before{content:"";grid-column:2;grid-row:1/3;border:1px solid #4b5b72;background:#10151e;border-radius:10px;transform:scale(1.05,1.03);pointer-events:none}.lion-rack-slot{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;min-width:0;border:1px solid #40506a;border-radius:9px;background:#212c3b;cursor:pointer;text-align:center;padding:8px 4px;transition:border-color .15s,transform .15s,box-shadow .15s}.lion-rack-slot:hover{transform:translateY(-2px);border-color:#81b7fb;box-shadow:0 4px 18px #0004}.lion-rack-slot[data-slot="0"]{grid-column:2;grid-row:1}.lion-rack-slot[data-slot="1"]{grid-column:2;grid-row:2}.lion-rack-slot[data-slot="2"]{grid-column:1;grid-row:1/3;align-self:center;height:104px}.lion-rack-slot[data-slot="3"]{grid-column:3;grid-row:1/3;align-self:center;height:104px}.lion-rack-slot.is-selected{outline:2px solid #77b7ff;outline-offset:3px;box-shadow:0 0 18px #348dff2b}',
+      '.lion-rack-slot-label{font-size:9px;color:#a5b6ce;text-transform:uppercase;letter-spacing:.8px}.lion-rack-sn{font:700 11px Consolas,monospace;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lion-rack-result{display:flex;gap:4px;align-items:center;justify-content:center;font-size:10px;line-height:1.2}.lion-rack-result i{width:5px;height:5px;background:currentColor;border-radius:50%;flex-shrink:0}.lion-rack-time,.lion-rack-ticket{font-size:9px;color:#b3c3d7}.lion-rack-plus{font-size:26px;font-weight:300;color:#7798c0;line-height:1}.lion-rack-scan-hint{font-size:10px;color:#a5bad4}.lion-rack-empty{border-style:dashed;background:#171e28}.lion-rack-running{border-color:#a8d94c!important;background:#26371c!important;color:#d8f4ad}.lion-rack-pass{border-color:#32c28a!important;background:#12392d!important;color:#bbefda}.lion-rack-fail,.lion-rack-pretest_fail{border-color:#e65c7d!important;background:#3d1f2c!important;color:#ffd0dc}.lion-rack-pretest{border-color:#4db0ed!important;background:#173246!important;color:#c6eaff}.lion-rack-conflict{border-color:#e5b65b!important;background:#42331d!important}',
+      '#lion-rack-drawer{flex:0 0 320px;width:320px;background:#1b232f;border-left:1px solid #34445b;display:flex;flex-direction:column;min-height:0}#lion-rack-drawer>header{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:17px 18px;border-bottom:1px solid var(--lr-line)}#lion-rack-drawer strong{display:block;font-size:16px;margin-top:7px}#lion-rack-drawer header small{display:block;font-size:11px;color:#acbcd2;margin-top:5px}#lion-rack-drawer-close{padding:2px 8px!important;font-size:18px!important}.lion-rack-drawer-body{overflow:auto;padding:16px 18px;flex:1;min-height:0}',
+      '.lion-selected-serial{font:700 20px Consolas,monospace;overflow-wrap:anywhere;margin-bottom:10px}.lion-selected-status{display:inline-block;border:1px solid #40506a;border-radius:20px;padding:6px 10px;font-size:11px;line-height:1.5}.lion-selected-facts{margin:16px 0}.lion-selected-facts>div{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid #2d394b;font-size:11px}.lion-selected-facts dt{color:#94a6bf;flex-shrink:0}.lion-selected-facts dd{margin:0;text-align:right;overflow-wrap:anywhere;color:#d5e0f1;min-width:0}.lion-scan-empty{text-align:center;padding:22px 8px 10px}.lion-scan-empty>span{display:block;font-size:40px;color:#77adf4}.lion-scan-empty strong{font-size:15px!important}.lion-scan-empty p{font-size:12px;line-height:1.6;color:#a5b6ce}',
+      '#lion-rack-scan{display:flex;flex-direction:column;gap:9px;margin-top:20px}#lion-rack-scan label{font-size:11px;color:#b8c9df}.lion-rack-scan-input{display:flex;align-items:center;gap:6px;border:1px solid #597dae;background:#111b29;border-radius:10px;padding:4px 8px}.lion-rack-scan-input:focus-within{border-color:#8bc3ff;box-shadow:0 0 0 3px #438df023}.lion-rack-scan-input>span{color:#8fb9ec;font-size:25px}#lion-rack-serial{min-width:0;width:100%;border:0!important;background:transparent!important;font:14px Consolas,monospace!important;outline:0!important}#lion-rack-scan-save{background:#316ece!important;border-color:#4687e7!important;font-weight:600!important}#lion-rack-scan small{font-size:10px;line-height:1.5;color:#8fa3be}#lion-rack-feedback{font-size:11px;line-height:1.6;color:#9dc6fc;margin:12px 0;min-height:18px}.lion-rack-detail-actions{display:flex;flex-wrap:wrap;gap:6px;margin:16px 0 8px}.lion-rack-detail-actions button{font-size:11px!important}#lion-rack-clear-selected{font-size:10px!important;border:0!important;background:transparent!important;color:#ce92a0!important;padding-left:0!important}',
+      '.lion-rack-unplaced-section{border-top:1px solid var(--lr-line);padding-top:13px;margin-top:15px}.lion-rack-unplaced-section summary{cursor:pointer;font-size:12px;color:#b5c8e4}.lion-rack-unplaced-section summary b{display:inline-block;margin-left:7px;background:#2c3b50;border-radius:12px;padding:2px 8px;font-size:10px}.lion-rack-unplaced-section p{font-size:11px;color:#91a5c0;line-height:1.5}#lion-rack-find{margin-top:12px;width:100%;max-width:340px}#lion-rack-unplaced{display:flex;flex-wrap:wrap;gap:6px;padding:8px 0}.lion-rack-pool-item{text-align:left;border-left-width:3px!important;font:11px Consolas,monospace!important}.lion-rack-pool-item small{display:block;font:10px Segoe UI,Arial,sans-serif;margin-top:4px}.lion-rack-layout-controls{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}#lion-rack-layout-tools{border-top:1px solid #35435a;margin-top:18px}',
+      '.lion-rack-work-bar{padding:10px 18px;border-bottom:1px solid var(--lr-line);display:flex;flex-wrap:wrap;gap:10px;align-items:center}#lion-rack-work-controls{display:flex;flex:1;flex-wrap:wrap;gap:8px}.lion-work-area{display:flex;align-items:center;gap:9px;background:#1c2532;border:1px solid #334155;border-radius:9px;padding:8px 10px;flex:1;min-width:240px}.lion-work-area>div{flex:1}.lion-work-area strong{font-size:11px}.lion-work-area small{display:block;font-size:9px;color:#9caec8;margin-top:4px}.lion-work-toggle{display:flex;align-items:center;gap:5px;font-size:10px;color:#aebfd6;cursor:pointer;white-space:nowrap}.lion-work-toggle input{appearance:none!important;padding:0!important;width:25px;height:15px;border:0!important;border-radius:10px!important;background:#455166!important;position:relative;cursor:pointer;margin:0}.lion-work-toggle input:before{content:"";position:absolute;width:11px;height:11px;top:2px;left:2px;border-radius:50%;background:#d6e2f5;transition:left .15s}.lion-work-toggle input:checked{background:#427dd6!important}.lion-work-toggle input:checked:before{left:12px;background:#fff}.lion-rack-all-controls{display:flex;flex-wrap:wrap;gap:5px}.lion-rack-all-controls button{font-size:10px!important;padding:5px 7px!important}.lion-rack-work-row,.lion-rack-slot-work{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 3px 13px}.lion-rack-slot-work{margin:0 0 16px;padding-bottom:14px;border-bottom:1px solid #344156}.lion-physical-rack.is-hidden-rack{flex-basis:190px;align-self:flex-start;background:#171c25}.lion-rack-hidden-slot{border-style:dashed;background:#171c25;color:#7588a2}.lion-rack-hidden-slot .lion-rack-slot-label{color:#7588a2}',
+      '#lion-rack-back{font-size:11px!important;padding:8px 10px!important;background:#275997!important;white-space:nowrap}.lion-work-toggle input:disabled{opacity:.4;cursor:default}',
+      '.lion-rack-positions{grid-template-rows:136px 136px}.lion-rack-slot[data-slot="2"],.lion-rack-slot[data-slot="3"]{height:136px}.lion-rack-slot{padding:7px 4px}.lion-rack-slot-select{display:flex;flex:1;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:0;width:100%;border:0!important;background:transparent!important;padding:0!important;color:inherit!important;text-align:center;cursor:pointer}.lion-rack-slot-links{display:flex;gap:3px;width:100%;flex-shrink:0}#eve-lion-rack-board .lion-rack-slot-links button{flex:1 1 auto;min-width:0;padding:4px 2px;font-size:9px;white-space:nowrap;background:#101820b3;border-color:#8298b64d;border-radius:5px}#eve-lion-rack-board .lion-rack-slot-links button:hover{background:#2c3950;border-color:#81b7fb}',
+      '.lion-work-area[data-area="b6"],.lion-rack-row[data-area="b6"],#eve-tracker-panel .eve-section-row[data-section="b6"]{--lion-group-bg:#192638;--lion-group-border:#37506b;--lion-group-accent:#83a9d8}.lion-work-area[data-area="b7"],.lion-rack-row[data-area="b7"],#eve-tracker-panel .eve-section-row[data-section="b7"]{--lion-group-bg:#242236;--lion-group-border:#514762;--lion-group-accent:#b29dd8}.lion-work-area[data-area="lionking2"],.lion-rack-row[data-area="lionking2"],#eve-tracker-panel .eve-section-row[data-section="lionking2"]{--lion-group-bg:#1b2b2d;--lion-group-border:#3b575b;--lion-group-accent:#93bec3}',
+      '#lion-rack-work-controls{align-items:stretch}.lion-work-pair{flex:2 1 460px;min-width:0;padding:6px;background:#171d27;border:1px solid #374359;border-radius:12px}.lion-work-pair-label{display:block;font-size:9px;font-weight:600;color:#b4c4dc;margin:0 4px 5px;letter-spacing:.5px}.lion-work-pair-cards{display:flex;gap:6px}.lion-work-pair-cards .lion-work-area{min-width:0;flex:1}.lion-work-area[data-area="b6"],.lion-work-area[data-area="b7"],.lion-work-area[data-area="lionking2"]{background:var(--lion-group-bg);border-color:var(--lion-group-border);border-left:3px solid var(--lion-group-accent)}.lion-work-area[data-area] strong{color:var(--lion-group-accent,#eaf0fa)}',
+      '.lion-rack-linked-rows{padding:10px;border:1px solid #374359;border-radius:15px;background:#171d27;margin-top:12px}.lion-rack-linked-label{font-size:10px;font-weight:600;letter-spacing:.6px;color:#b4c4dc;margin:1px 3px 9px}.lion-rack-row{padding:12px 10px 4px;margin-top:16px;border:1px solid var(--lion-group-border);border-left:3px solid var(--lion-group-accent);border-radius:11px;background:var(--lion-group-bg)}.lion-rack-linked-rows .lion-rack-row{margin:8px 0 0}#eve-lion-rack-board .lion-rack-row>h3{margin:0 0 10px;color:var(--lion-group-accent)}.lion-rack-row .lion-physical-rack{border-color:var(--lion-group-border);background:#11192480}.lion-rack-row .lion-physical-rack>header strong{color:var(--lion-group-accent)}',
+      '.lion-rack-row:not([open]){padding-bottom:12px}.lion-rack-row-title{display:flex;align-items:center;gap:9px;list-style:none;cursor:pointer;color:var(--lion-group-accent);padding:2px 1px}.lion-rack-row-title::-webkit-details-marker{display:none}.lion-rack-row-title:focus-visible{outline:2px solid var(--lion-group-accent);outline-offset:5px;border-radius:4px}.lion-rack-row-title strong{font-size:12px;font-weight:600}.lion-rack-row-title small{margin-left:auto;color:#a8b9cf;font-size:10px}.lion-rack-row-chevron{display:inline-block;font-size:21px;line-height:15px;transition:transform .15s}.lion-rack-row[open]>.lion-rack-row-title{margin-bottom:12px}.lion-rack-row[open]>.lion-rack-row-title .lion-rack-row-chevron{transform:rotate(90deg)}',
+      '.lion-rack-linked-rows .lion-rack-row-scroll{scrollbar-width:none;padding-bottom:2px}.lion-rack-linked-rows .lion-rack-row-scroll::-webkit-scrollbar{display:none}.lion-rack-shared-scroll{overflow-x:auto;overflow-y:hidden;height:16px;margin-top:9px;scrollbar-width:thin;scrollbar-color:#6c7b9a #151c28}.lion-rack-shared-scroll-content{height:1px}.lion-rack-shared-scroll:focus-visible{outline:2px solid #83a9d8;outline-offset:2px;border-radius:4px}',
+      '.lion-rack-positions{grid-template-rows:192px 192px}.lion-rack-slot[data-slot="2"],.lion-rack-slot[data-slot="3"]{height:192px}.lion-rack-slot-select{gap:3px}.lion-rack-stamp{display:block;font-size:9px;line-height:1.3;max-width:100%;color:#d0daea}.lion-rack-stamp>span{display:block;font-size:8px;color:#a6b5ca}.lion-rack-stamp time{display:block;font-variant-numeric:tabular-nums}.lion-rack-stamp+.lion-rack-stamp{margin-top:2px}',
+      '#eve-tracker-panel .eve-section-row[data-section="b6"],#eve-tracker-panel .eve-section-row[data-section="b7"],#eve-tracker-panel .eve-section-row[data-section="lionking2"]{background:var(--lion-group-bg);border-left:3px solid var(--lion-group-accent);padding-left:8px;padding-right:6px}#eve-tracker-panel .eve-section-row[data-section="b6"]{border-radius:8px 8px 0 0;border-bottom-color:transparent}#eve-tracker-panel .eve-section-row[data-section="b7"]{border-radius:0 0 8px 8px}#eve-tracker-panel .eve-section-row[data-section="lionking2"]{margin-top:8px;border-radius:8px}#eve-tracker-panel .eve-section-row[data-section="unassigned"]{margin-top:8px}#eve-tracker-panel .eve-section-row[data-section="b6"] .eve-section-name,#eve-tracker-panel .eve-section-row[data-section="b7"] .eve-section-name,#eve-tracker-panel .eve-section-row[data-section="lionking2"] .eve-section-name{color:var(--lion-group-accent)}',
+      '@media(max-width:700px){.lion-work-pair-cards{flex-direction:column}.lion-work-pair{flex-basis:100%}.lion-rack-linked-rows{padding:7px}.lion-rack-row{padding:10px 7px 3px}}',
+      '@media(max-width:700px){#eve-lion-rack-board.has-selection #lion-rack-drawer{position:absolute;inset:0 0 0 auto;width:min(100%,340px);z-index:5;box-shadow:-15px 0 40px #0008}.lion-physical-rack{flex-basis:310px}.lion-rack-toolbar .lion-rack-legend{display:none}#lion-rack-back{max-width:110px;white-space:normal}#lion-rack-title{padding:12px}}',
+      '#eve-lion-rack-board{font-size:12px;border-radius:12px}#lion-rack-title{padding:6px 10px;min-height:34px}#lion-rack-title>div:first-child{display:flex;align-items:baseline;gap:10px;min-width:0}#lion-rack-title .lion-rack-eyebrow{display:none}#lion-rack-title strong{font-size:17px;line-height:1.1;margin:0;white-space:nowrap}#lion-rack-title small{font-size:9px;line-height:1.2;margin:0;white-space:nowrap}.lion-rack-window-actions{gap:4px}.lion-rack-window-actions button{font-size:15px!important;padding:1px 7px!important}#lion-rack-back{font-size:10px!important;padding:4px 7px!important}.lion-rack-toolbar{padding:4px 10px;gap:8px;font-size:10px}.lion-rack-toolbar>button{font-size:9px!important;padding:3px 7px!important}.lion-rack-legend{gap:8px;font-size:9px}',
+      '.lion-rack-work-bar{padding:4px 8px;flex-wrap:nowrap;gap:6px;flex-shrink:0;align-items:center}#lion-rack-work-controls{display:grid;grid-template-columns:minmax(390px,2fr) repeat(2,minmax(175px,1fr));gap:5px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:thin}.lion-work-pair{display:block;min-width:0;padding:3px;border-radius:8px;flex:none}.lion-work-pair-label{display:none}.lion-work-pair-cards{display:flex;flex-direction:row;gap:4px}.lion-work-area{min-width:0;min-height:30px;padding:3px 5px;gap:5px;border-radius:6px}.lion-work-area>div{min-width:0}.lion-work-area strong{font-size:10px;line-height:12px}.lion-work-area small{font-size:8px;line-height:10px;margin-top:1px;white-space:nowrap}.lion-work-area .lion-work-toggle{font-size:8px;gap:3px}.lion-work-area .lion-work-toggle input{width:23px;height:14px}.lion-work-area .lion-work-toggle input:before{width:10px;height:10px}.lion-work-area .lion-work-toggle input:checked:before{left:11px}.lion-rack-all-controls{flex-wrap:nowrap;gap:3px;flex-shrink:0}.lion-rack-all-controls button{font-size:9px!important;padding:4px 5px!important;white-space:nowrap}',
+      '.lion-rack-body{padding:5px 7px 7px}#lion-rack-source{font-size:9px;line-height:12px}.lion-rack-linked-rows{padding:4px;margin-top:4px;border-radius:10px}.lion-rack-linked-label{font-size:9px;line-height:10px;margin:0 2px 3px}.lion-rack-linked-rows .lion-rack-row{margin:4px 0 0}.lion-rack-row{padding:4px 5px 3px;margin-top:6px;border-radius:8px}.lion-rack-row:not([open]){padding-bottom:4px}.lion-rack-row-title{padding:0;gap:6px;min-height:15px}.lion-rack-row-title strong{font-size:11px}.lion-rack-row-title small{font-size:9px}.lion-rack-row-chevron{font-size:17px;line-height:13px}.lion-rack-row[open]>.lion-rack-row-title{margin-bottom:4px}.lion-rack-row-scroll{padding-bottom:5px}.lion-rack-linked-rows .lion-rack-row-scroll{padding-bottom:1px}.lion-rack-shared-scroll{height:12px;margin-top:4px}.lion-rack-row-content{gap:8px;min-height:0}',
+      '.lion-physical-rack{flex:0 0 748px;padding:5px;border-radius:8px;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:18px auto;gap:4px 8px;align-content:start}.lion-physical-rack>header{grid-column:1;grid-row:1;min-height:18px;margin:0;gap:8px;justify-content:flex-start}.lion-physical-rack>header strong{font-size:11px}.lion-rack-assigned{font-size:9px;margin-left:auto}.lion-rack-work-row{grid-column:2;grid-row:1;gap:10px;margin:0}.lion-rack-work-row .lion-work-toggle{font-size:9px;gap:3px}.lion-rack-work-row .lion-work-toggle input{width:23px;height:14px}.lion-rack-work-row .lion-work-toggle input:before{width:10px;height:10px}.lion-rack-work-row .lion-work-toggle input:checked:before{left:11px}.lion-physical-rack.is-hidden-rack{flex-basis:280px}.lion-rack-positions{grid-column:1/3;grid-row:2;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:76px;gap:5px}.lion-rack-positions:before{display:none}.lion-rack-slot[data-slot="0"]{grid-column:2;grid-row:1;height:76px}.lion-rack-slot[data-slot="1"]{grid-column:3;grid-row:1;height:76px}.lion-rack-slot[data-slot="2"]{grid-column:1;grid-row:1;height:76px;align-self:stretch}.lion-rack-slot[data-slot="3"]{grid-column:4;grid-row:1;height:76px;align-self:stretch}.lion-rack-slot{padding:4px 5px;gap:3px;border-radius:6px;justify-content:flex-start}.lion-rack-slot:hover{transform:none;box-shadow:0 0 0 1px #81b7fb55}.lion-rack-slot.is-selected{outline-offset:1px}',
+      '.lion-rack-slot-select{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:13px 12px auto;gap:2px 4px;align-content:start;align-items:center;text-align:left;min-height:0;flex:1}.lion-rack-slot-label{grid-column:2;grid-row:1;justify-self:end;font-size:8px;letter-spacing:.3px}.lion-rack-sn{grid-column:1;grid-row:1;justify-self:start;font-size:11px}.lion-rack-result{grid-column:1;grid-row:2;justify-self:start;justify-content:flex-start;font-size:9px;white-space:nowrap;max-width:100%;overflow:hidden}.lion-rack-time{grid-column:2;grid-row:2;justify-self:end;font-size:8px;white-space:nowrap}.lion-rack-muted{font-size:8px;margin-left:2px}.lion-rack-stamps{grid-column:1/3;grid-row:3;display:flex;align-items:center;gap:6px;width:100%;min-width:0}.lion-rack-stamp{display:inline-flex;align-items:baseline;gap:3px;min-width:0;max-width:100%;font-size:8.5px;line-height:11px;white-space:nowrap}.lion-rack-stamps.has-two .lion-rack-stamp{flex:1;overflow:hidden}.lion-rack-stamp>span{display:inline;font-size:8px;flex-shrink:0}.lion-rack-stamp time{display:inline;overflow:hidden;text-overflow:ellipsis;min-width:0}.lion-rack-stamp+.lion-rack-stamp{margin-top:0}.lion-rack-slot-links{gap:4px;margin-top:auto}#eve-lion-rack-board .lion-rack-slot-links button{font-size:9px;line-height:11px;padding:3px 4px;min-height:19px}.lion-rack-empty .lion-rack-slot-select,.lion-rack-hidden-slot .lion-rack-slot-select{display:flex;flex-direction:column;justify-content:center;gap:3px}.lion-rack-empty .lion-rack-slot-label,.lion-rack-hidden-slot .lion-rack-slot-label{align-self:flex-end}.lion-rack-plus{font-size:18px}.lion-rack-scan-hint{font-size:9px}.lion-rack-unplaced-section{padding-top:5px;margin-top:6px}.lion-rack-unplaced-section summary{font-size:10px}',
+      '#eve-tracker-panel.eve-lion-compact{width:min(352px,calc(100vw - 20px));padding:8px;font-size:12px;max-height:calc(100vh - 20px)}#eve-tracker-panel.eve-lion-compact .eve-panel-title{font-size:16px;gap:5px;margin-bottom:4px}#eve-tracker-panel.eve-lion-compact .eve-title-meta{font-size:10px;margin-top:2px}#eve-tracker-panel.eve-lion-compact .eve-section-title{margin-top:7px;margin-bottom:5px;font-size:10px}#eve-tracker-panel.eve-lion-compact .eve-bulk-buttons{gap:4px;margin-bottom:6px}#eve-tracker-panel.eve-lion-compact .eve-bulk-buttons button{padding:5px 3px;font-size:10px}#eve-tracker-panel.eve-lion-compact .lion-rack-quick-open{padding:8px 10px;margin:5px 0 7px;border-radius:8px}#eve-tracker-panel.eve-lion-compact .lion-rack-quick-open>span{font-size:14px}#eve-tracker-panel.eve-lion-compact .lion-rack-quick-open>small{font-size:10px;margin-top:2px}#eve-tracker-panel.eve-lion-compact .eve-section-card{padding:0 6px}#eve-tracker-panel.eve-lion-compact .eve-section-head,#eve-tracker-panel.eve-lion-compact .eve-section-row{grid-template-columns:minmax(0,1fr) 38px 38px}#eve-tracker-panel.eve-lion-compact .eve-section-head{font-size:9px;padding:6px 0 4px}#eve-tracker-panel.eve-lion-compact .eve-section-row{padding-top:5px;padding-bottom:5px}#eve-tracker-panel.eve-lion-compact .eve-section-label{display:flex;flex-direction:column;align-items:flex-start;gap:3px;overflow:visible}#eve-tracker-panel.eve-lion-compact .eve-section-name{font-size:12px}#eve-tracker-panel.eve-lion-compact .eve-section-stats{gap:3px;flex-wrap:wrap}#eve-tracker-panel.eve-lion-compact .eve-stat{min-width:0;height:15px;line-height:15px;padding:0 4px;font-size:9px;gap:2px}#eve-tracker-panel.eve-lion-compact .eve-refresh-card{padding:6px 7px;margin-top:7px}#eve-tracker-panel.eve-lion-compact .eve-refresh-label{font-size:11px}#eve-tracker-panel.eve-lion-compact .eve-credit{font-size:9px;padding-top:5px}#eve-tracker-panel.eve-lion-compact:not(.eve-developer-enabled) #eve-page-navigation{display:none}',
+      '@media(max-width:1050px){.lion-rack-all-controls{display:grid;grid-template-columns:repeat(2,auto);gap:2px}.lion-rack-all-controls button{font-size:8px!important;padding:2px 4px!important}}@media(max-width:700px){#lion-rack-title small{display:none}.lion-rack-legend{display:none}.lion-rack-work-bar{padding:3px 5px}.lion-rack-workspace{min-width:0}#lion-rack-drawer{width:300px;flex-basis:300px}.lion-rack-toolbar{gap:5px}.lion-rack-row-title{gap:4px}}',
+      '.lion-rack-area[data-area="b6"],.lion-rack-row[data-area="b6"],.lion-work-area[data-area="b6"],#eve-tracker-panel .eve-section-row[data-section="b6"]{--lion-group-bg:#192638;--lion-group-border:#37506b;--lion-group-accent:#83a9d8}.lion-rack-area[data-area="b7"],.lion-rack-row[data-area="b7"],.lion-work-area[data-area="b7"],#eve-tracker-panel .eve-section-row[data-section="b7"]{--lion-group-bg:#1b2b2d;--lion-group-border:#3b575b;--lion-group-accent:#93bec3}.lion-rack-area[data-area="lionking2"],.lion-rack-row[data-area="lionking2"],.lion-work-area[data-area="lionking2"],#eve-tracker-panel .eve-section-row[data-section="lionking2"]{--lion-group-bg:#242236;--lion-group-border:#514762;--lion-group-accent:#b29dd8}.lion-rack-area[data-area="unassigned"]{--lion-group-bg:#1b222d;--lion-group-border:#334155;--lion-group-accent:#b5c8e4}',
+      '#lion-rack-title{padding:5px 9px;min-height:34px}.lion-rack-board-options{position:relative;cursor:default}.lion-rack-board-options>summary{cursor:pointer;list-style:none;font-size:17px;line-height:24px;width:28px;text-align:center;border:1px solid #354155;border-radius:6px}.lion-rack-board-options>summary::-webkit-details-marker{display:none}.lion-rack-board-options>summary:focus-visible{outline:2px solid #6caeff;outline-offset:2px}.lion-rack-board-options .lion-rack-all-controls{position:absolute;right:0;top:30px;z-index:10;display:grid;grid-template-columns:repeat(2,auto);padding:7px;background:#1b232f;border:1px solid #40506a;border-radius:8px;box-shadow:0 8px 24px #0007;gap:5px}.lion-rack-board-options #lion-rack-edit-layout{grid-column:1/3}.lion-rack-body{padding:4px 6px 6px}.lion-rack-linked-rows{margin:0;padding:0;border:0;border-radius:0;background:transparent}.lion-rack-area{background:var(--lion-group-bg);border:0;border-left:3px solid var(--lion-group-accent);border-radius:6px;margin:0 0 5px;padding:0 5px}.lion-rack-area-head{display:flex;align-items:center;gap:10px;min-height:27px;padding:2px 1px}.lion-rack-area-controls{display:flex;align-items:center;gap:10px;flex:1;min-width:0}.lion-work-counts{display:flex;gap:5px;flex-wrap:wrap;flex:1;min-width:0}.lion-work-count{font-size:9px;line-height:14px;color:#acbfd7;white-space:nowrap}.lion-work-count-testing{color:#b6dcc5}.lion-work-count-pretest{color:#9bd2f3}.lion-work-count-failed{color:#ed91a6}.lion-work-count-pretestFailed{color:#cc6b83}.lion-work-count-passed{color:#75c7a1}.lion-rack-area-controls .lion-work-toggle{font-size:9px;gap:4px}#eve-lion-rack-board .lion-rack-row-toggle{display:flex;align-items:center;gap:6px;padding:1px 0;border:0;background:transparent;color:var(--lion-group-accent);font-size:12px;border-radius:3px;white-space:nowrap}.lion-rack-row-toggle strong{font-size:12px}.lion-rack-row-toggle small{font-size:9px;font-weight:400;color:#9bacc3}.lion-rack-row-toggle:disabled{opacity:.55;cursor:default}.lion-rack-row-toggle[aria-expanded="true"] .lion-rack-row-chevron{transform:rotate(90deg)}.lion-rack-area .lion-rack-row,.lion-rack-linked-rows .lion-rack-row{padding:0 0 2px;margin:0;border:0;border-radius:0;background:transparent}.lion-rack-row:not([open]){padding:0}.lion-rack-shared-scroll{height:11px;margin:0 2px 5px}.lion-rack-row-content{gap:0}.lion-rack-row-scroll{padding-bottom:5px}.lion-rack-linked-rows .lion-rack-row-scroll{padding-bottom:0}',
+      '.lion-rack-row .lion-physical-rack{flex:0 0 554px;padding:3px 8px 5px;border:0;border-right:1px solid var(--lion-group-border);border-radius:0;background:transparent;grid-template-rows:17px auto;gap:3px 8px}.lion-rack-row .lion-physical-rack:last-child{border-right:0}.lion-rack-row .lion-physical-rack.is-hidden-rack{flex-basis:240px}.lion-physical-rack>header{min-height:17px}.lion-physical-rack>header strong{font-size:11px}.lion-rack-work-row{gap:8px}.lion-rack-positions{grid-template-columns:repeat(3,minmax(0,1fr));grid-template-rows:64px 64px;gap:4px}.lion-rack-positions:before{display:none}.lion-rack-slot[data-slot="0"]{grid-column:2;grid-row:1;height:64px}.lion-rack-slot[data-slot="1"]{grid-column:2;grid-row:2;height:64px}.lion-rack-slot[data-slot="2"]{grid-column:1;grid-row:1/3;height:64px;align-self:center}.lion-rack-slot[data-slot="3"]{grid-column:3;grid-row:1/3;height:64px;align-self:center}.lion-rack-slot{padding:3px 5px;gap:2px;align-items:stretch;border-radius:5px}.lion-rack-slot-select{grid-template-rows:12px 11px 10px;gap:1px 4px;flex:1;align-content:start}.lion-rack-sn{font-size:11px;line-height:12px}.lion-rack-slot-label{font-size:7px;letter-spacing:.25px}.lion-rack-result{font-size:9px;line-height:11px}.lion-rack-time{font-size:8px;line-height:11px}.lion-rack-stamps{gap:5px}.lion-rack-stamp,.lion-rack-stamp>span{font-size:8px;line-height:10px}.lion-rack-slot-links{margin-top:auto;gap:4px}#eve-lion-rack-board .lion-rack-slot-links button{padding:1px 4px;min-height:16px;line-height:12px;font-size:9px}.lion-rack-empty .lion-rack-slot-select{display:grid;grid-template-columns:1fr auto;grid-template-rows:12px 1fr;gap:2px;align-items:center}.lion-rack-empty .lion-rack-slot-label{grid-column:2;grid-row:1;align-self:auto}.lion-rack-empty .lion-rack-plus{grid-column:1;grid-row:1/3;justify-self:center;font-size:22px}.lion-rack-empty .lion-rack-scan-hint{grid-column:2;grid-row:2;justify-self:end;font-size:9px}.lion-rack-unplaced-section{padding-top:0;margin-top:0}.lion-rack-unplaced-section p{margin:5px 0}.lion-rack-unplaced-section #lion-rack-find{margin-top:3px;font-size:11px;padding:4px 7px}.lion-rack-unplaced-section #lion-rack-unplaced{padding:5px 0}',
+      '.lion-rack-running{background:#4a7858!important;border-color:#7dab89!important;color:#f0fff4}.lion-rack-running .lion-rack-slot-label,.lion-rack-running .lion-rack-time,.lion-rack-running .lion-rack-stamp,.lion-rack-running .lion-rack-stamp>span{color:#e5f3e8}#eve-lion-rack-board .lion-rack-running .lion-rack-slot-links button{background:#35583f;border-color:#7dab89;color:#f0fff4}.lion-rack-pass{background:#12392d!important;border-color:#32c28a!important;color:#bbefda}.lion-rack-fail{background:#3d1f2c!important;border-color:#e65c7d!important;color:#ffd0dc}.lion-rack-pretest_fail{background:#290d17!important;border-color:#8f2541!important;color:#f1b0c0}#eve-tracker-panel.eve-lion-compact .eve-stat-pretest-failed{background:#290d17;color:#f1b0c0}.lion-rack-pretest_fail .lion-rack-slot-label,.lion-rack-pretest_fail .lion-rack-stamp,.lion-rack-pretest_fail .lion-rack-stamp>span{color:#c994a3}',
+      '.lion-rack-pretest{background:#4a7858!important;border-color:#7dab89!important;color:#f0fff4}.lion-rack-pretest .lion-rack-slot-label,.lion-rack-pretest .lion-rack-time,.lion-rack-pretest .lion-rack-stamp,.lion-rack-pretest .lion-rack-stamp>span{color:#e5f3e8}#eve-lion-rack-board .lion-rack-pretest .lion-rack-slot-links button{background:#35583f;border-color:#7dab89;color:#f0fff4}',
+      '@media(max-width:700px){.lion-rack-area-head{flex-wrap:wrap;gap:1px 8px}.lion-rack-area-controls{min-width:240px;gap:6px}.lion-work-counts{gap:4px}.lion-rack-row .lion-physical-rack{flex-basis:518px}.lion-rack-area{padding:0 3px}#lion-rack-title{padding:5px 7px}#lion-rack-back{max-width:120px}}',
+      '#eve-lion-rack-board .lion-rack-pool-item:is(.lion-rack-running,.lion-rack-pretest){color:#f0fff4}#eve-lion-rack-board .lion-rack-pool-item:is(.lion-rack-running,.lion-rack-pretest) small{color:#e5f3e8}.lion-rack-area-head{justify-content:flex-start;gap:7px}.lion-rack-area-controls{flex:0 1 auto;gap:10px;min-width:0}.lion-work-counts{flex:0 1 auto}.lion-rack-row .lion-physical-rack{grid-template-columns:max-content minmax(0,1fr);column-gap:8px}.lion-rack-work-row{justify-content:flex-start}.lion-rack-assigned{margin-left:0}#eve-tracker-panel.eve-lion-compact .eve-section-head,#eve-tracker-panel.eve-lion-compact .eve-section-row{grid-template-columns:minmax(0,1fr)}#eve-tracker-panel.eve-lion-compact .lion-section-heading{display:flex;align-items:center;gap:9px}#eve-tracker-panel.eve-lion-compact .eve-bulk-buttons{grid-template-columns:repeat(2,minmax(0,1fr))}#eve-tracker-panel.eve-lion-compact .eve-section-label{width:100%}',
+      '#eve-lion-rack-board .lion-physical-rack>header{grid-column:1/3}',
+      '#eve-lion-rack-board .lion-rack-slot-remove{position:absolute;top:2px;right:3px;z-index:3;width:16px;height:16px;min-width:16px;padding:0!important;border:0!important;border-radius:3px;background:transparent!important;color:inherit!important;font-size:15px;line-height:16px;cursor:pointer}#eve-lion-rack-board .lion-rack-slot-remove:hover{background:#0004!important}.lion-rack-slot.has-remove .lion-rack-slot-label{margin-right:16px}'
+    ].join('');
+    document.head.appendChild(style); document.body.appendChild(board);
+    lionRackUI = readJSON(localStorage, LION_RACK_WINDOW_KEY, null, 'Rack board window');
+    fitLionRackWindow(board); board.hidden = lionRackUI?.open === false;
+    document.documentElement.classList.toggle('lion-rack-map-active', !board.hidden);
+    board.querySelector('#lion-rack-close').addEventListener('click', () => setLionRackView(false));
+    board.querySelector('#lion-rack-back').addEventListener('click', () => setLionRackView(false));
+    board.querySelector('#lion-rack-expand').addEventListener('click', () => {
+      fitLionRackWindow(board); saveLionRackWindow(board);
+    });
+    board.querySelector('#lion-rack-drawer-close').addEventListener('click', closeLionRackSelection);
+    board.querySelector('#lion-rack-edit-layout').addEventListener('click', event => {
+      const editing = board.classList.toggle('lion-layout-editing');
+      event.currentTarget.setAttribute('aria-pressed', String(editing));
+      event.currentTarget.textContent = editing ? 'Done editing' : 'Edit layout';
+      board.querySelector('#lion-rack-layout-tools').hidden = !editing;
+    });
+    board.querySelector('#lion-rack-find').addEventListener('input', () => refreshLionRackBoard(lionRackSnapshot));
+    board.addEventListener('change', event => {
+      const input = event.target, property = input.dataset.workProperty;
+      if (input.dataset.workArea && property === 'enabled') {
+        updateLionAreaEnabled(input.dataset.workArea, input.checked);
+      }
+    });
+    board.querySelector('#lion-rack-scan').addEventListener('submit', event => { event.preventDefault(); submitLionRackScan(); });
+    let scanTimer = null, scanStart = 0, lastInput = 0, scanCharacters = 0;
+    const scanInput = board.querySelector('#lion-rack-serial');
+    scanInput.addEventListener('input', event => {
+      clearTimeout(scanTimer);
+      const now = Date.now();
+      if (!lastInput || now - lastInput > 65) { scanStart = now; scanCharacters = 0; }
+      scanCharacters += String(event.data || '').length; lastInput = now;
+      if (scanCharacters >= 6 && now - scanStart < 450 && /^\d{4}YW[A-Z0-9]{4}$/i.test(scanInput.value.trim())) {
+        const selected = JSON.stringify(lionRackSelected);
+        scanTimer = setTimeout(() => {
+          if (JSON.stringify(lionRackSelected) === selected && scanInput.value.trim()) submitLionRackScan();
+        }, 200);
+      }
+    });
+    scanInput.addEventListener('keydown', event => { if (event.key === 'Enter') clearTimeout(scanTimer); });
+    scanInput.addEventListener('paste', () => {
+      clearTimeout(scanTimer);
+      const selected = JSON.stringify(lionRackSelected);
+      scanTimer = setTimeout(() => {
+        if (JSON.stringify(lionRackSelected) === selected && scanInput.value.trim()) submitLionRackScan();
+      }, 200);
+    });
+    board.addEventListener('toggle', event => {
+      const row = event.target;
+      if (!(row instanceof Element) || !board.contains(row)) return;
+      const area = row.id === 'lion-rack-row-unassigned' ? 'unassigned' : row.dataset.area;
+      if (!area || !row.matches('details')) return;
+      // Native toggle events also fire after programmatic opens and renders.
+      // The saved Enabled preference is authoritative, so those events never
+      // create an independent expansion state or replay notification changes.
+      const enabled = lionAreaSettings(area).show;
+      if (row.open !== enabled) row.open = enabled;
+      board.querySelector('[data-lion-row-toggle="' + area + '"]')?.setAttribute('aria-expanded', String(enabled));
+      queueLionRackPairedScroll();
+    }, true);
+    board.addEventListener('scroll', event => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest('.lion-rack-linked-rows') ||
+          !target.matches('.lion-rack-shared-scroll,.lion-rack-row-scroll') ||
+          lionRackExpectedScroll.get(target) === target.scrollLeft) return;
+      if (target.closest('details.lion-rack-row')?.open === false || target.hidden) return;
+      lionRackPairedScrollLeft = target.scrollLeft;
+      updateLionRackPairedScroll();
+    }, true);
+    if (typeof ResizeObserver === 'function') {
+      const pairedScrollResize = new ResizeObserver(queueLionRackPairedScroll);
+      pairedScrollResize.observe(board.querySelector('.lion-rack-body'));
+    }
+    board.addEventListener('click', event => {
+      const button = event.target.closest('button'), slot = event.target.closest('[data-slot]'), rackElement = event.target.closest('[data-rack]');
+      if (button?.dataset.lionRowToggle) {
+        const area = button.dataset.lionRowToggle;
+        updateLionAreaEnabled(area, !lionAreaSettings(area).show);
+        return;
+      }
+      if (button?.dataset.allWork) {
+        const [property, enabled] = button.dataset.allWork.split(':');
+        setLionKingAreas(property, enabled === 'true'); return;
+      }
+      if (button?.dataset.unplaced) {
+        if (!lionRackSelected) { board.querySelector('#lion-rack-unplaced').previousElementSibling.textContent = 'Click a rack slot first, then choose this serial.'; return; }
+        scanInput.value = button.dataset.unplaced; submitLionRackScan(); return;
+      }
+      if (slot && rackElement && button?.dataset.slotAction === 'remove') {
+        event.preventDefault(); event.stopPropagation();
+        const rack = rackElement.dataset.rack, position = Number(slot.dataset.slot);
+        if (lionRackSelected?.rack === rack && lionRackSelected.position === position) clearTimeout(scanTimer);
+        clearLionRackSlot(rack, position, button.dataset.slotSerial);
+        return;
+      }
+      if (slot && rackElement && ['jira', 'testview'].includes(button?.dataset.slotAction)) {
+        event.preventDefault(); event.stopPropagation();
+        openLionRackSlotLink(rackElement.dataset.rack, Number(slot.dataset.slot), button.dataset.slotAction); return;
+      }
+      if (slot && rackElement) { clearTimeout(scanTimer); selectLionRackSlot(rackElement.dataset.rack, Number(slot.dataset.slot)); return; }
+      if (!rackElement || !button?.dataset.rackAction) return;
+      const rack = rackElement.dataset.rack, next = readLionRackBoard(), row = next.rows.find(item => item.racks.includes(rack));
+      if (!row) return;
+      const index = row.racks.indexOf(rack), action = button.dataset.rackAction;
+      if (action === 'remove') {
+        if (next.slots[rack].some(entry => entry.serial)) { button.title = 'Remove its JBOGs before removing this rack.'; return; }
+        row.racks.splice(index, 1); delete next.slots[rack];
+      } else {
+        const destination = index + (action === 'left' ? -1 : 1);
+        if (destination < 0 || destination >= row.racks.length) return;
+        [row.racks[index], row.racks[destination]] = [row.racks[destination], row.racks[index]];
+      }
+      saveLionRackBoard(next);
+    });
+    board.addEventListener('keydown', event => {
+      if (!['Enter', ' '].includes(event.key) || event.target.closest('button,input,select,textarea,a')) return;
+      const slot = event.target.closest('[data-slot]');
+      if (!slot) return;
+      event.preventDefault(); selectLionRackSlot(slot.closest('[data-rack]').dataset.rack, Number(slot.dataset.slot));
+    });
+    const selectedInfo = () => {
+      const entry = lionRackSelected && lionRackBoard.slots[lionRackSelected.rack]?.[lionRackSelected.position];
+      return { entry, row: entry?.serial ? lionRackInfoForSerial(entry.serial) : null };
+    };
+    board.querySelector('#lion-rack-open-test').addEventListener('click', () => {
+      if (lionRackSelected) openLionRackSlotLink(lionRackSelected.rack, lionRackSelected.position, 'testview');
+    });
+    board.querySelector('#lion-rack-open-jira').addEventListener('click', () => {
+      if (lionRackSelected) openLionRackSlotLink(lionRackSelected.rack, lionRackSelected.position, 'jira');
+    });
+    board.querySelector('#lion-rack-copy-selected').addEventListener('click', event => {
+      const { entry } = selectedInfo(); if (entry?.serial) copyToClipboard(entry.serial, event.currentTarget);
+    });
+    board.querySelector('#lion-rack-clear-selected').addEventListener('click', () => {
+      if (!lionRackSelected) return;
+      clearTimeout(scanTimer);
+      const { rack, position } = lionRackSelected;
+      if (clearLionRackSlot(rack, position, lionRackBoard.slots[rack]?.[position]?.serial)) scanInput.focus();
+    });
+    board.querySelector('#lion-rack-add').addEventListener('click', () => {
+      const input = board.querySelector('#lion-rack-barcode'), rack = lionRackBarcode(input.value), next = readLionRackBoard();
+      const row = Number(board.querySelector('#lion-rack-new-row').value);
+      if (!rack || next.slots[rack] || Object.keys(next.slots).length >= 96) {
+        input.setCustomValidity(!rack ? 'Scan a complete barcode, such as TA.E2-EVE04.' : next.slots[rack] ? 'This rack is already on the board.' : 'Remove an unused rack first.');
+        input.reportValidity(); return;
+      }
+      input.setCustomValidity('');
+      next.rows[row].racks.push(rack); next.slots[rack] = Array.from({ length: 4 }, () => ({ serial: '', partner: '' }));
+      if (saveLionRackBoard(next)) { input.value = ''; selectLionRackSlot(rack, 0); }
+    });
+    board.querySelector('#lion-rack-barcode').addEventListener('input', event => event.target.setCustomValidity(''));
+    board.addEventListener('dragstart', event => {
+      if (['jira', 'testview', 'remove'].includes(event.target.closest('button')?.dataset.slotAction)) { event.preventDefault(); return; }
+      const rackHeader = event.target.closest('[data-rack-drag]'), slot = event.target.closest('[data-slot]'), unplaced = event.target.closest('[data-unplaced]');
+      if (rackHeader) {
+        if (!board.classList.contains('lion-layout-editing')) { event.preventDefault(); return; }
+        event.dataTransfer.setData('application/x-lion-rack', rackHeader.dataset.rackDrag);
+      } else if (slot) {
+        const entry = lionRackBoard.slots[slot.closest('[data-rack]').dataset.rack][Number(slot.dataset.slot)];
+        if (!entry.serial) { event.preventDefault(); return; }
+        event.dataTransfer.setData('application/x-lion-jbog', JSON.stringify(entry));
+      } else if (unplaced) event.dataTransfer.setData('application/x-lion-jbog', JSON.stringify({ serial: unplaced.dataset.unplaced, partner: '' }));
+      else return;
+      lionRackDragging = true; event.dataTransfer.effectAllowed = 'move';
+    });
+    board.addEventListener('dragover', event => {
+      const types = [...event.dataTransfer.types];
+      if ((types.includes('application/x-lion-jbog') && event.target.closest('[data-slot]')) ||
+          (types.includes('application/x-lion-rack') && event.target.closest('.lion-rack-row'))) event.preventDefault();
+    });
+    board.addEventListener('drop', event => {
+      lionRackDragging = false;
+      const rack = event.dataTransfer.getData('application/x-lion-rack'), jbog = event.dataTransfer.getData('application/x-lion-jbog');
+      if (rack) {
+        const destination = event.target.closest('.lion-rack-row');
+        if (!destination) return;
+        event.preventDefault();
+        const next = readLionRackBoard(), from = next.rows.find(row => row.racks.includes(rack));
+        if (!from) return;
+        const before = event.target.closest('[data-rack]')?.dataset.rack;
+        if (before === rack) return;
+        from.racks.splice(from.racks.indexOf(rack), 1);
+        const row = next.rows[Number(destination.dataset.row)], index = before ? row.racks.indexOf(before) : -1;
+        row.racks.splice(index < 0 ? row.racks.length : index, 0, rack); saveLionRackBoard(next);
+      } else if (jbog) {
+        const slot = event.target.closest('[data-slot]');
+        if (!slot) return;
+        event.preventDefault();
+        try {
+          const entry = JSON.parse(jbog), target = slot.closest('[data-rack]').dataset.rack, position = Number(slot.dataset.slot);
+          if (assignLionRackSlot(target, position, entry.serial, entry.partner)) selectLionRackSlot(target, position);
+        } catch (error) {}
+      }
+    });
+    board.addEventListener('dragend', () => { lionRackDragging = false; refreshLionRackBoard(lionRackSnapshot); });
+    const title = board.querySelector('#lion-rack-title');
+    title.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('button,summary,input,select,a,label')) return;
+      event.preventDefault(); title.setPointerCapture(event.pointerId);
+      const rect = board.getBoundingClientRect(), startX = event.clientX, startY = event.clientY;
+      const move = current => {
+        board.style.left = Math.max(10, Math.min(window.innerWidth - rect.width - 10, rect.left + current.clientX - startX)) + 'px';
+        board.style.top = Math.max(10, Math.min(window.innerHeight - rect.height - 10, rect.top + current.clientY - startY)) + 'px';
+      };
+      const finish = () => {
+        title.removeEventListener('pointermove', move); title.removeEventListener('pointerup', finish); title.removeEventListener('pointercancel', finish);
+        saveLionRackWindow(board);
+      };
+      title.addEventListener('pointermove', move); title.addEventListener('pointerup', finish); title.addEventListener('pointercancel', finish);
+    });
+    window.addEventListener('resize', () => fitLionRackWindow(board));
+    board.addEventListener('pointerup', () => { if (!board.hidden) saveLionRackWindow(board); });
+    board.querySelector('#lion-rack-backup').addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(lionRackBoard, null, 2)], { type: 'application/json' }));
+      const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'lion-king-rack-assignments.json'; anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    board.querySelector('#lion-rack-restore').addEventListener('click', () => board.querySelector('#lion-rack-file').click());
+    board.querySelector('#lion-rack-file').addEventListener('change', async event => {
+      const file = event.target.files[0]; event.target.value = '';
+      if (!file || file.size > 200000) return;
+      try {
+        const imported = JSON.parse(await file.text());
+        if (imported.kind !== 'eve-lion-rack-board' || imported.version !== 1 || !Array.isArray(imported.rows) ||
+            imported.rows.length !== 3 || !isRecordObject(imported.slots)) throw new Error('Invalid backup.');
+        const normalized = normalizeLionRackBoard(imported);
+        if (normalized.rows.some((row, index) =>
+              !isRecordObject(imported.rows[index]) ||
+              ![LION_RACK_ROWS[index].area, index < 2 ? 'lionking1' : 'lionking2'].includes(imported.rows[index].area) ||
+              JSON.stringify(row.racks) !== JSON.stringify(imported.rows[index].racks)) ||
+            Object.keys(normalized.slots).length !== Object.keys(imported.slots).length ||
+            Object.keys(normalized.slots).some(rack => JSON.stringify(normalized.slots[rack]) !== JSON.stringify(imported.slots[rack]))) throw new Error('Invalid assignments.');
+        if (saveLionRackBoard(imported)) board.querySelector('#lion-rack-restore').textContent = 'Restored';
+      } catch (error) { board.querySelector('#lion-rack-restore').textContent = 'Invalid backup'; }
+    });
+    const adopt = () => {
+      const next = readLionRackBoard();
+      if (JSON.stringify(next) === JSON.stringify(lionRackBoard)) return;
+      lionRackBoard = next; indexLionRacks(); refreshLionRackAlertLocations(); refreshLionRackBoard(lionRackSnapshot); scanLionKing();
+    };
+    if (typeof GM_addValueChangeListener === 'function') GM_addValueChangeListener(LION_RACK_BOARD_KEY, (name, oldValue, newValue, remote) => { if (remote) adopt(); });
+    window.addEventListener('storage', event => { if (event.key === LION_RACK_BOARD_KEY) adopt(); });
+    window.addEventListener('focus', adopt);
+    refreshLionRackBoard(null);
+  }
+
+  function lionAreaForRow(row) {
+    const physical = lionRackPlacement(row);
+    if (physical) return physical.conflict ? 'unassigned' : physical.area;
+    const areas = settings.lionAreas || {};
+    const tail = areas[String(row.tailSerial || row.serial || '').toUpperCase()];
+    const head = areas[String(row.headSerial || '').toUpperCase()];
+    const known = value => value !== 'unassigned' && Object.prototype.hasOwnProperty.call(LION_AREAS, value);
+    if (known(tail) && known(head) && tail !== head) return 'unassigned';
+    return known(tail) ? tail : known(head) ? head : 'unassigned';
+  }
+
+  function lionAreaSettings(area) {
+    const saved = settings.sections[area];
+    if (!isRecordObject(saved)) {
+      settings.sections[area] = { show: false, watch: false };
+    } else {
+      // Preserve existing mutes when upgrading to a single enabled switch.
+      const enabled = saved.show !== false && saved.watch !== false;
+      saved.show = enabled;
+      saved.watch = enabled;
+    }
+    return settings.sections[area];
+  }
+
+  function setLionAreaEnabled(area, enabled) {
+    const prefs = lionAreaSettings(area);
+    prefs.show = enabled; prefs.watch = enabled;
+  }
+
+  function updateLionAreaEnabled(area, enabled) {
+    setLionAreaEnabled(area, enabled);
+    syncLionKingControls(); saveSettings(); refreshLionRackBoard(lionRackSnapshot);
+    scanLionKing(); applyAlertFilter();
+  }
+
+  function syncLionKingControls() {
+    document.querySelectorAll('#eve-section-list .eve-section-row').forEach(row => {
+      const prefs = lionAreaSettings(row.dataset.section);
+      row.querySelectorAll('.eve-show-checkbox,.eve-watch-checkbox').forEach(input => { input.checked = prefs.show; });
+      syncSectionRowShown(row, prefs.show);
+    });
+    settings.lionNotifications = Object.keys(LION_AREAS).some(area => lionAreaSettings(area).watch);
+  }
+
+  function setLionKingAreas(property, value) {
+    Object.keys(LION_AREAS).forEach(area => setLionAreaEnabled(area, value));
+    syncLionKingControls();
+    saveSettings();
+    refreshLionRackBoard(lionRackSnapshot);
+    applyAlertFilter();
+    scanLionKing();
+  }
+
+  let lionRefreshError = '';
+  let lionHasCompletedSnapshot = false;
+  let lionCachedSnapshot = null;
+  let lionCacheSignature = '';
+  let lionCacheWriteFailed = false;
+  const LION_SNAPSHOT_KEY = 'lionKingTrackerSnapshot';
+  const LION_CACHE_MAX_ROWS = 2500;
+  const lionPendingEvents = new Set();
+
+  function lionSnapshotRowData(row) {
+    if (!isRecordObject(row) || !['RUNNING', 'PASS', 'FAIL', 'UNKNOWN'].includes(row.status)) return null;
+    const strings = ['jbog', 'tailSerial', 'headSerial', 'started', 'statusText'];
+    if (strings.some(field => typeof row[field] !== 'string' || row[field].length > (field === 'statusText' ? 1000 : 120)) ||
+        !row.jbog || !row.tailSerial || (!row.headSerial && !IS_LION_RAMSES_PAGE) ||
+        (IS_LION_RAMSES_PAGE && row.source !== 'ramses')) return null;
+    const startedAt = lionStartedAt(row.started);
+    if (!Number.isFinite(startedAt) || startedAt > Date.now() + 10 * 60000) return null;
+    const ramsesDuration = Number.isFinite(row.finishedAt) && row.finishedAt > startedAt &&
+      row.finishedAt <= Date.now() + 10 * 60000 ? row.finishedAt - startedAt : null;
+    return { source: IS_LION_RAMSES_PAGE ? 'ramses' : 'collector',
+      jbog: row.jbog, tailSerial: row.tailSerial, headSerial: row.headSerial,
+      started: row.started, startedAt, status: row.status, statusText: row.statusText,
+      finishedAt: IS_LION_RAMSES_PAGE ? row.finishedAt : undefined,
+      durationMs: row.status === 'PASS' ? IS_LION_RAMSES_PAGE ? ramsesDuration : parseLionKingDuration(row.statusText) : null,
+      key: IS_LION_RAMSES_PAGE ? ramsesRunKey(row.tailSerial, startedAt) :
+        JSON.stringify([row.tailSerial.toUpperCase(), row.headSerial.toUpperCase(), startedAt]) };
+  }
+
+  function loadLionKingSnapshotCache() {
+    const saved = readJSON(localStorage, LION_SNAPSHOT_KEY, null, 'Lion snapshot');
+    if (!isRecordObject(saved) || saved.version !== 1 || saved.origin !== window.location.origin ||
+        saved.path !== window.location.pathname || !Number.isFinite(saved.savedAt) || saved.savedAt <= 0 ||
+        saved.savedAt > Date.now() + 10 * 60000 || !Array.isArray(saved.rows) ||
+        saved.rows.length > LION_CACHE_MAX_ROWS) return null;
+    const rows = saved.rows.map(lionSnapshotRowData).filter(Boolean);
+    return rows.length ? { ...saved, rows } : null;
+  }
+
+  function saveLionKingSnapshotCache(snapshot) {
+    const rows = new Map();
+    // A malformed or missing row cannot erase an earlier active observation.
+    // Retained cached rows are display-only until the live source validates them.
+    if (lionCachedSnapshot) lionCachedSnapshot.rows.forEach(row => {
+      if (row.status === 'RUNNING' || row.status === 'UNKNOWN' || snapshot.quarantinedKeys?.includes(row.key)) {
+        rows.set(row.key, row);
+      }
+    });
+    snapshot.rows.forEach(row => {
+      const plain = lionSnapshotRowData(row);
+      if (plain) rows.set(plain.key, plain);
+    });
+    const sorted = [...rows.values()].sort((a, b) => {
+      const active = row => row.status === 'RUNNING' || row.status === 'UNKNOWN';
+      return Number(active(b)) - Number(active(a)) || b.startedAt - a.startedAt;
+    });
+    const saved = { version: 1, origin: window.location.origin, path: window.location.pathname,
+      savedAt: rackDataAt, rows: sorted.filter(row => row.status === 'RUNNING' || row.status === 'UNKNOWN' ||
+        (IS_LION_RAMSES_PAGE && row.finishedAt ? row.finishedAt : row.startedAt) >= Date.now() - 2 * LION_DAY_MS).slice(0, LION_CACHE_MAX_ROWS) };
+    const signature = JSON.stringify(saved);
+    lionCachedSnapshot = saved;
+    if (signature === lionCacheSignature && !lionCacheWriteFailed) return;
+    lionCacheWriteFailed = !writeJSON(localStorage, LION_SNAPSHOT_KEY, saved, 'Lion snapshot');
+    if (!lionCacheWriteFailed) lionCacheSignature = signature;
+  }
+
+  function showLionKingSnapshotCache() {
+    if (!lionCachedSnapshot || lionHasCompletedSnapshot) return;
+    let holder = document.getElementById('lion-cached-view');
+    if (!holder) {
+      holder = document.createElement('section');
+      holder.id = 'lion-cached-view';
+      holder.setAttribute('data-lion-tracker-ui', 'cached-snapshot');
+      const title = document.createElement('h3');
+      title.textContent = 'Saved Lion King data - waiting for the live source';
+      holder.appendChild(title);
+      const age = document.createElement('p');
+      age.id = 'lion-cache-age';
+      holder.appendChild(age);
+      const table = document.createElement('table');
+      table.id = 'lion-cached-source';
+      const header = table.createTHead().insertRow();
+      (IS_LION_RAMSES_PAGE ? ['JBOG SN', 'Started', 'Status'] :
+        ['JBOG_NUM', 'TailNode_SN', 'HeadNode_SN', 'Started', 'Status']).forEach(label => {
+        const cell = document.createElement('th'); cell.textContent = label; header.appendChild(cell);
+      });
+      table.createTBody();
+      holder.appendChild(table);
+      document.body.insertBefore(holder, document.body.firstChild);
+    }
+    setTextIfChanged(document.getElementById('lion-cache-age'),
+      `Saved ${siteDateTime(new Date(lionCachedSnapshot.savedAt))}; ${lionHoursMinutes(Date.now() - lionCachedSnapshot.savedAt)} old. ` +
+      'These saved rows do not establish new results or source freshness.');
+    const body = holder.querySelector('tbody');
+    body.replaceChildren();
+    const rows = lionCachedSnapshot.rows.map(row => {
+      const element = body.insertRow();
+      const cells = (IS_LION_RAMSES_PAGE ? [row.tailSerial, row.started, row.statusText] :
+        [row.jbog, row.tailSerial, row.headSerial, row.started, row.statusText]).map(text => {
+        const cell = element.insertCell(); cell.textContent = text; return cell;
+      });
+      const statusCell = cells[IS_LION_RAMSES_PAGE ? 2 : 4];
+      const nodeCells = IS_LION_RAMSES_PAGE ? [cells[0]] : cells.slice(0, 3);
+      statusCell.style.backgroundColor = { RUNNING: 'lightgreen', PASS: 'green', FAIL: 'red', UNKNOWN: '#666' }[row.status];
+      statusCell.style.color = row.status === 'RUNNING' ? '#111' : '#fff';
+      nodeCells.forEach((cell, index) => {
+        const open = event => {
+          if (event.type === 'keydown' && event.key !== 'Enter') return;
+          if (event.type === 'click' && event.button !== 0) return;
+          if (event.type === 'auxclick' && event.button !== 1) return;
+          event.preventDefault();
+          openLionKingTestView(index === 2 ? row.headSerial : row.tailSerial, row.started,
+            (event.button === 1 || event.ctrlKey || event.metaKey) && typeof GM_openInTab === 'function'
+              ? url => GM_openInTab(url, { active: false, insert: true }) : openExternal);
+        };
+        cell.addEventListener('click', open);
+        cell.addEventListener('auxclick', open);
+        cell.addEventListener('keydown', open);
+      });
+      return { ...row, element, statusCell, nodeCells };
+    });
+    updateLionKingRows({ rows });
+  }
+
+  function lionInvalidRowSummary(snapshot) {
+    return Object.entries(snapshot.invalidReasons || {}).filter(([, count]) => count)
+      .map(([reason, count]) => `${reason}: ${count}`).join(', ');
+  }
+
+  function lionCellText(cell) {
+    if (!cell) return '';
+    let source = cell;
+    if (cell.querySelector('[data-lion-tracker-ui]')) {
+      source = cell.cloneNode(true);
+      source.querySelectorAll('[data-lion-tracker-ui]').forEach(node => node.remove());
+    }
+    return String(source.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function normalizeLionKingStatus(cell) {
+    const text = lionCellText(cell).toUpperCase();
+    const words = { PASS: 'PASS', PASSED: 'PASS', FAIL: 'FAIL', FAILED: 'FAIL',
+      RUNNING: 'RUNNING', TESTING: 'RUNNING' };
+    const color = normalizeColor(cell);
+    const coloredStatus = { lightgreen: 'RUNNING', darkgreen: 'PASS', red: 'FAIL' }[color];
+    if (words[text]) return coloredStatus && coloredStatus !== words[text] ? 'UNKNOWN' : words[text];
+    return coloredStatus || 'UNKNOWN';
+  }
+
+  function parseLionKingDuration(text) {
+    const match = /^(\d{1,3}):([0-5]\d)$/.exec(String(text || '').trim());
+    if (!match) return null;
+    const duration = (Number(match[1]) * 60 + Number(match[2])) * 60000;
+    return duration > 0 ? duration : null;
+  }
+
+  function lionStartedAt(text) {
+    const wall = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(text);
+    if (wall) {
+      const expected = `${wall[1]}-${wall[2]}-${wall[3]} ${wall[4]}:${wall[5]}:${wall[6]}`;
+      const parsed = siteTimeToMs(text);
+      if (!Number.isFinite(parsed)) return NaN;
+      const parts = isoDateParts(new Date(parsed).toISOString());
+      return `${parts.date} ${parts.time}` === expected ? parsed : NaN;
+    }
+    const iso = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(text);
+    if (iso) {
+      const date = new Date(Date.UTC(+iso[1], +iso[2] - 1, +iso[3], +iso[4], +iso[5], +iso[6]));
+      if (date.getUTCFullYear() !== +iso[1] || date.getUTCMonth() + 1 !== +iso[2] ||
+          date.getUTCDate() !== +iso[3] || date.getUTCHours() !== +iso[4] ||
+          date.getUTCMinutes() !== +iso[5] || date.getUTCSeconds() !== +iso[6]) return NaN;
+      return Date.parse(text);
+    }
+    return NaN;
+  }
+
+  function lionRowDetail(row, tail, head) {
+    for (const anchor of row.querySelectorAll('a[href]')) {
+      try {
+        const url = new URL(anchor.getAttribute('href'), window.location.href);
+        if (url.origin !== window.location.origin || url.pathname !== '/out/out.eveserverdetail.php') continue;
+        if ([...url.searchParams.values()].some(value => value === tail || value === head)) return url.href;
+      } catch (error) {}
+    }
+    return '';
+  }
+
+  function getLionKingSnapshot(root = document) {
+    if (IS_LION_RAMSES_PAGE) return getRamsesSnapshot(root);
+    const expected = ['JBOGNUM', 'TAILNODESN', 'HEADNODESN', 'STARTED', 'STATUS'];
+    const headerText = cell => lionCellText(cell).toUpperCase().replace(/[\s_]+/g, '');
+    const candidates = [];
+    for (const table of root.querySelectorAll('table')) {
+      // A retained tracker snapshot is display-only, never a live source.
+      if (table.closest('[data-lion-tracker-ui]')) continue;
+      const header = Array.from(table.rows).find(row => {
+        const cells = Array.from(row.cells);
+        return cells.length === 5 && cells.every(cell => cell.colSpan === 1 && cell.rowSpan === 1) &&
+          expected.every(label => cells.some(cell => headerText(cell) === label));
+      });
+      if (header) candidates.push({ table, header });
+    }
+    if (candidates.length !== 1) return null;
+    const { table, header } = candidates[0];
+    const columns = expected.map(label => Array.from(header.cells).findIndex(cell => headerText(cell) === label));
+    const rows = [];
+    const seen = new Map();
+    const quarantinedKeys = new Set();
+    const invalidReasons = { shape: 0, identity: 0, date: 0, future: 0, conflict: 0 };
+    const futureLimit = Date.now() + 10 * 60000;
+    let invalidRows = 0;
+    const rejectRow = reason => {
+      invalidRows += 1;
+      invalidReasons[reason] += 1;
+    };
+    for (const row of Array.from(table.rows)) {
+      if (row === header) continue;
+      const cells = Array.from(row.cells);
+      if (cells.length !== 5 || cells.some(cell => cell.colSpan !== 1 || cell.rowSpan !== 1)) {
+        rejectRow('shape');
+        continue;
+      }
+      if (expected.every(label => cells.some(cell => headerText(cell) === label))) continue;
+      const [jbog, tailSerial, headSerial, started, statusText] = columns.map(index => lionCellText(cells[index]));
+      const startedAt = lionStartedAt(started);
+      if (![jbog, tailSerial, headSerial].every(value => value && value.length <= 120)) {
+        rejectRow('identity');
+        continue;
+      }
+      if (!Number.isFinite(startedAt)) {
+        rejectRow('date');
+        continue;
+      }
+      const key = JSON.stringify([tailSerial.toUpperCase(), headSerial.toUpperCase(), startedAt]);
+      if (startedAt > futureLimit) {
+        rejectRow('future');
+        quarantinedKeys.add(key);
+        continue;
+      }
+      const statusCell = cells[columns[4]];
+      const status = normalizeLionKingStatus(statusCell);
+      const info = { jbog, tailSerial, headSerial, started, startedAt, status, statusText,
+        durationMs: status === 'PASS' ? parseLionKingDuration(statusText) : null,
+        detailUrl: lionRowDetail(row, tailSerial, headSerial), key };
+      Object.defineProperties(info, { element: { value: row }, statusCell: { value: statusCell },
+        nodeCells: { value: columns.slice(0, 3).map(index => cells[index]) } });
+      if (seen.has(key) && seen.get(key) !== status) quarantinedKeys.add(key);
+      seen.set(key, status);
+      rows.push(info);
+    }
+    // Discover every duplicate before returning any row. Selecting the first
+    // PASS/FAIL of a contradictory identity could manufacture a completion.
+    const usableRows = rows.filter(row => !quarantinedKeys.has(row.key));
+    invalidReasons.conflict = rows.length - usableRows.length;
+    invalidRows += invalidReasons.conflict;
+    const unknownStatuses = usableRows.filter(row => row.status === 'UNKNOWN').length;
+    return { table, rows: usableRows, invalidRows, invalidReasons, unknownStatuses,
+      quarantinedKeys: Array.from(quarantinedKeys) };
+  }
+
+  function lionSnapshotUsable(snapshot) {
+    return !!snapshot && Array.isArray(snapshot.rows) && (snapshot.rows.length > 0 ||
+      (snapshot.source === 'ramses' && snapshot.invalidRows === 0)) &&
+      snapshot.rows.length <= LION_MAX_RUNS;
+  }
+
+  // Ramses provides a live running table and a passed-only CSV download.
+  // Inventory "Online", PRETEST and row disappearance are not test outcomes.
+  const RAMSES_PASSED_KEY = 'lionKingTrackerRamsesPassedCSV';
+  const RAMSES_CSV_MAX_BYTES = 2 * 1024 * 1024;
+  let ramsesPassed = [];
+  let ramsesCSVAt = 0;
+  let ramsesCSVCheckedAt = 0;
+  let ramsesCSVSignature = '';
+  let ramsesCSVError = '';
+  let ramsesCSVInFlight = false;
+  let ramsesNextCSVRead = 0;
+  let ramsesPassSignature = '';
+  let ramsesDOMSignature = '';
+  const RAMSES_FAILED_KEY = 'lionKingTrackerRamsesFailedBoard';
+  const RAMSES_PASS_CARDS_KEY = 'lionKingTrackerRamsesPassedCards';
+  let ramsesPassCardState = null;
+  let ramsesFailedState = null;
+  let ramsesSourceChanged = false;
+  const ramsesStartedAt = Date.now();
+
+  function ramsesTime(value) {
+    const text = String(value || '').trim();
+    const slash = /^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):([0-5]\d)(?::([0-5]\d))?$/.exec(text);
+    const canonical = slash ? `${slash[3]}-${slash[1].padStart(2, '0')}-${slash[2].padStart(2, '0')} ` +
+      `${slash[4].padStart(2, '0')}:${slash[5]}:${slash[6] || '00'}` : text;
+    return { at: lionStartedAt(canonical), text: canonical,
+      precision: slash && !slash[6] ? 'minute' : 'second' };
+  }
+
+  function ramsesRunKey(serial, startedAt) {
+    return JSON.stringify(['ramses', 'GPU_JBOG_TEST', serial.toUpperCase(), startedAt]);
+  }
+
+  function ramsesValidPass(row) {
+    if (!isRecordObject(row) || typeof row.serial !== 'string' ||
+        !/^[A-Za-z0-9_-]{1,120}$/.test(row.serial) || !['minute', 'second'].includes(row.precision) ||
+        typeof row.started !== 'string' || typeof row.finished !== 'string' ||
+        !Number.isSafeInteger(row.attempt) || row.attempt < 1 || row.attempt > 10000) return null;
+    const start = ramsesTime(row.started), finish = ramsesTime(row.finished);
+    if (!Number.isFinite(start.at) || !Number.isFinite(finish.at) || finish.at <= start.at ||
+        finish.at > Date.now() + 10 * 60000 || finish.at - start.at > 10 * LION_DAY_MS) return null;
+    return { serial: row.serial.toUpperCase(), started: start.text, startedAt: start.at,
+      finished: finish.text, finishedAt: finish.at, precision: row.precision,
+      attempt: row.attempt, durationMs: finish.at - start.at };
+  }
+
+  function parseRamsesCSV(text) {
+    if (typeof text !== 'string' || text.length > RAMSES_CSV_MAX_BYTES) throw new Error('CSV is too large.');
+    text = text.replace(/^\uFEFF/, '');
+    const separator = text.split(/\r?\n/, 1)[0].includes('\t') ? '\t' : ',';
+    const records = [];
+    let record = [], cell = '', quoted = false, closed = false;
+    const pushCell = () => { record.push(cell); cell = ''; closed = false; };
+    const pushRow = () => {
+      pushCell();
+      if (record.some(value => value.trim())) records.push(record);
+      record = [];
+      if (records.length > LION_MAX_RUNS + 1) throw new Error('CSV has too many rows.');
+    };
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      if (quoted) {
+        if (char === '"' && text[i + 1] === '"') { cell += '"'; i += 1; }
+        else if (char === '"') { quoted = false; closed = true; }
+        else cell += char;
+      } else if (char === '"' && !cell && !closed) quoted = true;
+      else if (char === separator) pushCell();
+      else if (char === '\n' || char === '\r') {
+        if (char === '\r' && text[i + 1] === '\n') i += 1;
+        pushRow();
+      } else {
+        if (char === '"' || closed) throw new Error('CSV quoting is invalid.');
+        cell += char;
+      }
+      if (cell.length > 1000 || record.length > 30) throw new Error('CSV field is too large.');
+    }
+    if (quoted) throw new Error('CSV has an incomplete quoted field.');
+    if (cell || record.length) pushRow();
+    const expected = ['uut_sn', 'Start Time', 'Finish Time', 'PASSED', 'Attempt', 'FPY_Stat'];
+    const headers = (records.shift() || []).map(value => value.trim());
+    if (headers.length !== expected.length || new Set(headers).size !== headers.length ||
+        !expected.every(label => headers.includes(label))) throw new Error('CSV column headings do not match the MPY passed export.');
+    const rows = [], seen = new Map(), conflicts = new Set();
+    for (const values of records) {
+      if (values.length !== headers.length) throw new Error('CSV row has an unexpected column count.');
+      const data = Object.fromEntries(headers.map((label, index) => [label, values[index].trim()]));
+      // FPY_Stat can say Retest/Fail for a PASSED=1 row. It is not this outcome.
+      if (data.PASSED !== '1') throw new Error('Passed export contains an unverified outcome; previous data retained.');
+      const start = ramsesTime(data['Start Time']);
+      const pass = ramsesValidPass({ serial: data.uut_sn, started: start.text,
+        finished: ramsesTime(data['Finish Time']).text, precision: start.precision, attempt: Number(data.Attempt) });
+      if (!pass) throw new Error('CSV contains an invalid node, timestamp, attempt or duration.');
+      const key = JSON.stringify([pass.serial, pass.startedAt, pass.precision]);
+      const signature = JSON.stringify(pass);
+      if (seen.has(key) && seen.get(key) !== signature) conflicts.add(key);
+      seen.set(key, signature);
+      rows.push({ ...pass, csvKey: key });
+    }
+    if (conflicts.size) throw new Error('CSV has conflicting results for the same run; previous data retained.');
+    return [...new Map(rows.map(row => [row.csvKey, row])).values()];
+  }
+
+  function loadRamsesPassedCSV() {
+    const saved = readJSON(localStorage, RAMSES_PASSED_KEY, null, 'Ramses passed CSV');
+    if (!isRecordObject(saved) || saved.version !== 1 || !Array.isArray(saved.rows) ||
+        saved.rows.length > LION_CACHE_MAX_ROWS || !Number.isFinite(saved.at) ||
+        saved.at <= 0 || saved.at > Date.now() + 10 * 60000) return;
+    ramsesPassed = saved.rows.map(ramsesValidPass).filter(Boolean);
+    ramsesCSVAt = saved.at;
+    ramsesCSVSignature = JSON.stringify(ramsesPassed);
+  }
+
+  function acceptRamsesCSV(text, automatic) {
+    try {
+      const incoming = parseRamsesCSV(text);
+      const merged = new Map(ramsesPassed.map(row => [JSON.stringify([row.serial, row.startedAt, row.precision]), row]));
+      for (const row of incoming) {
+        const prior = merged.get(row.csvKey);
+        if (prior && (prior.finishedAt !== row.finishedAt || prior.attempt !== row.attempt)) {
+          throw new Error('Export conflicts with a saved run; previous data retained.');
+        }
+        merged.set(row.csvKey, row);
+      }
+      ramsesPassed = [...merged.values()].filter(row => row.finishedAt >= Date.now() - 2 * LION_DAY_MS)
+        .sort((a, b) => b.finishedAt - a.finishedAt).slice(0, LION_CACHE_MAX_ROWS);
+      ramsesCSVCheckedAt = Date.now();
+      const signature = JSON.stringify(ramsesPassed.map(ramsesValidPass));
+      if (signature !== ramsesCSVSignature) {
+        ramsesCSVSignature = signature; ramsesCSVAt = ramsesCSVCheckedAt;
+      }
+      ramsesCSVError = writeJSON(localStorage, RAMSES_PASSED_KEY,
+        { version: 1, at: ramsesCSVAt, rows: ramsesPassed }, 'Ramses passed CSV') ? '' : 'Passed CSV could not be saved.';
+      setTextIfChanged(document.getElementById('lion-csv-feedback'),
+        `${automatic ? 'Automatically read' : 'Imported'} ${incoming.length} passed runs. ` +
+        'PASS is determined by PASSED=1; first-pass yield is separate.');
+      scanLionKing();
+      return true;
+    } catch (error) {
+      ramsesCSVError = error.message;
+      setTextIfChanged(document.getElementById('lion-csv-feedback'), error.message);
+      scanLionKing();
+      return false;
+    }
+  }
+
+  function ramsesDownloadURL(anchor) {
+    if (!anchor || anchor.tagName !== 'A' ||
+        !/^jbog_passed_finished_\d{4}-\d{2}-\d{2}\.csv$/i.test(anchor.download)) return null;
+    try {
+      const url = new URL(anchor.getAttribute('href'), window.location.href);
+      if (url.protocol === 'data:' && /^data:(?:text\/csv|text\/plain|application\/octet-stream)[;,]/i.test(url.href) &&
+          url.href.length < RAMSES_CSV_MAX_BYTES * 3) return url;
+      if (url.protocol === 'blob:' && url.origin === window.location.origin) return url;
+      if (url.origin === window.location.origin && /^\/media\//.test(url.pathname)) return url;
+    } catch (error) {}
+    return null;
+  }
+
+  function ramsesSourceCurrent(element) {
+    if (!element?.isConnected || element.closest('[hidden], [aria-hidden="true"], [data-stale="true"]')) return false;
+    for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
+      const style = window.getComputedStyle(ancestor);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    }
+    return true;
+  }
+
+  function ramsesCurrentPassedSource() {
+    const matching = [...document.querySelectorAll('a[download]')]
+      .filter(anchor => ramsesDownloadURL(anchor) && !isOwnUiNode(anchor));
+    const visible = matching.filter(ramsesSourceCurrent);
+    // Streamlit may retain old or duplicated download anchors. Prefer the
+    // verified current MPY card and treat byte-identical copies as one source.
+    // Its label can be followed by the count and subtitle inside the anchor.
+    const metrics = visible.filter(anchor => anchor.classList.contains('kpi-link') &&
+      /\bMPY\s*\(\s*PASSED\s+JBOGS\s*\)/i.test(anchor.textContent));
+    const candidates = metrics.length ? metrics : visible;
+    const sources = new Map();
+    for (const anchor of candidates) {
+      const url = ramsesDownloadURL(anchor);
+      const key = JSON.stringify([anchor.download.toLowerCase(), url.href]);
+      if (!sources.has(key)) sources.set(key, { anchor, url, key });
+    }
+    return { matching: matching.length, visible: visible.length, metrics: metrics.length,
+      unique: sources.size, selected: sources.size === 1 ? sources.values().next().value : null };
+  }
+
+  async function readRamsesDownload(anchor) {
+    const url = ramsesDownloadURL(anchor);
+    if (!url || ramsesCSVInFlight) return;
+    const source = ramsesCurrentPassedSource();
+    const key = JSON.stringify([anchor.download.toLowerCase(), url.href]);
+    if (!source.selected || source.selected.key !== key) return;
+    ramsesCSVInFlight = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(url.href, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+      if (!response.ok || (/^https?:$/.test(url.protocol) && new URL(response.url).origin !== window.location.origin)) {
+        throw new Error('Passed CSV is unavailable; check the dashboard session.');
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Passed CSV response cannot be read.');
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      let total = 0, text = '';
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          total += chunk.value.byteLength;
+          if (total > RAMSES_CSV_MAX_BYTES) throw new Error('Passed CSV is too large.');
+          text += decoder.decode(chunk.value, { stream: true });
+        }
+        text += decoder.decode();
+      } finally { await reader.cancel().catch(() => {}); }
+      // A native update can replace the card while this read is in flight.
+      // An obsolete or newly ambiguous source cannot establish completion.
+      if (ramsesCurrentPassedSource().selected?.key === key) acceptRamsesCSV(text, true);
+    } catch (error) {
+      ramsesCSVError = 'Automatic passed CSV read failed; last validated results retained.';
+      setTextIfChanged(document.getElementById('lion-csv-feedback'), ramsesCSVError);
+    } finally {
+      clearTimeout(timeout);
+      ramsesCSVInFlight = false;
+      const current = ramsesCurrentPassedSource();
+      if (current.selected?.key !== key) { pollRamsesPassedCSV(true); scanLionKing(); }
+    }
+  }
+
+  function pollRamsesPassedCSV(force = false) {
+    if (!IS_LION_RAMSES_PAGE || !lionInitialDocumentComplete || ramsesCSVInFlight ||
+        (!force && Date.now() < ramsesNextCSVRead)) return;
+    ramsesNextCSVRead = Date.now() + settings.refreshIntervalSeconds * 1000;
+    const source = ramsesCurrentPassedSource();
+    if (source.selected) { readRamsesDownload(source.selected.anchor); return; }
+    ramsesCSVError = source.unique > 1
+      ? 'Multiple distinct current passed-result sources; automatic source is ambiguous.'
+      : 'Current MPY passed-result data is not available; last validated results retained.';
+  }
+
+  function getRamsesSnapshot(root = document) {
+    const expected = ['JBOGSN', 'STATUS', 'OPERATION', 'STARTED'];
+    const label = cell => lionCellText(cell).toUpperCase().replace(/[\s_]+/g, '');
+    const candidates = [];
+    for (const table of root.querySelectorAll('table')) {
+      // Filter only whole source tables. A row hidden by the tracker's Show
+      // toggle still participates in observations and completion detection.
+      if (table.closest('[data-lion-tracker-ui]') || !ramsesSourceCurrent(table)) continue;
+      const header = [...table.rows].find(row => row.cells.length === 4 &&
+        [...row.cells].every(cell => cell.colSpan === 1 && cell.rowSpan === 1) &&
+        expected.every(value => [...row.cells].some(cell => label(cell) === value)));
+      if (header) candidates.push({ table, header });
+    }
+    if (candidates.length !== 1) return null;
+    const { table, header } = candidates[0];
+    const runningBadge = table.closest('.board-card')?.querySelector('.badge');
+    if (runningBadge && Number(runningBadge.textContent.trim()) !== table.rows.length - 1) return null;
+    const columns = expected.map(value => [...header.cells].findIndex(cell => label(cell) === value));
+    const rows = [], seen = new Set(), conflicts = new Set();
+    const invalidReasons = { shape: 0, identity: 0, date: 0, future: 0, conflict: 0 };
+    let pretests = 0;
+    const pretestRows = [];
+    for (const element of [...table.rows]) {
+      if (element === header) continue;
+      const cells = [...element.cells];
+      if (cells.length !== 4 || cells.some(cell => cell.colSpan !== 1 || cell.rowSpan !== 1)) { invalidReasons.shape += 1; continue; }
+      const [serial, statusText, operation, started] = columns.map(index => lionCellText(cells[index]));
+      if (operation.toUpperCase() === 'GPU_JBOG_TEST_PRETEST') {
+        if (!/^[A-Za-z0-9_-]{1,120}$/.test(serial)) { invalidReasons.identity += 1; continue; }
+        pretests += 1;
+        pretestRows.push({ tailSerial: serial.toUpperCase(), headSerial: '', element,
+          started: Number.isFinite(ramsesTime(started).at) ? ramsesTime(started).text : '', nodeCell: cells[columns[0]] });
+        continue;
+      }
+      if (operation.toUpperCase() !== 'GPU_JBOG_TEST' || !/^[A-Za-z0-9_-]{1,120}$/.test(serial)) { invalidReasons.identity += 1; continue; }
+      const parsed = ramsesTime(started);
+      if (!Number.isFinite(parsed.at)) { invalidReasons.date += 1; continue; }
+      if (parsed.at > Date.now() + 10 * 60000) { invalidReasons.future += 1; continue; }
+      const key = ramsesRunKey(serial, parsed.at);
+      if (seen.has(key)) { conflicts.add(key); invalidReasons.conflict += 1; }
+      seen.add(key);
+      rows.push({ source: 'ramses', jbog: serial, tailSerial: serial.toUpperCase(), headSerial: '',
+        started: parsed.text, startedAt: parsed.at, status: /^running slt$/i.test(statusText) ? 'RUNNING' : 'UNKNOWN',
+        statusText, key, durationMs: null, element, statusCell: cells[columns[1]], nodeCells: [cells[columns[0]]] });
+    }
+    const running = rows.filter(row => !conflicts.has(row.key));
+    const known = new Map(running.map(row => [row.key, { serial: row.tailSerial, at: row.startedAt }]));
+    for (const [key, prior] of previousStates) {
+      if (prior.source === 'ramses' && typeof prior.serial === 'string') known.set(key, { serial: prior.serial, at: prior.startedAt });
+    }
+    const completed = [], unresolved = [];
+    for (const pass of ramsesPassed) {
+      const matches = [...known].filter(([, value]) => value.serial === pass.serial &&
+        (pass.precision === 'minute' ? Math.floor(value.at / 60000) === Math.floor(pass.startedAt / 60000) : value.at === pass.startedAt));
+      if (matches.length > 1) { unresolved.push(pass); continue; }
+      const key = matches.length ? matches[0][0] : ramsesRunKey(pass.serial, pass.startedAt);
+      // A still-running source contradicts a terminal CSV observation.
+      if (running.some(row => row.key === key)) { unresolved.push(pass); continue; }
+      const startedAt = matches.length ? matches[0][1].at : pass.startedAt;
+      const parts = isoDateParts(new Date(startedAt).toISOString());
+      completed.push({ source: 'ramses', jbog: pass.serial, tailSerial: pass.serial, headSerial: '',
+        started: `${parts.date} ${parts.time}`, startedAt, finishedAt: pass.finishedAt, finished: pass.finished,
+        durationMs: pass.durationMs, attempt: pass.attempt, status: 'PASS', statusText: 'PASSED=1', key });
+    }
+    if (root === document) renderRamsesPassedRows(completed);
+    const attention = getRamsesFailedBoard(root);
+    const all = [...running, ...completed];
+    if (unresolved.length) setTextIfChanged(document.getElementById('lion-csv-feedback'),
+      `${unresolved.length} passed rows unresolved: active source conflict or ambiguous minute-precision start. No completion alert for those rows.`);
+    const signature = JSON.stringify({ running: running.map(row => [row.key, row.status]), pretests,
+      attention: attention?.rows.map(row => [row.serial, row.operation, row.route, row.idle, row.statusText]) });
+    if (signature !== ramsesDOMSignature || ramsesSourceChanged) {
+      ramsesDOMSignature = signature; rackDataAt = Date.now(); ramsesSourceChanged = false;
+    }
+    return { source: 'ramses', table, rows: all, attention, pretests, pretestRows, unresolvedPasses: unresolved.length,
+      invalidRows: Object.values(invalidReasons).reduce((a, b) => a + b, 0), invalidReasons,
+      unknownStatuses: running.filter(row => row.status === 'UNKNOWN').length, quarantinedKeys: [...conflicts] };
+  }
+
+  function getRamsesFailedBoard(root = document) {
+    const expected = ['JBOGSN', 'OPERATION', 'CURRENTROUTE', 'IDLETIME', 'STATUS', 'TICKETNUMBER'];
+    const label = cell => lionCellText(cell).toUpperCase().replace(/[\s_]+/g, '');
+    const candidates = [];
+    for (const table of root.querySelectorAll('table')) {
+      if (table.closest('[data-lion-tracker-ui]') || !ramsesSourceCurrent(table)) continue;
+      const card = table.closest('.board-card');
+      const title = card?.querySelector('.board-title > span:not(.badge)') || card?.querySelector('.board-title');
+      if (!card || !/^JBOG Failed Test\b/i.test(title?.textContent.trim() || '')) continue;
+      const header = [...table.rows].find(row => row.cells.length === 6 &&
+        [...row.cells].every(cell => cell.colSpan === 1 && cell.rowSpan === 1) &&
+        expected.every(value => [...row.cells].some(cell => label(cell) === value)));
+      if (header) candidates.push({ table, header, card });
+    }
+    if (candidates.length !== 1) return null;
+    const { table, header, card } = candidates[0];
+    const columns = expected.map(value => [...header.cells].findIndex(cell => label(cell) === value));
+    const rows = [], seen = new Set();
+    let invalidRows = 0;
+    for (const element of [...table.rows]) {
+      if (element === header) continue;
+      const cells = [...element.cells];
+      if (cells.length !== 6 || cells.some(cell => cell.colSpan !== 1 || cell.rowSpan !== 1)) { invalidRows += 1; continue; }
+      const [serial, operationText, route, idle, statusText, ticket] = columns.map(index => lionCellText(cells[index]));
+      const operation = operationText.toUpperCase();
+      if (!/^[A-Za-z0-9_-]{1,120}$/.test(serial) || [route, idle, statusText].some(value => value.length > 500) ||
+          !['GPU_JBOG_TEST', 'PRETEST', 'GPU_JBOG_TEST_PRETEST'].includes(operation)) { invalidRows += 1; continue; }
+      const key = JSON.stringify([serial.toUpperCase(), operation]);
+      if (seen.has(key)) { invalidRows += 1; continue; }
+      seen.add(key);
+      rows.push({ key, serial: serial.toUpperCase(), tailSerial: serial.toUpperCase(), headSerial: '',
+        operation, route, idle, statusText, jiraKey: JIRA_KEY_PATTERN.test(ticket) ? ticket : '',
+        element, statusCell: cells[columns[4]], nodeCell: cells[columns[0]] });
+    }
+    const badge = card.querySelector('.badge');
+    const usable = invalidRows === 0 && (!badge || Number(badge.textContent.trim()) === table.rows.length - 1);
+    return { table, rows, invalidRows, usable };
+  }
+
+  function lionIsPretestOperation(operation) {
+    return ['PRETEST', 'GPU_JBOG_TEST_PRETEST'].includes(String(operation || '').trim().toUpperCase());
+  }
+
+  function loadRamsesFailedState() {
+    const saved = readJSON(localStorage, RAMSES_FAILED_KEY, null, 'Ramses failed board');
+    if (!isRecordObject(saved) || ![1, 2].includes(saved.version) || !isRecordObject(saved.members) ||
+        Object.keys(saved.members).length > LION_MAX_RUNS || !Number.isSafeInteger(saved.sequence) ||
+        saved.sequence < 0) return null;
+    const valid = Object.values(saved.members).every(value => isRecordObject(value) &&
+      Number.isSafeInteger(value.episode) && value.episode > 0 && value.episode <= saved.sequence &&
+      typeof value.present === 'boolean' && typeof value.pending === 'boolean');
+    return valid ? saved : null;
+  }
+
+  function saveRamsesFailedState() {
+    return writeJSON(localStorage, RAMSES_FAILED_KEY, ramsesFailedState, 'Ramses failed board');
+  }
+
+  function loadRamsesPassCardState() {
+    const saved = readJSON(localStorage, RAMSES_PASS_CARDS_KEY, null, 'Ramses passed cards');
+    if (!isRecordObject(saved) || saved.version !== 1 || !isRecordObject(saved.members) ||
+        Object.keys(saved.members).length > LION_MAX_RUNS) return null;
+    if (!Object.values(saved.members).every(member => isRecordObject(member) &&
+        typeof member.pending === 'boolean' && typeof member.notify === 'boolean' &&
+        Number.isFinite(member.finishedAt))) return null;
+    return saved;
+  }
+
+  function saveRamsesPassCardState() {
+    return writeJSON(localStorage, RAMSES_PASS_CARDS_KEY, ramsesPassCardState, 'Ramses passed cards');
+  }
+
+  function syncRamsesPassedCards(snapshot) {
+    if (!ramsesCSVCheckedAt || ramsesCSVError) return;
+    const initial = !ramsesPassCardState;
+    if (initial) ramsesPassCardState = { version: 1, members: {} };
+    const passed = snapshot.rows.filter(row => row.status === 'PASS')
+      .sort((a, b) => a.finishedAt - b.finishedAt);
+    for (const row of passed) {
+      if (ramsesPassCardState.members[row.key]) continue;
+      const prior = previousStates.get(row.key);
+      ramsesPassCardState.members[row.key] = { pending: true,
+        notify: !initial || !!(prior && prior.status === 'RUNNING' && !prior.completed),
+        finishedAt: row.finishedAt };
+    }
+    const current = new Set(passed.map(row => row.key));
+    const obsolete = Object.keys(ramsesPassCardState.members).filter(key => !current.has(key) &&
+      !ramsesPassCardState.members[key].pending);
+    const excess = Object.keys(ramsesPassCardState.members).length - LION_MAX_RUNS;
+    obsolete.sort((a, b) => ramsesPassCardState.members[a].finishedAt - ramsesPassCardState.members[b].finishedAt)
+      .slice(0, Math.max(0, excess)).forEach(key => delete ramsesPassCardState.members[key]);
+    // Persist delivery intent first; refreshes cannot consume a pending PASS.
+    if (!saveRamsesPassCardState()) return;
+    const hours = settings.lionHistoryHours === 'all' ? Infinity : Number(settings.lionHistoryHours);
+    for (const row of passed) {
+      const member = ramsesPassCardState.members[row.key];
+      if (!member?.pending || (!member.notify && row.finishedAt < Date.now() - hours * 3600000)) continue;
+      emitLionKingCompletion(row, { notify: member.notify, history: !member.notify });
+    }
+  }
+
+  function lionKingRunningOnPage(serial) {
+    const snapshot = getLionKingSnapshot();
+    if (!lionSnapshotUsable(snapshot)) return null;
+    const sn = String(serial || '').trim().toUpperCase();
+    const matches = snapshot.rows.filter(row => [row.tailSerial, row.headSerial].includes(sn));
+    if (matches.some(row => row.status === 'RUNNING')) return true;
+    if (matches.some(row => row.status === 'UNKNOWN')) return null;
+    if (matches.length || (snapshot.attention?.usable &&
+        snapshot.attention.rows.some(row => row.serial === sn && row.operation === 'GPU_JBOG_TEST'))) return false;
+    return null;
+  }
+
+  function scanRamsesFailedBoard(snapshot) {
+    const board = snapshot.attention;
+    if (!board?.usable) return;
+    const failures = board.rows.filter(row => row.operation === 'GPU_JBOG_TEST' ||
+      lionIsPretestOperation(row.operation));
+    if (!ramsesFailedState) {
+      ramsesFailedState = { version: 2, sequence: failures.length, members: Object.fromEntries(failures.map((row, index) =>
+        [row.key, { episode: index + 1, present: true, pending: false }])) };
+      saveRamsesFailedState();
+      return;
+    }
+    if (ramsesFailedState.version === 1) {
+      // Earlier releases never monitored PRETEST failures. Establish their
+      // existing membership quietly without replaying old failures on upgrade.
+      // Keep all GPU episodes and any pending deliveries unchanged.
+      failures.filter(row => lionIsPretestOperation(row.operation)).forEach(row => {
+        const prior = ramsesFailedState.members[row.key];
+        ramsesFailedState.members[row.key] = {
+          episode: prior?.episode || ++ramsesFailedState.sequence, present: true, pending: false
+        };
+      });
+      ramsesFailedState.version = 2;
+    }
+    const present = new Set(failures.map(row => row.key));
+    Object.entries(ramsesFailedState.members).forEach(([key, value]) => {
+      if (!present.has(key)) value.present = false;
+    });
+    for (const row of failures) {
+      let member = ramsesFailedState.members[row.key];
+      if (!member || !member.present) {
+        member = { episode: ++ramsesFailedState.sequence, present: true, pending: true };
+        ramsesFailedState.members[row.key] = member;
+      }
+      if (!member.pending) continue;
+      // This proves a newly listed failed-board entry, not a particular
+      // Started value or TestView ID. Preserve that distinction in the alert.
+      emitLionKingCompletion({ source: 'ramses', evidence: 'ramses-failed-board',
+        failureMember: row.key, failureEpisode: member.episode,
+        key: JSON.stringify(['ramses-failed-board', row.serial, row.operation, member.episode]),
+        jbog: row.serial, tailSerial: row.serial, headSerial: '', started: '', status: 'FAIL', jiraKey: row.jiraKey,
+        operation: row.operation,
+        statusText: `New on JBOG Failed Test board; ${row.operation}; ${row.statusText}; route: ${row.route}` });
+    }
+    if (Object.keys(ramsesFailedState.members).length > LION_MAX_RUNS) {
+      Object.entries(ramsesFailedState.members).filter(([, value]) => !value.present && !value.pending)
+        .slice(0, Object.keys(ramsesFailedState.members).length - LION_MAX_RUNS)
+        .forEach(([key]) => delete ramsesFailedState.members[key]);
+    }
+    saveRamsesFailedState();
+  }
+
+  function renderRamsesPassedRows(rows) {
+    let holder = document.getElementById('lion-ramses-passed-view');
+    if (!holder) {
+      holder = document.createElement('section');
+      holder.id = 'lion-ramses-passed-view';
+      holder.setAttribute('data-lion-tracker-ui', 'passed-results');
+      const heading = document.createElement('h3'); heading.textContent = 'Lion King - validated passed runs'; holder.appendChild(heading);
+      const table = document.createElement('table'); table.id = 'lion-ramses-passed';
+      const header = table.createTHead().insertRow();
+      ['JBOG SN', 'Started', 'Finished', 'Duration', 'Status'].forEach(label => {
+        const cell = document.createElement('th'); cell.textContent = label; header.appendChild(cell);
+      });
+      table.createTBody(); holder.appendChild(table); document.body.appendChild(holder);
+    }
+    const signature = JSON.stringify(rows.map(row => [row.key, row.finishedAt]));
+    const body = holder.querySelector('tbody');
+    if (signature !== ramsesPassSignature) {
+      withoutObserver(() => {
+        body.replaceChildren();
+        rows.forEach(row => {
+          const element = body.insertRow(); element.dataset.runKey = row.key;
+          [row.tailSerial, row.started, row.finished, lionHoursMinutes(row.durationMs), 'PASS'].forEach(value => {
+            const cell = element.insertCell(); cell.textContent = value;
+          });
+          element.cells[4].style.backgroundColor = 'green'; element.cells[4].style.color = 'white';
+          const open = event => {
+            if (event.type === 'keydown' && event.key !== 'Enter') return;
+            if (event.type === 'click' && event.button !== 0) return;
+            if (event.type === 'auxclick' && event.button !== 1) return;
+            event.preventDefault();
+            openLionKingTestView(row.tailSerial, row.started,
+              (event.button === 1 || event.ctrlKey || event.metaKey) && typeof GM_openInTab === 'function'
+                ? url => GM_openInTab(url, { active: false, insert: true }) : openExternal);
+          };
+          ['click', 'auxclick', 'keydown'].forEach(type => element.cells[0].addEventListener(type, open));
+        });
+      });
+      ramsesPassSignature = signature;
+    }
+    const elements = new Map([...body.rows].map(element => [element.dataset.runKey, element]));
+    rows.forEach(row => {
+      row.element = elements.get(row.key); row.statusCell = row.element.cells[4]; row.nodeCells = [row.element.cells[0]];
+    });
+  }
+
+  function lionKingPassAverage(rows, now = Date.now()) {
+    const seen = new Set();
+    let total = 0;
+    let samples = 0;
+    for (const row of rows) {
+      const sampleAt = IS_LION_RAMSES_PAGE ? row.finishedAt : row.startedAt;
+      if (row.status !== 'PASS' || !Number.isFinite(sampleAt) || sampleAt < now - LION_DAY_MS || sampleAt > now || seen.has(row.key)) continue;
+      const duration = IS_LION_RAMSES_PAGE ? row.durationMs : parseLionKingDuration(row.statusText);
+      if (!duration) continue;
+      seen.add(row.key);
+      total += duration;
+      samples += 1;
+    }
+    return { averageMs: samples ? total / samples : null, samples };
+  }
+
+  function lionHoursMinutes(ms) {
+    const minutes = Math.max(0, Math.round(ms / 60000));
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  }
+
+  function updateLionKingRows(snapshot) {
+    const now = Date.now();
+    const average = lionKingPassAverage(snapshot.rows, now);
+    const averageLabel = document.getElementById('lion-average-pass');
+      if (averageLabel) setTextIfChanged(averageLabel, 'Average pass: ' +
+      (average.averageMs ? lionHoursMinutes(average.averageMs) : 'unavailable') +
+      ` (${average.samples} samples, ${IS_LION_RAMSES_PAGE ? 'finished' : 'started'} in last 24h)`);
+    const counts = { RUNNING: 0, PASS: 0, FAIL: 0, UNKNOWN: 0 };
+    const areaCounts = Object.fromEntries(Object.keys(LION_AREAS).map(area =>
+      [area, { pretest: 0, pretestFailed: 0, testing: 0, failed: 0, passed: 0 }]));
+    let attentionGPU = 0, attentionPretest = 0;
+    let hidden = 0;
+    const hours = settings.lionHistoryHours === 'all' ? Infinity : Number(settings.lionHistoryHours);
+    withoutObserver(() => {
+      snapshot.rows.forEach(row => {
+        row.nodeCells.forEach((cell, index) => {
+          const label = IS_LION_RAMSES_PAGE ? 'JBOG' : index === 2 ? 'Head' : 'Tail';
+          if (cell.getAttribute('role') !== 'link') cell.setAttribute('role', 'link');
+          if (cell.tabIndex !== 0) cell.tabIndex = 0;
+          const title = `Open ${label} node in Lion King TestView 2.0`;
+          if (cell.title !== title) cell.title = title;
+          if (!cell.classList.contains('eve-lion-node-link')) cell.classList.add('eve-lion-node-link');
+        });
+        const area = lionAreaForRow(row);
+        const old = (row.status === 'PASS' || row.status === 'FAIL') &&
+          (IS_LION_RAMSES_PAGE && row.finishedAt ? row.finishedAt : row.startedAt) < now - hours * 3600000;
+        const hide = old || !lionRowShow(row);
+        if (row.element.hidden !== hide) row.element.hidden = hide;
+        if (old) hidden += 1;
+        if (!hide) counts[row.status] += 1;
+        if (!old) {
+          const category = { RUNNING: 'testing', PASS: 'passed', FAIL: 'failed' }[row.status];
+          if (category) areaCounts[area][category] += 1;
+        }
+        let eta = row.statusCell.querySelector('[data-lion-tracker-ui]');
+        if (row.status !== 'RUNNING') {
+          if (eta) eta.remove();
+          return;
+        }
+        if (!eta) {
+          eta = document.createElement('span');
+          eta.className = 'eve-lion-eta';
+          eta.setAttribute('data-lion-tracker-ui', 'eta');
+          row.statusCell.appendChild(eta);
+        }
+        const finish = average.averageMs ? row.startedAt + average.averageMs : null;
+        const text = finish ? `Estimated finish: ${siteDateTime(new Date(finish))} (` +
+          (finish <= now ? 'past estimate' : `${lionHoursMinutes(finish - now)} remaining`) + ')' :
+          'Estimate unavailable';
+        setTextIfChanged(eta, text);
+      });
+      if (IS_LION_RAMSES_PAGE && snapshot.attention?.usable) snapshot.attention.rows.forEach(row => {
+        const area = lionAreaForRow(row), gpu = row.operation === 'GPU_JBOG_TEST';
+        row.element.hidden = !lionRowShow(row);
+        if (gpu) { attentionGPU += 1; areaCounts[area].failed += 1; }
+        else { attentionPretest += 1; areaCounts[area].pretestFailed += 1; }
+        row.nodeCell.classList.add('eve-lion-node-link'); row.nodeCell.setAttribute('role', 'link'); row.nodeCell.tabIndex = 0;
+        row.nodeCell.title = 'Open this node in the Lion King TestView UUT list';
+      });
+      if (IS_LION_RAMSES_PAGE) (snapshot.pretestRows || []).forEach(row => {
+        const area = lionAreaForRow(row);
+        row.element.hidden = !lionRowShow(row);
+        areaCounts[area].pretest += 1;
+        row.nodeCell.classList.add('eve-lion-node-link'); row.nodeCell.setAttribute('role', 'link'); row.nodeCell.tabIndex = 0;
+        row.nodeCell.title = 'Open this node in the Lion King TestView UUT list (PRETEST)';
+      });
+    });
+    lastSectionCounts = areaCounts;
+    renderSectionCounts();
+    document.querySelectorAll('#eve-section-list .eve-section-stats').forEach(stats => {
+      if (IS_LION_RAMSES_PAGE) {
+        const counts = areaCounts[stats.closest('.eve-section-row').dataset.section];
+        setSectionStat(stats.querySelector('.eve-stat-pretest'), counts.pretest, 'pre');
+        setSectionStat(stats.querySelector('.eve-stat-testing'), counts.testing, 'test');
+        setSectionStat(stats.querySelector('.eve-stat-pretest-failed'), counts.pretestFailed, 'pre fail');
+        stats.title = `${counts.pretest} running PRETEST · ${counts.testing} running GPU tests · ` +
+          `${counts.pretestFailed} PRETEST fails · ${counts.failed} test fails · ${counts.passed} passed. ` +
+          'Failed-board entries are detected observations; the board does not supply test start times.';
+        return;
+      }
+      stats.title = 'Lion King results within the selected completed-history window; active runs have no age limit.';
+    });
+    const summary = document.getElementById('lion-summary');
+    if (summary) setTextIfChanged(summary, `Visible: ${counts.RUNNING} running, ${counts.PASS} pass, ` +
+      `${counts.FAIL} fail, ${counts.UNKNOWN} unknown. ${hidden} old completed rows hidden.` +
+      (snapshot.invalidRows ? ` ${snapshot.invalidRows} rows rejected (${lionInvalidRowSummary(snapshot)}); valid rows continue monitoring.` : '') +
+      (IS_LION_RAMSES_PAGE ? ` ${snapshot.pretests || 0} running PRETEST rows. Failed board: ` +
+        (snapshot.attention?.usable ? `${attentionGPU} GPU test fails, ${attentionPretest} PRETEST fails. New entries notify separately; Started is not supplied on this board.` :
+          'unavailable or incomplete; saved observations retained.') : ''));
+    refreshLionRackBoard(snapshot);
+    applyAlertFilter();
+  }
+
+  function emitLionKingCompletion(row, options = {}) {
+    if (lionPendingEvents.has(row.key)) return;
+    lionPendingEvents.add(row.key);
+    if (!emitLionKingCompletion.failedRuns) emitLionKingCompletion.failedRuns = new Set();
+    const failed = detail => {
+      emitLionKingCompletion.failedRuns.add(row.key);
+      reportHealth('DEGRADED', detail, true);
+      return false;
+    };
+    const act = () => {
+      const now = Date.now();
+      const saved = readJSON(localStorage, EVENT_CLAIMS_KEY, {}, 'Lion event claims');
+      const claims = Object.fromEntries(Object.entries(isRecordObject(saved) ? saved : {})
+        .filter(([, at]) => typeof at === 'number' && Number.isFinite(at) && at > 0 &&
+          at <= now + EVENT_TIME_SKEW_MS));
+      if (claims[row.key]) return true;
+      const matchesRun = entry => entry.tracker === 'lionking' && entry.runKey === row.key &&
+        ['PASS', 'FAIL'].includes(entry.result) && typeof entry.eventId === 'string' &&
+        entry.eventId && Number.isFinite(entry.ts) && Number.isFinite(Date.parse(entry.iso || ''));
+      // Reuse a durable or still-pending event after a quota failure. A claim
+      // must never be saved before its audit entry, or reload could lose it.
+      let record = loadAlertLogFromStorage().find(matchesRun) || getAlertLog().find(matchesRun);
+      if (!record) {
+        const operation = lionIsPretestOperation(row.operation) ? row.operation : 'GPU_JBOG_TEST';
+        const pretest = row.status === 'FAIL' && lionIsPretestOperation(operation);
+        const transition = row.status === 'PASS' ? 'TEST_SUCCESS' : pretest ? 'PRETEST_FAILURE' : 'TEST_FAILURE';
+        const id = 'lion-' + now + '-' + Math.random().toString(36).slice(2);
+        const displayAt = options.history && Number.isFinite(row.finishedAt) ? row.finishedAt : now;
+        record = { id, eventId: id, ts: displayAt, tracker: 'lionking', source: row.source || 'collector', transition,
+          title: row.status === 'PASS' ? 'LION KING PASS' : pretest ? 'LION KING PRE-TEST FAIL' : 'LION KING TEST FAIL',
+          serial: row.tailSerial, tailSerial: row.tailSerial,
+          headSerial: row.headSerial, started: row.started, finished: row.finished || '',
+          durationMs: Number.isFinite(row.durationMs) ? row.durationMs : null,
+          jiraKey: row.jiraKey || '', history: !!options.history, runKey: row.key,
+          ...lionPhysicalLocation(row), statusLine: `${operation}: ${row.statusText}`,
+          detailUrl: row.detailUrl, phaseSource: row.evidence || (row.source === 'ramses' ? 'ramses-passed-data' : 'lionking-table'),
+          resultConfirmed: row.source === 'ramses' && row.status === 'PASS',
+          iso: new Date(displayAt).toISOString(), result: row.status, operation,
+          statusText: row.statusText, jbog: row.jbog,
+          alertId: lionRowWatch(row) ? id : '',
+          eventIso: row.source === 'ramses' && row.finishedAt ? new Date(row.finishedAt).toISOString() : '',
+          timeSource: row.source === 'ramses' && row.finishedAt ? 'source-finished' : 'detected' };
+        appendAlertLog(record);
+      }
+      flushAlertLog(true);
+      const durable = loadAlertLogFromStorage().find(entry => matchesRun(entry) &&
+        entry.eventId === record.eventId);
+      if (!durable) return failed('Cannot save the completion log; export logs and free browser storage. Retrying.');
+      record = durable;
+      const keys = Object.keys(claims);
+      if (keys.length >= LION_MAX_RUNS) {
+        keys.sort((a, b) => claims[a] - claims[b]).slice(0, keys.length - LION_MAX_RUNS + 1)
+          .forEach(key => delete claims[key]);
+      }
+      claims[row.key] = now;
+      if (!writeJSON(localStorage, EVENT_CLAIMS_KEY, claims, 'Lion event claims')) {
+        return failed('Cannot save completion claims; export logs and free browser storage. Retrying.');
+      }
+      if (record.alertId && lionRowWatch(row)) {
+        renderAlertElement(record, true);
+        if (options.notify !== false) {
+          revealNewAlert(record.id);
+          sendDesktopNotification(record.title,
+          `${record.source === 'ramses' ? 'JBOG' : 'Tail'}: ${record.tailSerial}\n` +
+            (record.headSerial ? `Head: ${record.headSerial}\n` : '') + record.statusText,
+          record.result === 'PASS' ? ICON_PASS : ICON_FAIL,
+            () => openNotificationTarget(record));
+        }
+      }
+      return true;
+    };
+    Promise.resolve().then(() => navigator.locks && typeof navigator.locks.request === 'function'
+      ? navigator.locks.request('eve-lion-king-completion', { mode: 'exclusive' }, act)
+      : act()).then(acknowledged => {
+      if (!acknowledged) return;
+      emitLionKingCompletion.failedRuns.delete(row.key);
+      if (row.source === 'ramses' && row.status === 'PASS') {
+        const member = ramsesPassCardState?.members[row.key];
+        if (member) {
+          member.pending = false;
+          if (!saveRamsesPassCardState()) member.pending = true;
+        }
+      }
+      if (row.evidence === 'ramses-failed-board') {
+        const member = ramsesFailedState?.members[row.failureMember];
+        if (member && member.episode === row.failureEpisode) {
+          member.pending = false;
+          if (!saveRamsesFailedState()) member.pending = true;
+        }
+      }
+      const prior = previousStates.get(row.key);
+      if (prior && !prior.completed) {
+        previousStates.set(row.key, { ...prior, status: row.status, completed: true, seenAt: Date.now() });
+        savePreviousStates();
+      }
+    }).catch(error => {
+      fail('Lion completion could not be recorded:', error);
+      failed('Completion logging failed; export the log and inspect browser storage. Retrying.');
+    }).finally(() => lionPendingEvents.delete(row.key));
+  }
+
+  function scanLionKing() {
+    if (!settings) return;
+    if (!lionInitialDocumentComplete) {
+      reportHealth('LOADING', 'Controls are ready. Waiting for the initial Lion King table; no partial results are recorded.', true);
+      if (lionCachedSnapshot) showLionKingSnapshotCache();
+      else setTextIfChanged(document.getElementById('lion-summary'), 'Loading the source table. Controls are available.');
+      setTextIfChanged(document.getElementById('lion-rack-source'), 'Live source is loading. Rack assignments are saved.');
+      return;
+    }
+    if (!autoRefreshTimer && !softRefreshInFlight) scheduleLionKingRefresh();
+    if (IS_LION_RAMSES_PAGE) pollRamsesPassedCSV();
+    const snapshot = getLionKingSnapshot();
+    if (!lionSnapshotUsable(snapshot)) {
+      const detail = snapshot?.invalidRows ? `${snapshot.invalidRows} rejected rows (${lionInvalidRowSummary(snapshot)}). ` : '';
+      if (lionCachedSnapshot && !lionHasCompletedSnapshot) showLionKingSnapshotCache();
+      else setTextIfChanged(document.getElementById('lion-summary'), 'No usable live rows. ' + detail + 'Previous observations are preserved.');
+      reportHealth('BLIND', detail + 'No usable Lion King table; saved data and baselines preserved.', true);
+      setTextIfChanged(document.getElementById('lion-rack-source'), 'Live source unavailable; last observations and rack assignments are kept.');
+      return;
+    }
+    const now = Date.now();
+    if (!lionHasCompletedSnapshot) {
+      rackDataAt = now;
+      lionHasCompletedSnapshot = true;
+    }
+    for (const row of snapshot.rows) {
+      if (row.status === 'UNKNOWN') continue;
+      const prior = previousStates.get(row.key);
+      const terminal = row.status === 'PASS' || row.status === 'FAIL';
+      if (IS_LION_RAMSES_PAGE && row.status === 'PASS') {
+        previousStates.set(row.key, prior ? { ...prior, seenAt: now } : {
+          status: 'PASS', completed: false, seenAt: now, startedAt: row.startedAt,
+          source: row.source, serial: row.tailSerial });
+        continue;
+      }
+      if (prior && prior.status === 'RUNNING' && !prior.completed && terminal) {
+        // Display-history limits never suppress a newly observed completion.
+        // Keep RUNNING until the async log/claim write acknowledges success,
+        // so a quota failure is retried without consuming this transition.
+        previousStates.set(row.key, { ...prior, seenAt: now });
+        emitLionKingCompletion(row);
+        continue;
+      }
+      previousStates.set(row.key, { status: row.status, completed: terminal || !!(prior && prior.completed),
+        seenAt: now, startedAt: row.startedAt, source: row.source, serial: row.tailSerial });
+    }
+    // Retain absent runs through partial refreshes. Bound the saved history by
+    // last observation, without changing identities of rows still on the page.
+    if (previousStates.size > LION_MAX_RUNS) {
+      const present = new Set(snapshot.rows.map(row => row.key));
+      [...previousStates.entries()].filter(([key]) => !present.has(key))
+        .sort((a, b) => a[1].seenAt - b[1].seenAt)
+        .slice(0, previousStates.size - LION_MAX_RUNS).forEach(([key]) => previousStates.delete(key));
+    }
+    savePreviousStates();
+    if (IS_LION_RAMSES_PAGE) { syncRamsesPassedCards(snapshot); scanRamsesFailedBoard(snapshot); }
+    document.getElementById('lion-cached-view')?.remove();
+    saveLionKingSnapshotCache(snapshot);
+    updateLionKingRows(snapshot);
+    if (lionRefreshError) reportHealth('DEGRADED', lionRefreshError, true);
+    else if (emitLionKingCompletion.failedRuns && emitLionKingCompletion.failedRuns.size) reportHealth('DEGRADED',
+      'Completion storage failed; pending results will be retried. Export logs and free browser storage.', true);
+    else if (lionCacheWriteFailed) reportHealth('DEGRADED',
+      'Live monitoring continues, but the saved snapshot could not be persisted. Check browser storage.', true);
+    else if (snapshot.invalidRows) reportHealth('DEGRADED',
+      `${snapshot.invalidRows} rejected Lion King rows (${lionInvalidRowSummary(snapshot)}); ${snapshot.rows.length} valid rows continue monitoring.`, true);
+    else if (snapshot.unknownStatuses) reportHealth('DEGRADED',
+      `${snapshot.unknownStatuses} unrecognized Lion King statuses; no alerts for those rows.`, true);
+    else if (IS_LION_RAMSES_PAGE) reportHealth(snapshot.attention?.usable && ramsesCSVCheckedAt && !ramsesCSVError &&
+        !snapshot.unresolvedPasses ? 'OK' : 'DEGRADED',
+      ramsesCSVError || (!ramsesCSVAt ? 'Running tests monitored. Automatic passed-result source not yet available.' :
+        snapshot.unresolvedPasses ? `${snapshot.unresolvedPasses} passed results conflict with active runs or have ambiguous start times; no alerts for them.` :
+          snapshot.attention?.usable ? 'Monitoring running tests, completed passes and newly listed GPU failed-board entries.' :
+            'Running/PASS monitoring active. Failed board missing, incomplete or ambiguous; earlier observations preserved.'), true);
+    else reportHealth('OK', 'Lion King table validated. Results are read from the collector.', true);
+  }
+
+  function scheduleLionKingRefresh() {
+    if (!lionInitialDocumentComplete) return;
+    if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+    autoRefreshDueAt = Date.now() + settings.refreshIntervalSeconds * 1000;
+    autoRefreshTimer = setTimeout(refreshLionKing, settings.refreshIntervalSeconds * 1000);
+  }
+
+  function onLionKingNodeClick(event) {
+    if (event.type === 'keydown' && event.key !== 'Enter') return;
+    if (event.type === 'click' && event.button !== 0) return;
+    if (event.type === 'auxclick' && event.button !== 1) return;
+    const cell = event.target.closest && event.target.closest('td.eve-lion-node-link');
+    if (!cell || isOwnUiNode(cell) || isOwnUiNode(event.target)) return;
+    const snapshot = getLionKingSnapshot();
+    if (!lionSnapshotUsable(snapshot)) return;
+    if (IS_LION_RAMSES_PAGE && snapshot.attention?.usable) {
+      const attention = snapshot.attention.rows.find(row => row.nodeCell === cell);
+      if (attention) {
+        event.preventDefault(); event.stopPropagation();
+        openLionKingTestView(attention.serial, '',
+          (event.button === 1 || event.ctrlKey || event.metaKey) && typeof GM_openInTab === 'function'
+            ? url => GM_openInTab(url, { active: false, insert: true }) : openExternal, attention.operation);
+        return;
+      }
+    }
+    if (IS_LION_RAMSES_PAGE) {
+      const pretest = snapshot.pretestRows.find(row => row.nodeCell === cell);
+      if (pretest) {
+        event.preventDefault(); event.stopPropagation();
+        openLionKingTestView(pretest.tailSerial, pretest.started,
+          (event.button === 1 || event.ctrlKey || event.metaKey) && typeof GM_openInTab === 'function'
+            ? url => GM_openInTab(url, { active: false, insert: true }) : openExternal, pretest.operation || 'PRETEST');
+        return;
+      }
+    }
+    const row = snapshot.rows.find(info => info.nodeCells.includes(cell));
+    if (!row) return;
+    const serial = row.nodeCells.indexOf(cell) === 2 ? row.headSerial : row.tailSerial;
+    event.preventDefault();
+    event.stopPropagation();
+    const background = event.button === 1 || event.ctrlKey || event.metaKey;
+    openLionKingTestView(serial, row.started, background && typeof GM_openInTab === 'function'
+      ? url => GM_openInTab(url, { active: false, insert: true }) : openExternal, row.operation);
+  }
+
+  async function refreshLionKing() {
+    if (!lionInitialDocumentComplete) { scanLionKing(); return; }
+    if (IS_LION_RAMSES_PAGE) {
+      if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+      autoRefreshTimer = null;
+      pollRamsesPassedCSV(true);
+      scanLionKing();
+      const nativeRefresh = [...document.querySelectorAll('iframe[src]')].some(frame => {
+        try {
+          const url = new URL(frame.getAttribute('src'), window.location.href);
+          return url.origin === window.location.origin &&
+            url.pathname === '/component/streamlit_autorefresh.st_autorefresh/index.html';
+        } catch (error) { return false; }
+      });
+      if (!nativeRefresh && Date.now() - ramsesStartedAt >= 60000) {
+        savePreviousStates(); flushAlertLog(true); saveRamsesFailedState();
+        window.location.reload();
+        return;
+      }
+      scheduleLionKingRefresh();
+      return;
+    }
+    if (softRefreshInFlight) return;
+    if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+    autoRefreshTimer = null;
+    softRefreshInFlight = true;
+    softRefreshController = new AbortController();
+    const timeout = setTimeout(() => softRefreshController && softRefreshController.abort(), 120000);
+    try {
+      const response = await fetch(window.location.href, { credentials: 'include', cache: 'no-store',
+        signal: softRefreshController.signal });
+      const finalUrl = new URL(response.url);
+      if (!response.ok || finalUrl.origin !== window.location.origin ||
+          finalUrl.pathname !== '/out/out.evelionking_all.php') throw new Error('Session or HTTP response is invalid.');
+      const parsed = new DOMParser().parseFromString(await response.text(), 'text/html');
+      const incoming = getLionKingSnapshot(parsed);
+      const current = getLionKingSnapshot();
+      if (!lionSnapshotUsable(incoming)) {
+        throw new Error('Response does not contain a complete Lion King table.');
+      }
+      withoutObserver(() => {
+        const table = document.importNode(incoming.table, true);
+        if (current) current.table.replaceWith(table);
+        else document.body.insertBefore(table, document.getElementById('eve-tracker-panel'));
+      });
+      rackDataAt = Date.now();
+      lionRefreshError = '';
+      scanLionKing();
+    } catch (error) {
+      lionRefreshError = 'Refresh failed; last valid table retained. Check this page login or connection.';
+      reportHealth('DEGRADED', lionRefreshError, true);
+      warn('Lion King refresh failed:', error);
+    } finally {
+      clearTimeout(timeout);
+      softRefreshController = null;
+      softRefreshInFlight = false;
+      scheduleLionKingRefresh();
+    }
+  }
+
+  function buildLionKingLog(csv) {
+    const entries = loadRealAlertLog().filter(entry => entry.tracker === 'lionking');
+    const headers = ['Detected At', 'Outcome', 'Area', 'JBOG_NUM', 'TailNode_SN', 'HeadNode_SN', 'Started', 'Status', 'Notified'];
+    if (IS_LION_RAMSES_PAGE) headers.push('Evidence', 'Source Finished At');
+    const values = entry => {
+      const row = [entry.iso, entry.result, LION_AREAS[entry.area] || 'Unassigned', entry.jbog, entry.tailSerial, entry.headSerial,
+        entry.started, entry.statusText, entry.alertId ? 'yes' : 'no'];
+      if (IS_LION_RAMSES_PAGE) row.push(entry.phaseSource, entry.eventIso || '');
+      return row;
+    };
+    if (csv) return [headers.join(','), ...entries.map(entry => values(entry).map(csvEscape).join(','))].join('\r\n');
+    return ['eve_slt_Jbog_tracker - ALERT LOG', `Tracker version: ${SCRIPT_VERSION}`,
+      `Shift: ${shiftWindowLabel(currentShiftWindow())}`, `Total alerts: ${entries.length}`,
+      IS_LION_RAMSES_PAGE ? 'Detection times are separate from passed-source Finished times. Failed-board entries have no authoritative Started or Finished.' :
+        'Times are detection times; the source does not expose a verified Finished timestamp.', '',
+      ...entries.map(entry => headers.map((label, index) => `${label}: ${values(entry)[index] || ''}`).join('\n') + '\n')].join('\n');
+  }
+
+  function showLionKingDemo(status) {
+    const now = Date.now();
+    const parts = isoDateParts(new Date(now).toISOString());
+    const record = { id: 'debug-lion-' + now, ts: now, tracker: 'lionking', debug: true,
+      title: 'DEBUG LION KING ' + status, transition: status === 'PASS' ? 'TEST_SUCCESS' : 'TEST_FAILURE',
+      serial: 'DEBUG-LION-TAIL', tailSerial: 'DEBUG-LION-TAIL', headSerial: 'DEBUG-LION-HEAD',
+      started: parts.date + ' ' + parts.time, location: 'Synthetic notification test',
+      statusLine: 'Synthetic ' + status + ' - not a real server result', result: status };
+    renderAlertElement(record, true);
+    revealNewAlert(record.id);
+    sendDesktopNotification(record.title, record.statusLine,
+      status === 'PASS' ? ICON_PASS : ICON_FAIL, null);
+  }
+
+  function initializeLionKing() {
+    if (!claimThisTab()) return;
+    settings = loadSettings();
+    settings.lionHistoryHours = ['24', '48', 'all'].includes(String(settings.lionHistoryHours))
+      ? String(settings.lionHistoryHours) : '24';
+    settings.lionNotifications = settings.lionNotifications !== false;
+    settings.sections = isRecordObject(settings.sections) ? settings.sections : {};
+    if (settings.lionRowWorkRevision !== LION_WORK_PREFS_REVISION) {
+      Object.keys(LION_AREAS).forEach(area => { settings.sections[area] = { show: false, watch: false }; });
+      settings.lionNotifications = false;
+      settings.lionRowWorkRevision = LION_WORK_PREFS_REVISION;
+      saveSettings();
+    }
+    settings.lionAreas = Object.fromEntries(Object.entries(isRecordObject(settings.lionAreas) ? settings.lionAreas : {})
+      .filter(([serial, area]) => serial && serial.length <= 120 &&
+        (area === 'lionking1' || (area !== 'unassigned' && Object.prototype.hasOwnProperty.call(LION_AREAS, area)))).slice(0, LION_MAX_RUNS)
+      .map(([serial, area]) => [serial.trim().toUpperCase(), area]));
+    lionRackBoard = readLionRackBoard();
+    indexLionRacks();
+    Object.keys(LION_AREAS).forEach(lionAreaSettings);
+    previousStates = new Map([...loadPreviousStates()].filter(([, value]) => isRecordObject(value) &&
+      ['RUNNING', 'PASS', 'FAIL'].includes(value.status) && typeof value.completed === 'boolean' &&
+      Number.isFinite(value.startedAt) && Number.isFinite(value.seenAt)));
+    lionCachedSnapshot = loadLionKingSnapshotCache();
+    if (IS_LION_RAMSES_PAGE) {
+      loadRamsesPassedCSV(); ramsesFailedState = loadRamsesFailedState();
+      ramsesPassCardState = loadRamsesPassCardState();
+    }
+    stripMetaRefresh(document);
+    rackDataAt = Date.now();
+    checkLogShiftRollover();
+    injectCSS();
+    const panel = document.createElement('div');
+    panel.id = 'eve-tracker-panel';
+    panel.className = 'eve-tracker-window eve-lion-compact';
+    // Use the actual SLT panel shell and styles; only its source-specific
+    // controls and developer actions differ for Lion King.
+    panel.innerHTML = buildTrackerPanelMarkup();
+    const main = panel.querySelector('#eve-ui-page-main');
+    main.querySelectorAll('.eve-dev-group').forEach(group => {
+      if (group.querySelector('#eve-jira-base-url')) group.classList.add('eve-dev-only');
+      else group.remove();
+    });
+    main.insertAdjacentHTML('beforeend', `<div class="eve-dev-group">
+      <div class="eve-dev-label">GPU_JBOG_TEST</div><div id="lion-summary"></div>
+      <div id="lion-average-pass"></div><div class="eve-debug-hint">Finish times are estimates from recent passed runs.</div>
+      <label class="eve-dev-row">Completed history <select id="lion-history-hours" class="eve-dev-input">
+      <option value="24">24 hours</option><option value="48">48 hours</option><option value="all">All</option></select></label>
+      </div><div class="eve-dev-group"><div class="eve-dev-label">Physical racks</div>
+      <div class="eve-debug-hint">Use Rack Map in Tracker Controls. Click a slot and scan one serial; its location and details are filled automatically.</div>
+      <details><summary class="eve-debug-hint">Area only (without a rack slot)</summary>
+      <input id="lion-area-serial" class="eve-dev-input" placeholder="Tail or head node serial" maxlength="120"
+      aria-label="Node serial for area assignment"><div class="eve-dev-row">
+      <select id="lion-area-choice" class="eve-dev-input" aria-label="Area assignment">
+      ${Object.entries(LION_AREAS).map(([id, label]) => `<option value="${id}">${label}</option>`).join('')}
+      </select><button id="lion-area-save" class="eve-dev-btn" type="button">Save area</button></div>
+      <div id="lion-area-feedback" class="eve-debug-hint" role="status"></div>
+      <div class="eve-debug-hint">The source has no rack column. Assignments are saved for future runs of that node;
+      unknown or conflicting pairs stay Unassigned. A rack-slot assignment takes priority.</div></details></div>
+      <div class="eve-dev-group"><div class="eve-dev-label">Monitoring status</div>
+      <div id="lion-data-age" class="eve-refresh-status"></div><div id="eve-keepalive-status" class="eve-refresh-status"></div>
+      <button id="lion-copy-diagnostics" class="eve-dev-btn" type="button"><span class="eve-alert-copy-hint">Copy source diagnostics</span></button>
+      <div class="eve-debug-hint">Latest 50 alert cards are retained; export the shift log for the full record.</div></div>`);
+    panel.querySelector('#eve-ui-page-debug').innerHTML = `<div class="eve-section-title">Developer</div>
+      <div class="eve-dev-group"><div class="eve-dev-label">Synthetic notification tests</div>
+      <div class="eve-dev-grid"><button id="lion-debug-pass" class="eve-dev-btn" type="button">Test pass</button>
+      <button id="lion-debug-fail" class="eve-dev-btn" type="button">Test fail</button></div>
+      <div class="eve-debug-hint">Fake cards and toasts only. These never enter the result log or open a real run.</div></div>
+      <div class="eve-dev-group"><label class="eve-dev-row">Toast auto-close
+      <input type="number" id="eve-notification-timeout" class="eve-dev-input eve-dev-number" min="0" step="1"> seconds</label>
+      <div class="eve-debug-hint">0 keeps the toast until you close it.</div></div>
+      <div class="eve-dev-group"><div class="eve-dev-label">Alert log</div>
+      <button id="eve-clear-log" type="button" class="eve-dev-btn eve-danger-btn">Clear log</button>
+      <div class="eve-debug-hint">Export first. Clearing asks for confirmation.</div></div>`;
+    if (IS_LION_RAMSES_PAGE) {
+      main.insertAdjacentHTML('beforeend', `<div class="eve-dev-group"><div class="eve-dev-label">Ramses automatic monitoring</div>
+        <div id="lion-csv-feedback" class="eve-debug-hint" role="status">Watching live tables and the dashboard's passed-result data.</div>
+        <div class="eve-debug-hint">Streamlit refreshes its tables. The tracker checks those updates and reads available passed results in the background.
+        If the native refresh component is absent, the tracker reloads this page after one minute with its saved observations.
+        Online and PRETEST are separate from completed GPU test outcomes.</div></div>`);
+      panel.querySelector('#eve-refresh-interval').title = 'Tracker scan interval; native Streamlit supplies new running data.';
+    }
+    main.querySelectorAll('.eve-dev-group').forEach(group => group.classList.add('eve-dev-only'));
+    panel.querySelector('.eve-bulk-buttons').insertAdjacentHTML('afterend',
+      '<button id="lion-rack-open" type="button" class="lion-rack-quick-open"><span>▦ Rack Map</span>' +
+      '<small>Click a slot · scan a serial</small><b aria-hidden="true">→</b></button>');
+    panel.querySelector('#eve-show-all').textContent = 'Enable all';
+    panel.querySelector('#eve-hide-all').textContent = 'Disable all';
+    panel.querySelector('#eve-watch-all').style.display = 'none';
+    panel.querySelector('#eve-watch-none').style.display = 'none';
+    panel.querySelector('.eve-section-head').innerHTML = '<span>SECTION</span>';
+    const list = panel.querySelector('#eve-section-list');
+    Object.entries(LION_AREAS).forEach(([area, label]) => {
+      const row = document.createElement('div');
+      row.className = 'eve-section-row';
+      row.dataset.section = area;
+      row.innerHTML = `<span class="eve-section-label"><span class="lion-section-heading"><span class="eve-section-name">${label}</span>
+        <label class="eve-switch" title="Visibility and notifications for ${label}"><input type="checkbox" class="eve-show-checkbox"
+        aria-label="Enable ${label} visibility and notifications"></label></span>
+        <span class="eve-section-stats">${IS_LION_RAMSES_PAGE ? '<span class="eve-stat eve-stat-pretest"><b>0</b><span>pre</span></span>' : ''}<span class="eve-stat eve-stat-testing"><b>0</b><span>test</span></span>
+        ${IS_LION_RAMSES_PAGE ? '<span class="eve-stat eve-stat-pretest-failed"><b>0</b><span>pre fail</span></span>' : ''}
+        <span class="eve-stat eve-stat-failed"><b>0</b><span>fail</span></span>
+        <span class="eve-stat eve-stat-passed"><b>0</b><span>pass</span></span></span></span>`;
+      row.querySelectorAll('input').forEach(input => input.addEventListener('change', () => {
+        updateLionAreaEnabled(area, input.checked);
+      }));
+      list.appendChild(row);
+    });
+    addProfileNavigation(panel);
+    panel.querySelector('.eve-profile-navigation')?.classList.add('eve-dev-only');
+    document.body.appendChild(panel);
+    syncLionKingControls();
+    setupTrackerWindowUX(panel);
+    wireDeveloperMode();
+    wireButton('eve-show-all', () => setLionKingAreas('show', true));
+    wireButton('eve-hide-all', () => setLionKingAreas('show', false));
+    wireButton('eve-watch-all', () => setLionKingAreas('watch', true));
+    wireButton('eve-watch-none', () => setLionKingAreas('watch', false));
+    wireButton('lion-debug-pass', () => showLionKingDemo('PASS'));
+    wireButton('lion-debug-fail', () => showLionKingDemo('FAIL'));
+    wireButton('lion-copy-diagnostics', () => {
+      const snapshot = getLionKingSnapshot();
+      const report = { version: SCRIPT_VERSION, path: window.location.pathname, readyState: document.readyState,
+        matchingTable: !!snapshot, validRows: snapshot ? snapshot.rows.length : 0,
+        rejectedRows: snapshot ? snapshot.invalidRows : 0, reasons: snapshot ? snapshot.invalidReasons : {},
+        unknownStatuses: snapshot ? snapshot.unknownStatuses : 0,
+        savedRows: lionCachedSnapshot ? lionCachedSnapshot.rows.length : 0,
+        initialComplete: lionInitialDocumentComplete, refreshInFlight: softRefreshInFlight };
+      if (IS_LION_RAMSES_PAGE) {
+        const source = ramsesCurrentPassedSource();
+        report.passedSource = { matchingLinks: source.matching, visibleLinks: source.visible,
+          currentMPYLinks: source.metrics, distinctSources: source.unique,
+          selectedScheme: source.selected?.url.protocol || null,
+          validatedRuns: ramsesPassed.length, readInFlight: ramsesCSVInFlight, error: ramsesCSVError };
+      }
+      copyToClipboard(JSON.stringify(report, null, 2), document.getElementById('lion-copy-diagnostics'), 'Copy source diagnostics');
+    });
+    wireButton('eve-clear-log', clearAlertLog);
+    bindSetting('eve-notification-timeout', 'notificationTimeoutSeconds', {
+      coerce: raw => Math.max(0, Number(raw) || 0), writeBack: true
+    });
+    const history = panel.querySelector('#lion-history-hours');
+    bindSetting('eve-notification-click', 'notificationClickTarget', {
+      coerce: raw => ['jira', 'detail', 'both'].includes(raw) ? raw : 'jira'
+    });
+    bindSetting('eve-jira-base-url', 'jiraBaseUrl', {
+      coerce: raw => {
+        const value = String(raw || '').trim().replace(/\/+$/, '');
+        return /^https?:\/\/[^\s/]+/i.test(value) ? value : JIRA_DEFAULT_BASE_URL;
+      },
+      writeBack: true,
+      after: () => {
+        loadJiraCache().clear(); saveJiraCache(); jiraAuthPausedUntil = 0;
+        jiraNeedsLogin = false; jiraConnected = false; refreshJiraOnCards();
+      }
+    });
+    history.value = settings.lionHistoryHours;
+    history.addEventListener('change', () => { settings.lionHistoryHours = history.value; saveSettings(); scanLionKing(); });
+    const interval = panel.querySelector('#eve-refresh-interval');
+    interval.value = String(settings.refreshIntervalSeconds);
+    interval.addEventListener('change', () => { settings.refreshIntervalSeconds = coerceRefreshInterval(interval.value);
+      saveSettings(); if (!softRefreshInFlight) scheduleLionKingRefresh(); });
+    panel.querySelector('#eve-refresh-now').addEventListener('click', refreshLionKing);
+    const shift = panel.querySelector('#eve-log-shift');
+    shift.addEventListener('change', () => setLogShiftChoice(shift.value));
+    updateLogShiftControl();
+    panel.querySelector('#lion-area-save').addEventListener('click', () => {
+      const serial = panel.querySelector('#lion-area-serial').value.trim().toUpperCase();
+      const area = panel.querySelector('#lion-area-choice').value;
+      const feedback = panel.querySelector('#lion-area-feedback');
+      if (!serial) { feedback.textContent = 'Enter a tail or head node serial.'; return; }
+      if (/^TA\./i.test(serial)) {
+        feedback.textContent = 'This is a rack barcode. Enter a node serial (TailNode or HeadNode) here; rack-to-node mapping is not set by this control.';
+        return;
+      }
+      if (!Object.prototype.hasOwnProperty.call(LION_AREAS, area)) return;
+      if (area === 'unassigned') delete settings.lionAreas[serial];
+      else if (Object.keys(settings.lionAreas).length < LION_MAX_RUNS || settings.lionAreas[serial]) {
+        settings.lionAreas[serial] = area;
+      } else { feedback.textContent = 'Area assignments are full; remove an old assignment first.'; return; }
+      const saved = writeJSON(localStorage, SETTINGS_KEY, settings, 'Lion area settings');
+      feedback.textContent = saved ? `${serial}: ${LION_AREAS[area]} saved.` : 'Area changed in this tab but could not be saved; check browser storage.';
+      refreshLionRackAlertLocations();
+      scanLionKing();
+    });
+    const style = document.createElement('style');
+    style.textContent = '.eve-lion-eta{display:block;font-size:11px;font-weight:normal;margin-top:3px}' +
+      '#eve-tracker-panel .eve-stat-pretest-failed{background:rgba(185,99,43,.23);color:#f4c7a7}' +
+      '.eve-lion-node-link{cursor:pointer}.eve-lion-node-link:focus{outline:2px solid #579dff}' +
+      '.eve-profile-navigation{margin:8px 0}.eve-profile-navigation a{color:#9ecaff}' +
+      '#lion-summary,#lion-average-pass{margin:8px 0}#eve-tracker-panel p{margin:8px 0}' +
+      '#eve-tracker-panel .eve-health-chip{display:inline-block}.eve-health-loading{color:#fbbf24}' +
+      '#lion-area-serial{box-sizing:border-box;width:100%;margin:4px 0}' +
+      '#eve-section-list .eve-section-label{flex-direction:column;align-items:flex-start;gap:4px}' +
+      '#eve-section-list .eve-section-name{white-space:normal}' +
+      '#lion-cached-view{margin:12px;padding:12px;border:2px solid #b7791f;background:#fff9e6;color:#222}' +
+      '#lion-cached-source,#lion-ramses-passed{border-collapse:collapse;width:100%}' +
+      '#lion-cached-source td,#lion-cached-source th,#lion-ramses-passed td,#lion-ramses-passed th{border:1px solid #bbb;padding:4px}' +
+      '#lion-ramses-passed-view{margin:12px;padding:12px;background:#fff;color:#222;border:1px solid #bbb}' +
+      '.eve-alert-started{color:var(--eve-muted);font-size:11px;margin-bottom:6px}' +
+      '#eve-tracker-panel .lion-rack-quick-open{display:grid;grid-template-columns:1fr auto;text-align:left;width:100%;margin:10px 0;padding:12px 14px;border:1px solid #4b80c2;border-radius:10px;background:linear-gradient(115deg,#234771,#285d98);color:#eff6ff;cursor:pointer}' +
+      '#eve-tracker-panel .lion-rack-quick-open span{font-size:15px;font-weight:700}#eve-tracker-panel .lion-rack-quick-open small{grid-column:1;font-size:10px;margin-top:5px;color:#bdd9ff}#eve-tracker-panel .lion-rack-quick-open b{grid-column:2;grid-row:1/3;align-self:center;font-size:22px}#eve-tracker-panel .lion-rack-quick-open:hover{filter:brightness(1.12)}';
+    document.head.appendChild(style);
+    mountLionRackBoard();
+    wireButton('lion-rack-open', () => setLionRackView(true));
+    getAlertContainer();
+    [['TEST_FAILURE', 'Test Fails'], ['PRETEST_FAILURE', 'Pre-test Fails']].forEach(([transition, label]) => {
+      const tab = document.querySelector('#eve-alert-filters [data-filter="' + transition + '"]');
+      if (tab?.firstChild?.nodeType === 3) tab.firstChild.textContent = label;
+    });
+    const toggle = document.getElementById('eve-alert-toggle');
+    document.getElementById('eve-alert-search').placeholder = 'Search serial, Jira or start time...';
+    for (const child of toggle.childNodes) {
+      if (child.nodeType === 3 && child.textContent.includes('JIRAlerts')) child.textContent = ' Lion King Alerts ';
+    }
+    restorePersistedAlerts();
+    refreshLionRackAlertLocations();
+    showLionKingSnapshotCache();
+    window.addEventListener('focus', onJiraWindowFocus);
+    scanLionKing();
+    document.addEventListener('click', onLionKingNodeClick, true);
+    document.addEventListener('auxclick', onLionKingNodeClick, true);
+    document.addEventListener('keydown', onLionKingNodeClick, true);
+    let scanDebounce = null;
+    pageObserver = new MutationObserver(records => {
+      if (IS_LION_RAMSES_PAGE) {
+        let passedLinkChanged = false;
+        records.forEach(record => {
+          const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+          if (isOwnUiNode(target)) return;
+          if (target?.closest('.board-card')) ramsesSourceChanged = true;
+          const anchor = target?.closest('a[download]');
+          if (ramsesDownloadURL(anchor) || (target?.tagName === 'A' && record.type === 'attributes')) passedLinkChanged = true;
+          if (record.type === 'attributes' && [...target.querySelectorAll('a[download]')]
+            .some(link => ramsesDownloadURL(link))) passedLinkChanged = true;
+          [...record.addedNodes, ...record.removedNodes].forEach(node => {
+            if (node.nodeType !== 1 || isOwnUiNode(node)) return;
+            if (node.matches('.board-card') || node.querySelector('.board-card')) ramsesSourceChanged = true;
+            const links = node.matches('a') ? [node] : [...node.querySelectorAll('a[download]')];
+            if (links.some(anchor => ramsesDownloadURL(anchor))) passedLinkChanged = true;
+          });
+        });
+        if (passedLinkChanged) setTimeout(() => pollRamsesPassedCSV(true), OBSERVER_DEBOUNCE_MS);
+      }
+      if (observerSuppressDepth || records.every(record => isOwnUiNode(record.target) ||
+          (record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].every(isOwnUiNode)))) return;
+      clearTimeout(scanDebounce);
+      scanDebounce = setTimeout(scanLionKing, OBSERVER_DEBOUNCE_MS);
+    });
+    pageObserver.observe(document.body, { childList: true, characterData: true, subtree: true,
+      attributes: true, attributeFilter: IS_LION_RAMSES_PAGE
+        ? ['bgcolor', 'style', 'class', 'href', 'download', 'hidden', 'aria-hidden', 'data-stale'] : ['bgcolor', 'style', 'class'] });
+    scheduleLionKingRefresh();
+    let tick = 0;
+    startTicker(() => {
+      tick += 1;
+      const now = Date.now();
+      if (lastTickAt && now - lastTickAt > SLEEP_GAP_MS && !frozenAt) noteWake('paused', lastTickAt, now, true);
+      lastTickAt = now;
+      const countdown = !lionInitialDocumentComplete ? 'Loading' : softRefreshInFlight ? 'Loading' :
+        `${Math.max(0, Math.ceil((autoRefreshDueAt - now) / 1000))}s`;
+      setTextIfChanged(document.getElementById('eve-refresh-badge'), countdown);
+      setTextIfChanged(document.getElementById('eve-refresh-mini'), countdown);
+      const progress = document.getElementById('eve-refresh-progress-fill');
+      if (progress) progress.style.width = (!lionInitialDocumentComplete || softRefreshInFlight ? 0 :
+        Math.min(100, Math.max(0, 100 * (1 - (autoRefreshDueAt - now) / (settings.refreshIntervalSeconds * 1000))))) + '%';
+      setTextIfChanged(document.getElementById('lion-data-age'), !lionInitialDocumentComplete
+        ? lionCachedSnapshot ? `Live source loading. Saved data: ${lionHoursMinutes(now - lionCachedSnapshot.savedAt)} old.`
+          : 'Source table is still loading; no completed snapshot yet.'
+        : !lionHasCompletedSnapshot ? lionCachedSnapshot ? `No validated live snapshot. Saved data: ${lionHoursMinutes(now - lionCachedSnapshot.savedAt)} old.`
+          : 'No validated source snapshot yet.'
+        : `Last page update: ${siteDateTime(new Date(rackDataAt))} (${lionHoursMinutes(now - rackDataAt)} ago)`);
+      if (tick % 4 === 0) runTickStep('Lion scan', scanLionKing);
+      if (tick % 15 === 0) runTickStep('relative times', refreshRelativeTimes);
+      if (tick % 60 === 0) runTickStep('log shift', checkLogShiftRollover);
+      if (tick % HEARTBEAT_EVERY_TICKS === 0) writeHeartbeat(now);
+      if (autoRefreshTimer && autoRefreshDueAt && now > autoRefreshDueAt + 2000) refreshLionKing();
+    });
+    holdKeepAliveLock();
+    holdScreenWakeLock();
+    wireSleepDetection();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) { holdScreenWakeLock(); scanLionKing(); }
+    });
+    window.addEventListener('beforeunload', () => { savePreviousStates(); flushAlertLog(true); writeHeartbeat(Date.now()); });
+  }
+
   // ===== BOOTSTRAP =====
 
   function bootstrap() {
+    if (window.location.origin === new URL(LION_RAMSES_URL).origin && !IS_LION_RAMSES_PAGE) return;
+    if (window.location.pathname === LION_TESTVIEW_LIST_PATH) {
+      const startLionHelper = () => runLionKingTestViewAutoQuery();
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startLionHelper);
+      else startLionHelper();
+      return;
+    }
     if (/^\/slt\//.test(window.location.pathname)) {
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', runTestViewAutoQuery);
@@ -8465,11 +11614,45 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     } catch (error) {
       console.warn(LOG_PREFIX + ' Early meta-refresh guard failed:', error);
     }
-    const start = () => {
+    const stopEarlyMetaObserver = () => {
       if (earlyObserver) {
         earlyObserver.disconnect();
         earlyObserver = null;
       }
+    };
+    if (IS_LION_KING_PAGE) {
+      let lionStarted = false;
+      let bodyObserver = null;
+      const startLionWhenBodyExists = () => {
+        if (lionStarted || !document.body) return;
+        lionStarted = true;
+        if (bodyObserver) {
+          bodyObserver.disconnect();
+          bodyObserver = null;
+        }
+        // Show controls during parsing; the scanner waits for the full baseline.
+        initializeLionKing();
+      };
+      const finishInitialLionDocument = () => {
+        lionInitialDocumentComplete = true;
+        stopEarlyMetaObserver();
+        startLionWhenBodyExists();
+        scanLionKing();
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', finishInitialLionDocument, { once: true });
+        if (!document.body) {
+          bodyObserver = new MutationObserver(startLionWhenBodyExists);
+          bodyObserver.observe(document, { childList: true, subtree: true });
+        }
+        startLionWhenBodyExists();
+      } else {
+        finishInitialLionDocument();
+      }
+      return;
+    }
+    const start = () => {
+      stopEarlyMetaObserver();
       initialize();
     };
     if (document.readyState === 'loading') {
