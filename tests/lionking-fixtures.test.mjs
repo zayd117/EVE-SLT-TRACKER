@@ -35,7 +35,8 @@ test('setup is one fixture scan per position and advances to the next position w
     const sequence = [[0, 'Top middle'], [2, 'Left middle'], [3, 'Right middle'], [1, 'Bottom middle']];
     for (const [index, [position, label]] of sequence.entries()) {
       assert.match(await tm.page.textContent('#lion-rack-selected-position'), new RegExp(label));
-      assert.equal(await tm.page.evaluate(() => document.activeElement?.id), 'lion-fixture-serial', 'ready for the scan');
+      // Opening the panel focuses the input from its toggle event, which fires a moment after the click.
+      await tm.waitFor(async () => (await tm.page.evaluate(() => document.activeElement?.id)) === 'lion-fixture-serial', { message: 'ready for the scan' });
       await tm.page.fill('#lion-fixture-serial', FX(index + 1));
       await tm.page.press('#lion-fixture-serial', 'Enter');
       assert.equal(await tm.page.textContent('#lion-fixture-feedback'), `${FX(index + 1)} saved to ${label}.`);
