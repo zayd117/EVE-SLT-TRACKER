@@ -1,318 +1,200 @@
-# EVE SLT Tracker
+# EVE SLT+JBOG TRACKER
 
-A Tampermonkey userscript for the EVE SLT rack page. It watches the rack,
-tells you the moment a server **passes or fails**, and links each result to
-its Jira ticket and TestView run.
+**Version 2.0.1** · One Tampermonkey userscript for EVE SLT, the Lion King
+collector and the Ramses JBOG dashboard. It selects its source from the page
+being viewed and uses the browser's existing Jira and TestView logins.
 
-- Works in **Microsoft Edge**, Chrome and Firefox with Tampermonkey.
-- Read-only: it never changes anything on the rack page, in TestView or in Jira.
-- Nothing to configure for normal use.
+Installable source: [EVE SLT+JBOG TRACKER.user.js](<EVE SLT+JBOG TRACKER.user.js>).
+Users need only Tampermonkey and this file; Node and the repository tooling
+are for development.
 
----
+## Install or update
 
-## What it does
+1. Install [Tampermonkey](https://www.tampermonkey.net/) for Edge, Chrome or Firefox.
+2. Open the [userscript install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE%20SLT%2BJBOG%20TRACKER.user.js) and choose **Install** or **Update**.
+3. Open or reload one of the supported pages below. Allow Jira and TestView
+   connections when Tampermonkey requests them.
 
-When a server cell on the rack page changes colour, the tracker checks the
-server's detail page to confirm what really happened, then:
+Keep one enabled copy. If the renamed script installs beside an older copy,
+disable the older copy in the Tampermonkey Dashboard. Existing storage keys
+are preserved, including saved rack assignments and SLT state.
 
-1. shows a **card** in the **JIRAlerts** window on the page,
-2. sends a **Windows desktop notification** (toast),
-3. finds the **Jira ticket** for that failure,
-4. writes the result to the **shift log**, which you can export.
+This update intentionally keeps **2.0.1**. Tampermonkey normally offers an
+automatic update only when `@version` increases; existing 2.0.1 users should
+open the install link or replace the editor contents with the complete file.
 
-| Rack colour change | What you get |
+## Supported pages
+
+| Page | What the tracker reads |
 |---|---|
-| Light blue, light green or dark green -> **Red** | **Fail** card (pre-test or test) |
-| Light green -> **Dark green** | **Pass** card |
+| EVE `/out/out.eveslt.php` | Rack-cell changes, confirmed against the server detail page |
+| Lion King `/out/out.evelionking_all.php` | Tail/head node, Started and status rows |
+| [Ramses JBOG dashboard](http://hyve-cmd101-ramses.hyvesolutions.org:8001/?dashboard=jbog) | Live running/PRETEST tables, failed board and available passed-result data |
+| TestView `/slt/list` and `/uut/gpu_jbog_test/list` | Click handoffs to the appropriate test details |
 
-The colour only says *something* happened. Pre-test vs test, and pass vs
-fail, always come from the server's detail page. SYS_DEKIT runs are
-recorded as diagnostics, never as failures.
+Leave the source page open to monitor it. Each source uses its own settings,
+observations, cards and logs; switching pages does not monitor a closed tab.
 
----
+## Everyday use
 
-## Key features
+The normal Lion King panel shows section controls, a prominent **Rack Map**
+button, auto refresh and shift selection. Technical settings, source details,
+monitoring diagnostics and synthetic notification tools are behind **Dev**.
 
-- **One card per result**, newest on top, with filter chips, counts and a
-  search box (serial, location or Jira key).
-- **Jira chip on every card** that finds the ticket for you, with a
-  **copy link** button once it exists.
-- **"Raise a ticket" help**: if no ticket appears within 15 minutes, the
-  tracker tells you the exact PuTTY command to send.
-- **TestView in one click**: click a card (or a red rack cell) to open that
-  server's latest SLT test.
-- **Automatic shift log** (Day / Swing / Graveyard) with `.txt` and `.csv`
-  export.
-- **Live counts** of testing / failed / passed per rack section.
-- **Keeps itself running**: background refresh, recovers from network
-  blips and from the browser putting the tab to sleep.
-- **Safe with several tabs open**: each result is notified and logged once.
+- Enable only the areas you work on: **B6**, **B7**, **E2/E4/BL** or **Unassigned**.
+- Each Lion King **Enabled** control combines visibility and notifications.
+  Turning an area off collapses/hides it and silences its alerts. The arrow
+  and switch represent the same saved state; individual racks have no toggle.
+- Areas start **off** on first use of the row-control migration. Later choices
+  are saved. **Enable all / Disable all** applies to the current Lion source.
+- EVE SLT retains its separate **Show** and **Notifs** section controls.
+- Click a card's serial to copy it, its **Jira** button for Jira, or the card
+  body/**TestView** button for test details. The card's **×** dismisses the card;
+  it does not delete its shift-log entry.
 
----
+### Rack Map
 
-## Installation
+1. Open **Rack Map**.
+2. Enable a physical row, click its rack slot and scan the node serial.
+3. The tracker saves the location and looks up available status, timing and
+   linked test information. It does not require manual ticket or test IDs.
 
-1. Install the **Tampermonkey** extension:
-   [Edge](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd) ·
-   [Chrome](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) ·
-   [Firefox](https://addons.mozilla.org/firefox/addon/tampermonkey/)
-2. Open the **[tracker install link](../../raw/main/EVE_SLT_Tracker.user.js)**.
-3. Tampermonkey shows an install page. Click **Install**.
-4. Open (or reload) the EVE SLT rack page.
+Physical slots use the rack's cross layout:
 
-You should see the **EVE SLT Tracker** panel in the top-right corner of the
-rack page. That is all - the default settings are ready to use.
+```text
+       top
+left         right
+      bottom
+```
 
-> **If Tampermonkey asks** to allow a connection to **jira.synnex.com** or
-> the **TestView** site, choose **Always allow**. Without it the Jira and
-> TestView lookups do not work.
+Each occupied slot has **Jira** and **TestView** buttons, compact timing
+information and a small **×** to remove that assignment immediately. Empty
+slots offer **Scan**. Removal clears the saved slot assignment, not source
+records, Jira tickets or test results.
 
----
+**B6** has a blue group background, **B7** green and **E2/E4/BL** purple.
+B6 and B7 stay next to each other and use one horizontal scrollbar; E2/E4/BL
+scrolls separately. Physical row membership and left-to-right order are fixed
+by the supplied rack registry, even when a rack's barcode includes another
+row name. The map fits the viewport again after the browser window changes
+size. While it is open, the tracker and alert windows are hidden; **Back to
+tracker** restores them.
 
-## How to use it
-
-Leave the rack page open. The tracker does the watching.
-
-**When a result comes in**
-
-- A card appears in **JIRAlerts** and a desktop toast pops up.
-- Click the **serial number** on a card to copy it.
-- Click the **Jira chip** to open the ticket (or a Jira search).
-- Click **anywhere else on the card** to open the server's latest test in
-  TestView. If that test cannot be found, the TestView SLT list opens with
-  the serial already searched.
-- Click **x** to dismiss a card. Dismissing never deletes the shift log.
-
-**On the rack page**
-
-- Click a **red cell** to open that server in TestView.
-  **Ctrl+click** still opens the old detail page.
-
-**The JIRAlerts window**
-
-- Drag it by any empty part of its title bar.
-- Click the title to collapse or expand it.
-- The **...** menu has **Export shift log (.txt)**, **Export for Excel
-  (.csv)** and **Dismiss all cards**.
-
----
-
-## Status and notification behaviour
-
-### Jira chip on a card
-
-| Chip shows | Meaning |
+| Mini-card color | Meaning |
 |---|---|
-| **JIRA - 123456** | Ticket found. Click to open it. The copy button next to it copies the full link. |
-| **Ticket pending** | Test fail, the Jira bot has not raised the ticket yet (usually 5-10 min). The tracker keeps checking. |
-| **No ticket yet** | Pre-test fail, no ticket so far. Pre-test fails often never get one. |
-| **No ticket (create one)** | Pre-test fail, 15+ minutes and still no ticket. Outlined in yellow until you hover it. |
-| **No ticket (re-testing)** | Same, but TestView shows the server testing again, so a ticket cannot be made yet. |
-| **No ticket** | Test fail, still no ticket after the bot's usual time. |
-| **PASSED (no ticket)** | Passes never get a ticket. |
+| Medium light green with light text | Running test or PRETEST |
+| Dark green | Passed |
+| Red | Test fail |
+| Darker red | PRETEST fail |
+| Neutral | No current usable status |
 
-- **New ticket:** when a ticket appears on a card that was waiting, the chip
-  glows green with a small **!** until you hover it.
-- **Seen once:** the green glow and the yellow outline each show once per
-  failure. They do not come back after a page reload.
-- **Removed from rack:** if the server is pulled or swapped out of its slot,
-  its card is struck through and tagged **Removed from rack**. It is kept,
-  not deleted.
-- **Older cards** (45 min+) are dimmed. A yellow-outlined chip stays bright
-  until you have seen it.
+Test fails and PRETEST fails have separate labels, counts and alert filters.
+PRETEST is not treated as a completed GPU test.
 
-### Raising a missing ticket
+### Jira and TestView links
 
-Click the chip of a failure that has no ticket. The page that opens says
-what to do:
+**Lion King Jira** buttons open the serial's query results with
+`ORDER BY updated DESC`, including when a ticket key is already cached.
+A cached ticket is a search anchor, so a click still shows other, newer
+matching issues. With no key, the Jira issue-search page opens. Jira lookup
+uses the existing browser login and never creates or changes a ticket.
 
-- **Before 15 minutes:** "If there is no ticket by *time*, please open PuTTY
-  and create one with: `ticket <serial>`" (with a **Copy** button).
-- **After 15 minutes:** a highlighted box: "It has been more than 15 minutes
-  and no ticket has been created. Please make one in PuTTY."
-- **Server testing again:** if TestView 2.0 shows the server **RUNNING**,
-  PuTTY would refuse the ticket, so the page says so and links to that
-  TestView run instead.
+**EVE SLT Jira** retains its failure-specific ticket lookup, pending-ticket
+states and PuTTY instructions when a ticket has not appeared. The tracker
+checks TestView before prompting for a ticket while a server is re-testing.
 
-### When you get a notification
+**Lion King TestView** first queries the UUT API for the selected serial and
+operation. When a card has a Started value, the matching run must have that
+start time. The candidate is verified through `/api/v1/uut_status/view/<id>/by_id`
+before `/uut/detail/<id>` opens. PRETEST maps to `GPU_JBOG_TEST_PRETEST`;
+GPU tests map to `GPU_JBOG_TEST`. Failed lookup or verification leaves a list
+fallback for manual selection rather than guessing a record ID or run.
 
-- You get **one** card and **one** toast per real result.
-- **No** alerts on page load, page refresh or reload: the tracker only
-  alerts on a change it saw happen.
-- The same failure flickering back and forth within a minute alerts once.
-- A different server moved into a slot is not an alert.
-- With several tracker tabs open, only the first tab to see a result sends
-  the toast and logs it. Every tab still shows the card.
-- Turning a section's **Notifs** off stops its toasts; its results are still
-  logged.
+## Detection and logs
 
----
+- EVE SLT colors identify a possible transition; the detail page confirms the
+  phase and result. SYS_DEKIT is diagnostic, not a hardware failure.
+- The Lion collector establishes a quiet baseline for completed rows, then
+  alerts on an observed RUNNING-to-PASS/FAIL change for the same tail/head
+  serials and Started value. Loading fragments and saved snapshots do not
+  establish new results.
+- Ramses watches native table updates and reads the dashboard's available
+  passed-result CSV data automatically. A result download or manual import
+  is not required. It keeps running PRETEST, failed-board observations and
+  validated GPU passes separate; a disappeared row alone is not a pass.
+- The Ramses failed board tracks new entries after its baseline. It does not
+  supply authoritative test Started or Finished times; its alert timestamps
+  are detection times. Passed records use validated source Finished times.
+- Hidden areas continue contributing audit observations/logs, but their
+  cards and desktop notifications are suppressed. Polling can miss a run
+  that starts and finishes entirely between usable observations.
+- Malformed or conflicting rows are excluded with diagnostics; valid rows
+  continue monitoring. A missing or entirely unusable source retains saved
+  observations rather than inventing completion.
+- The latest **50 alert cards** are retained. Shift-log exports can include
+  older recorded events whose cards have aged out. Logs are bounded; export
+  the shift you need rather than using browser storage as a permanent archive.
+- **Log shift: Auto** uses the Day, Swing or Graveyard window, including the
+  hour before the shift. TXT and CSV exports use Fremont/Pacific time.
 
-## Configuration
-
-Everything is set in the panel and saved in your browser.
-
-| Setting | Where | Default |
-|---|---|---|
-| Refresh interval (30 s / 20 s / 10 s) | Main panel | 30 s |
-| **Log shift** (Auto, or Day / Swing / Graveyard) | Main panel | Auto |
-| **Show** and **Notifs** per rack section | Main panel | On |
-| Developer mode | Small **Dev** box, bottom of the panel | Off |
-| Toast auto-close, toast click target, Jira URL | Visible with **Dev** on | Off (Windows decides) / Jira ticket / jira.synnex.com |
-
-**Log shift, Auto:** the log follows the shift you are in.
-
-- Starting within 60 minutes of a shift counts as that shift
-  (9:40 PM is Graveyard, 6:00 AM is Day).
-- Exports cover the shift from 60 minutes before it starts to 60 minutes
-  after it ends. Hover **Log shift** for the exact times.
-- A shift's log is kept until the same shift starts again.
-- Picking a shift by hand lasts until the next shift change, then goes back
-  to Auto.
-- Export times are Fremont time (PDT / PST).
-
-**For a fork only:** the rack page address (`@match`) and the update
-address (`@updateURL` / `@downloadURL`) are set in the header of
-`EVE_SLT_Tracker.user.js`.
-
----
-
-## Updating
-
-Updates are automatic. Tampermonkey checks this repository about once a day
-and when the browser starts, and installs any newer version.
-
-- **Update now:** Tampermonkey icon -> **Dashboard** -> **Utilities** ->
-  **Check for userscript updates**.
-- **Which version am I on?** It is shown next to "by Zay Davidson" in the
-  panel title, and in the Tampermonkey Dashboard.
-
-Your settings, cards and shift log are kept across updates.
-
----
+Completed history defaults to **24 hours**, with 48 hours and All in Dev.
+Active runs have no age limit. History changes affect display, not results.
+Recent valid pass durations provide advisory ETAs; an ETA never marks a run
+complete. The collector samples by Started time, while Ramses samples by
+Finished time, over the latest 24 hours.
 
 ## Troubleshooting
 
-| Problem | What to do |
+| Symptom | Action |
 |---|---|
-| No panel on the rack page | Check Tampermonkey is on and the script is enabled in the Dashboard, then reload the page. |
-| Red banner "FAILED TO START" | Hard-refresh (**Ctrl+Shift+R**). If it stays, report a bug with the error text. |
-| Cards appear but no desktop toasts | Check that section's **Notifs** switch. In Windows Settings -> **Notifications**, allow the browser (Edge) to notify, and turn **Do not disturb** off. |
-| Jira chip only says "Jira" and its tooltip asks you to log in | Log in to Jira in the same browser, then wait for the next check. |
-| Card click does not find the test | Log in to TestView in the same browser. |
-| Console says "Another copy ... is already running" | The script is installed twice. Remove the extra one in the Tampermonkey Dashboard. |
-| Alerts arrive late when the tab is in the background | See **Keep the page awake** below. |
+| No Lion rows or alerts | Enable the relevant area; defaults are off. |
+| Cards but no desktop notifications | Check the area setting, browser notification permission and Windows Do not disturb. |
+| Jira lookup unavailable | Log into Jira in the same browser; the serial search remains available. |
+| TestView stays on the list | Log into TestView and select the run manually if its identity could not be verified. |
+| Loading or saved-data indication | Wait for a usable live source; saved rows are a dated display copy. |
+| Rejected rows, BLIND or stale data | Enable Dev and use **Copy source diagnostics**. Preserve the source and error details when reporting the issue. |
+| Storage error | Export the available shift log and free browser storage. Pending completions retry instead of acknowledging an unsaved log. |
+| Another copy is already running | Disable the duplicate userscript. |
+| Window returns at the wrong size | Update to this 2.0.1 file; Rack Map now refits the browser viewport on resize. |
 
-### Keep the page awake
+The tracker uses browser wake mechanisms where available, but a sleeping PC
+cannot monitor. Edge's **Never put these sites to sleep** setting can help
+with background tabs. An HTTP page may not support every wake mechanism.
 
-The tracker keeps its own tab awake, with nothing to set up. It also stops
-the screen and PC from sleeping while the tracker tab is on screen. If the
-browser still puts the tab to sleep, the tracker catches up as soon as the
-tab wakes.
+Report bugs through [GitHub issues](https://github.com/zayd117/EVE-SLT-TRACKER/issues)
+with version, source page, expected/actual behavior and Dev diagnostics. The
+console prefix is `[EVE SLT+JBOG TRACKER]`.
 
-To rule sleeping out completely (optional):
+## Privacy and scope
 
-- **Edge:** Settings -> **System and performance** -> **Performance** ->
-  **Never put these sites to sleep** -> **Add** the EVE site.
-  No admin rights needed. (A userscript cannot change this list itself.)
-- **Every PC at once:** ask IT to set the Edge policy
-  `SleepingTabsBlockedForUrls` to the EVE site.
-- **Laptops:** Windows Settings -> System -> Power -> sleep **Never** while
-  plugged in. A sleeping PC runs nothing.
+The script reads monitoring pages and uses the existing Jira/TestView browser
+sessions. It makes no ticket, test or inventory edits and asks for no password
+or API key. It adjusts the page's display locally, saves settings/assignments,
+and can export logs. No analytics or telemetry are sent. Browser storage and
+exports can contain node serials and test details; share only the information
+needed for a bug report.
 
----
+## Development and AI handoff
 
-## Reporting a bug
+Start with [AGENTS.md](AGENTS.md) or [CLAUDE.md](CLAUDE.md) for the current
+architecture, editing constraints and a targeted source map. Read only the
+relevant source section and deeper notes for the requested change.
 
-Open a **[new issue](../../issues/new/choose)**. The form asks for:
-
-1. the tracker version (panel title or Tampermonkey Dashboard),
-2. what you expected,
-3. what actually happened,
-4. any red text in the browser console (**F12** -> **Console**).
-
-Every tracker message in the console starts with `[EVE Tracker]`, so you
-can filter on that. With **Dev** on, the panel also shows three
-**Refresh diagnostics** lines - paste those too.
-
----
-
-## Privacy
-
-The tracker only makes these requests, using logins you already have:
-
-- the **rack page**, re-loaded in the background on each refresh;
-- a server's **detail page** (same site), once per result;
-- **Jira** search (`jira.synnex.com`), sending only the serial number;
-- **TestView** (its own site), sending only the serial number: to find a
-  server's test when you click a card, and to check whether a failed server
-  is testing again before suggesting a PuTTY ticket.
-
-No passwords or cookies are read or stored. No analytics, no telemetry.
-Settings, the shift log and card state stay in your own browser
-(`localStorage` / `sessionStorage`). Exports are saved by your browser to
-your PC.
-
----
-
-## Developer information
-
-```bash
-git clone https://github.com/zayd117/EVE-SLT-TRACKER.git
-cd EVE-SLT-TRACKER
-npm ci                       # Node 20+; first time also: npx playwright install chromium
-npm run check                # syntax + userscript header
-npm test                     # full suite: the real script in headless Chromium
-npm run test:mutation        # optional: checks the tests catch real bugs (~45 min)
-```
-
-| File | What is in it |
+| File | Purpose |
 |---|---|
-| [CHANGELOG.md](CHANGELOG.md) | Every change, per version |
-| [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Why the code is the way it is, one heading per `// ===== SECTION =====` in the script |
-| [docs/TESTING.md](docs/TESTING.md) | How it is tested, code-to-test map, what still needs a human |
-| [docs/reviews/](docs/reviews/) | Code reviews |
+| [EVE SLT+JBOG TRACKER.user.js](<EVE SLT+JBOG TRACKER.user.js>) | The single installable userscript |
+| [CHANGELOG.md](CHANGELOG.md) | Current 2.0.1 changes and historical releases |
+| [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Detailed implementation and storage rationale |
+| [docs/TESTING.md](docs/TESTING.md) | Test commands, fixtures, coverage and manual checks |
+| [docs/LION_KING_QA.md](docs/LION_KING_QA.md) | Historical test evidence and current validation limits |
+| [docs/LION_KING_SOURCE_NOTES.md](docs/LION_KING_SOURCE_NOTES.md) | Source contracts and evidence boundaries |
+| [docs/LION_KING_NEXT_STAGE.md](docs/LION_KING_NEXT_STAGE.md) | Follow-up work and physical rack registry |
+| `tests/`, `scripts/`, `package.json` | Development-only tests and helpers |
 
-The script carries no change notes or long comments; they live in these
-files so the installed file stays small.
-
-### Repository layout
-
-```text
-EVE_SLT_Tracker.user.js        the userscript (what users install)
-CHANGELOG.md                   change history
-docs/                          code notes, testing guide, reviews
-tests/                         automated tests (node:test + Playwright; dev only)
-package.json                   dev-only test tooling (nothing ships to users)
-CLAUDE.md                      working rules for AI-assisted changes
-scripts/release.sh             cut a release (bump, changelog, tag, push)
-scripts/validate-header.mjs    checks the ==UserScript== header
-scripts/check-version-bump.mjs fails a PR that changes the script without a bump
-.github/workflows/ci.yml       checks and tests on every push and PR
-.github/workflows/release.yml  publishes a GitHub Release for each v* tag
-.github/ISSUE_TEMPLATE/        bug report form
-```
-
-### Releases and branches
-
-- `main` is the release channel: whatever is on `main` is what users get.
-- Work on a branch, open a PR, merge. CI fails a PR that changes the script
-  without bumping `@version`, breaks the syntax, header or plain-ASCII
-  checks, or fails the tests.
-- Pushing a `vX.Y.Z` tag that matches `@version` publishes a GitHub Release
-  with that version's changelog entry.
-
-### Testing a local copy in Tampermonkey
-
-1. Dashboard -> **Settings** -> **Config mode**: `Advanced`.
-2. Allow Tampermonkey **access to file URLs** in the browser's extension settings.
-3. Dashboard -> the script -> **Settings** -> set a `file://` update URL
-   and the update interval to *Always*.
-
-Reload the rack page to pick up local edits.
-
----
-
-## Licence
+`main` supplies the userscript install/update URL. A merge is not a release
+tag or evidence that live internal pages have been tested. No new test or
+verification run accompanies this documentation merge; use the testing guide
+for existing evidence and the checks appropriate to a future change. Keep
+version **2.0.1** for this requested update.
 
 MIT. See [LICENSE](LICENSE).

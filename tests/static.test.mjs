@@ -22,11 +22,15 @@ test('script is plain ASCII', () => {
   assert.equal(bad, -1, `non-ASCII character at offset ${bad}`);
 });
 
-test('version is consistent: @version, fallback, CHANGELOG top entry', () => {
+test('version is consistent: @version, fallback, package metadata and CHANGELOG top entry', () => {
   const fallback = src.match(/GM_info\.script\.version\s*:\s*'([^']+)'/)[1];
   assert.equal(fallback, SCRIPT_VERSION, 'SCRIPT_VERSION fallback');
   const top = read('CHANGELOG.md').match(/^## \[([^\]]+)\]/m)[1];
   assert.equal(top, SCRIPT_VERSION, 'CHANGELOG top entry');
+  assert.equal(JSON.parse(read('package.json')).version, SCRIPT_VERSION, 'package.json version');
+  const lock = JSON.parse(read('package-lock.json'));
+  assert.equal(lock.version, SCRIPT_VERSION, 'package-lock.json version');
+  assert.equal(lock.packages[''].version, SCRIPT_VERSION, 'package-lock root version');
   assert.doesNotMatch(src.match(/^\/\/ @name\s+(.*)$/m)[1], /v?\d+\.\d+\.\d+/, '@name must not carry a version');
 });
 
@@ -37,12 +41,21 @@ test('every GM_* API used is granted, and every grant is used', () => {
   for (const api of granted) assert.ok(used.has(api) || api === 'GM_info', `${api} granted but unused`);
 });
 
-test('every // ===== SECTION ===== marker has a heading in docs/CODE_NOTES.md', () => {
+test('AI entry guides and the compact code map point to current runtime functions', () => {
   const notes = read('docs/CODE_NOTES.md');
-  const markers = [...src.matchAll(/^\s*\/\/ ===== (.+?) =====$/gm)].map(m => m[1]);
-  assert.ok(markers.length > 40);
-  const missing = markers.filter(m => !notes.includes(`## ${m}`));
-  assert.deepEqual(missing, []);
+  const agents = read('AGENTS.md');
+  const claude = read('CLAUDE.md');
+  for (const guide of [notes, agents, claude]) {
+    assert.ok(guide.includes('EVE SLT+JBOG TRACKER.user.js'), 'guide names the canonical source');
+  }
+  assert.ok(claude.includes('[AGENTS.md](AGENTS.md)'), 'Claude links to the shared entry guide');
+  assert.ok(agents.includes('docs/TESTING.md'), 'entry guide points to focused test coverage');
+  for (const name of ['bootstrap', 'initializeLionKing', 'scanRamsesFailedBoard',
+    'assignLionRackSlot', 'clearLionRackSlot', 'fitLionRackWindow', 'openLionRackJira',
+    'lookupLionKingDirect', 'renderAlertElement']) {
+    assert.ok(notes.includes('`' + name + '`'), `${name} is documented as a search anchor`);
+    assert.match(src, new RegExp(`function ${name}\\(`), `${name} exists in the runtime`);
+  }
 });
 
 // Regression (v0.9.9 field bug): Tampermonkey's `window` is a proxy, and
@@ -63,7 +76,8 @@ test('only known hosts are hard-coded in the script', () => {
   // Adding a host is a reviewed decision (public repo). Update this list only
   // together with README "Privacy" and docs/TESTING.md.
   const allowed = new Set(['jira.synnex.com', 'testview-eve-fmt.hyvesolutions.org', 'github.com',
-    'raw.githubusercontent.com', 'www.w3.org']);
+    'raw.githubusercontent.com', 'www.w3.org', 'hyve-cmd101-ramses.hyvesolutions.org',
+    'mfg-collector.hyvesolutions.org']);
   const hosts = new Set([...src.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase()));
   for (const h of hosts) assert.ok(allowed.has(h), `unexpected host in script: ${h}`);
 });

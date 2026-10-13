@@ -57,6 +57,10 @@ test('a real detected failure exports with Fremont wall-clock time (TXT and CSV,
     assert.notEqual(want.time, utcTime, 'Pacific differs from UTC');
     const tableRow = out.txt.split('\n').find(l => l.includes(want.time));
     assert.ok(tableRow && tableRow.includes(want.date), `TXT row shows ${want.date} ${want.time}`);
+    // The category table alone cannot protect the chronological record: its
+    // stored date/time are PC-local locale strings, unlike the UTC ISO source.
+    assert.match(out.txt, new RegExp(`\\[1\\] ${want.date} ${want.time} `),
+      'chronological record also derives Pacific date/time from ISO');
     // Only the explicitly labelled raw "ISO:" line may carry UTC.
     const utcLines = out.txt.split('\n').filter(l => l.includes(utcTime));
     assert.ok(utcLines.every(l => /ISO:\s+\d{4}-\d{2}-\d{2}T.*Z/.test(l)), utcLines.join('\n'));

@@ -6,14 +6,14 @@
 #   ./scripts/release.sh minor "Add stuck-server detection"
 #   ./scripts/release.sh major "Rewrite state model"
 #
-# Bumps @version in the userscript (the single source of truth - the
-# script reads its own version back from GM_info), prepends a CHANGELOG
+# Bumps the userscript header/fallback and package metadata together,
+# prepends a CHANGELOG
 # entry, commits, tags and pushes. The release workflow picks up the tag
 # and publishes a GitHub Release.
 
 set -euo pipefail
 
-SCRIPT="EVE_SLT_Tracker.user.js"
+SCRIPT="EVE SLT+JBOG TRACKER.user.js"
 CHANGELOG="CHANGELOG.md"
 
 LEVEL="${1:-}"
@@ -69,9 +69,28 @@ echo
 read -r -p "Proceed? [y/N] " REPLY
 [[ "$REPLY" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
 
-# --- bump the header ---------------------------------------------------
-sed -i.bak -E "s|^(// @version[[:space:]]+).*$|\1${NEXT}|" "$SCRIPT"
-rm -f "${SCRIPT}.bak"
+# --- bump all current version fields ----------------------------------
+# The fallback spans lines; a line-oriented substitution would miss it.
+# Dependency resolutions stay put.
+node --input-type=module - "$SCRIPT" "$NEXT" <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs';
+const [, , scriptPath, version] = process.argv;
+const source = readFileSync(scriptPath, 'utf8');
+const header = /^\/\/ @version[ \t]+\S+[ \t]*$/m;
+const fallback = /(GM_info\.script\.version\s*:\s*)'[^']*'/;
+if (!header.test(source) || !fallback.test(source)) {
+    throw new Error('Missing userscript header or SCRIPT_VERSION fallback; no version fields changed.');
+}
+writeFileSync(scriptPath, source
+    .replace(header, '// @version      ' + version)
+    .replace(fallback, (_match, prefix) => prefix + "'" + version + "'"));
+for (const file of ['package.json', 'package-lock.json']) {
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    data.version = version;
+    if (data.packages?.['']) data.packages[''].version = version;
+    writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+}
+JS
 
 node --check "$SCRIPT"
 node scripts/validate-header.mjs "$SCRIPT"
@@ -92,7 +111,7 @@ TMP="$(mktemp)"
 mv "$TMP" "$CHANGELOG"
 
 # --- commit, tag, push -------------------------------------------------
-git add "$SCRIPT" "$CHANGELOG"
+git add "$SCRIPT" "$CHANGELOG" package.json package-lock.json
 git commit -m "release: v${NEXT}
 
 ${MESSAGE}"

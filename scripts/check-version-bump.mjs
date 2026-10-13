@@ -7,7 +7,7 @@
 // the fix to nobody, and there is no signal that it happened.
 
 import { readFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 const [, , path, baseRef] = process.argv;
 
@@ -27,7 +27,9 @@ let base = null;
 let baseSource = null;
 
 try {
-    baseSource = execSync(`git show ${baseRef}:${path}`, { encoding: 'utf8' });
+    // Keep the spaced canonical filename in one Git object argument rather
+    // than interpolating it into a shell command.
+    baseSource = execFileSync('git', ['show', `${baseRef}:${path}`], { encoding: 'utf8' });
     base = versionOf(baseSource);
 } catch (error) {
     console.log(`::notice::${path} does not exist on ${baseRef} - new file, skipping.`);
