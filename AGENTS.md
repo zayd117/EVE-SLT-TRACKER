@@ -1,6 +1,6 @@
 # EVE SLT+JBOG TRACKER: start here
 
-Current version: **2.0.1**. Runtime: **`EVE_SLT_JBOG_TRACKER.user.js`**.
+Current version: **2.0.2**. Runtime: **`EVE_SLT_JBOG_TRACKER.user.js`**.
 One self-contained Tampermonkey IIFE; no runtime build or npm dependencies.
 `main` is the install/update channel. Node/Playwright files are development only.
 
@@ -17,9 +17,9 @@ skill). This guide and the user's current instructions win where they conflict.
 - Honor the user's current scope and authorization. A request to commit,
   push or merge is sufficient authorization; no special SUBMIT phrase is needed.
   Create release tags only when requested. Preserve unrelated local work.
-- Keep **2.0.1** for the current requested integration. For later runtime
-  releases, normally bump both `@version` and the `SCRIPT_VERSION` fallback,
-  and update CHANGELOG/current docs. Docs/tests-only edits need no runtime bump.
+- For runtime changes, bump both `@version` and the `SCRIPT_VERSION` fallback,
+  package metadata and the top CHANGELOG entry together (CI requires an
+  increase on pull requests). Docs/tests-only edits need no runtime bump.
 - Keep branding **EVE SLT+JBOG TRACKER** in the header, panel, logs and current
   guides. The canonical filename is `EVE_SLT_JBOG_TRACKER.user.js`; keep install,
   update and download URLs free of spaces and encoded `+` characters.
@@ -32,9 +32,9 @@ skill). This guide and the user's current instructions win where they conflict.
 - Do not add credentials, real unit/ticket data or production exports to Git.
   Fixture identities are synthetic. Inspection helpers are developer tools,
   not runtime dependencies or commands to run during an ordinary code edit.
-- The user prohibited test/check execution for this integration. Do not claim
-  it was tested. For future work, follow the user's instructions and the
-  relevant coverage in `docs/TESTING.md`; report unrun checks plainly.
+- 2.0.1 shipped without test execution at the user's request. 2.0.2 ran the
+  fixture suites; actual results are in `docs/LION_KING_QA.md`. Follow
+  `docs/TESTING.md` for coverage and report unrun checks plainly.
 - Update this guide and the affected deeper notes when a contract changes.
   Document behavior, invariants and entry points instead of chat transcripts.
 
@@ -81,6 +81,7 @@ skill). This guide and the user's current instructions win where they conflict.
 | Lion source/result parsing | `getLionKingSnapshot`, `getRamsesSnapshot`, `getRamsesFailedBoard`, `parseRamsesCSV`, `pollRamsesPassedCSV` | LION_KING_SOURCE_NOTES |
 | Lion events/persistence | `scanLionKing`, `scanRamsesFailedBoard`, `syncRamsesPassedCards`, `emitLionKingCompletion` | CODE_NOTES: Lion event state |
 | Rack assignment/map/resize | `LION_RACK_ROWS`, `assignLionRackSlot`, `clearLionRackSlot`, `renderLionRackSlot`, `refreshLionRackBoard`, `fitLionRackWindow` | CODE_NOTES: rack board |
+| Rack scan-to-find / header status chips | `locateLionRack`, `lionRackRollup`, `lionRackSlotState`, `mountLionRackBoard` | CODE_NOTES: rack board; lionking-rackscan test |
 | Row enable/area location | `lionAreaSettings`, `lionRowPreference`, `setLionKingAreas`, `renderLionRackWorkControls`, `lionAreaForRow` | CODE_NOTES: work controls |
 | Jira navigation/cards | `jiraListUrl`, `jiraFoundUrl`, `resolveJiraUrl`, `syncJiraForCard`, `openLionRackJira` | CODE_NOTES: Jira; jira/jiraux tests |
 | TestView navigation | `lookupLionKingDirect`, `lookupLionKingDetail`, `openLionKingTestView`, `openTestView` | SOURCE_NOTES; testview / lionking-testview tests |

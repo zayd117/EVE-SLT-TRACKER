@@ -1,4 +1,4 @@
-# Code notes — EVE SLT+JBOG TRACKER 2.0.1
+# Code notes — EVE SLT+JBOG TRACKER 2.0.2
 
 Canonical runtime: `EVE_SLT_JBOG_TRACKER.user.js`, one self-contained Tampermonkey
 IIFE. No build output or backend is needed. Use function names below as search
@@ -33,7 +33,7 @@ or handoff use; a matching path on another host is insufficient.
 
 ## State compatibility
 
-Branding is **EVE SLT+JBOG TRACKER** and metadata/fallback version is **2.0.1**.
+Branding is **EVE SLT+JBOG TRACKER** and metadata/fallback version is **2.0.2**.
 That display version is independent of storage schema revisions.
 
 `trackerStorageKey` preserves SLT `eveRackTracker*` keys and selects isolated
@@ -158,7 +158,16 @@ assignment. It clears the selected serial/partner and same-slot drawer state.
 Link/remove clicks must stop propagation before generic slot selection/drag.
 
 B6/B7 share one horizontal control; E2/E4/BL has independent scroll. Map open
-hides tracker/alerts and Back restores them. Main Lion controls stay compact;
+hides tracker/alerts and Back restores them. The map starts closed: only a saved
+`open: true` in `lionKingTrackerRackBoardWindow` (written by `saveLionRackWindow`
+when the user opens it) reopens it on load.
+`locateLionRack` (title-bar scan box, Enter submits, input always cleared) finds
+a rack by `lionRackBarcode` or a slot by tail/head serial in `lionRackBoard.slots`,
+refuses a disabled row with a message instead of enabling it (row Enabled also
+controls notifications), and highlights with a transient `is-found` class.
+`lionRackSlotState` is the single state source for slot cards, `lionRackRollup`
+header chips (fail, check, run, pass order) and the scan summary; disabled rows
+render no chips. Main Lion controls stay compact;
 Jira/source/history/registry diagnostics remain behind Dev mode.
 `fitLionRackWindow` reapplies viewport-relative width/height and margins on
 resize. Never save a temporary smaller browser size as permanent map geometry.

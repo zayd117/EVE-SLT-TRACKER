@@ -1,20 +1,17 @@
 # Testing EVE SLT+JBOG TRACKER
 
-Current install: [`EVE_SLT_JBOG_TRACKER.user.js`](../EVE_SLT_JBOG_TRACKER.user.js), version **2.0.1**.
+Current install: [`EVE_SLT_JBOG_TRACKER.user.js`](../EVE_SLT_JBOG_TRACKER.user.js), version **2.0.2**.
 Read [AGENTS.md](../AGENTS.md) before investigating a failure; use
 [CODE_NOTES.md](CODE_NOTES.md) to locate the relevant function. Historical Lion
 QA notes describe earlier revisions, not evidence that this version passed.
 
 ## Status and execution policy
 
-This integration updates fixtures, tooling paths and documentation to the
-combined tracker. No local suites, mutation runners, syntax checks, lint or
-browser checks were executed for this update, per the user's instruction.
-Do not claim 2.0.1 is tested or copy earlier pass counts into a release report.
-Keep this version at 2.0.1 unless the user authorizes a later release.
-
-The commands below are a reference for a future authorized test run. A source
-read is not a test result. Tests run against synthetic pages and APIs; they
+The 2.0.1 integration shipped without any test run. Version 2.0.2 ran the
+syntax/header/ASCII checks, `npm test` and the Lion mutation runners; the actual
+counts are in
+[LION_KING_QA.md](LION_KING_QA.md). Do not copy those counts into a later
+release report; rerun the suites. A source read is not a test result. Tests run against synthetic pages and APIs; they
 cannot establish that an internal production service or login still works.
 
 ## Tooling and commands
@@ -97,6 +94,7 @@ these keys or erase saved assignments.
 | `lionking-controls.test.mjs` | B6/B7/E2-E4-BL/Unassigned default off, linked visibility/notification preference, row arrow/Enabled sync, no per-rack toggles, bulk controls, normalized/conflicting assignments, audit while disabled, Dev synthetic cards |
 | `lionking-resilience.test.mjs` | Row quarantine, conflicting duplicates, valid completions beside bad rows, last-good stale display cache, origin/schema/text safety and recovery |
 | `lionking-ramses.test.mjs` | Native running/failed boards, PRETEST states and separate PRETEST_FAILURE alerts, failed-membership episodes, passed-result CSV/MPY discovery and silent historical PASS cards, ambiguous/stale-source safety, serial Jira queries ordered by updated DESC |
+| `lionking-rackscan.test.mjs` | Rack Map closed on first load and after closing, rack header status chips and worst-state accent, scan-to-find for rack barcode / tail / head serial / unknown / disabled row |
 | `lionking-testview.test.mjs` | Direct UUT API resolution with serial/operation/Started and by-ID validation; authenticated-origin retry; useful fallback; no SN typing/Query clicks |
 | `mutation.mjs`, `lionking*.mutation.mjs` | Targeted faults with immutable candidates and exact original baselines; mutation results require the selected original tests to pass first |
 
@@ -160,10 +158,10 @@ and revision; do not infer success from fixtures.
 
 ## Release contract
 
-The integration stays **2.0.1** by explicit user request. Header, fallback,
-package metadata and top changelog entry must agree. Tampermonkey normally
-requires a greater version to offer an automatic update; a same-version
-integration may need manual reinstall. Do not bump it during cleanup.
+Header, fallback, package metadata and top changelog entry must agree (a
+static test checks this). Tampermonkey normally requires a greater version to
+offer an automatic update, and CI requires a version increase on pull requests.
+Docs/tests-only edits do not need a bump.
 
 For a later authorized release, `scripts/release.sh patch "summary"` requires
 clean `main`, updates all version fields and changelog, checks metadata, commits,

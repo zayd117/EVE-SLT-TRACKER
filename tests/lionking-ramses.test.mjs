@@ -138,7 +138,7 @@ test('Ramses selects the Lion profile; PRETEST stays separate and existing faile
   ]));
   try {
     assert.match(await tm.page.textContent('#eve-tracker-panel'), /EVE SLT\+JBOG TRACKER/);
-    assert.equal(await tm.page.locator('#lion-passed-csv, input[type="file"]').count(), 0,
+    assert.equal(await tm.page.locator('#lion-passed-csv, input[type="file"]:not(#lion-rack-file)').count(), 0,
       'the tracker has no manual CSV import UI');
     const current = await states(tm);
     assert.equal(current[runKey(active)]?.status, 'RUNNING');

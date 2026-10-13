@@ -124,14 +124,21 @@ export async function openWithScript(browser, url, server, options = {}) {
   if (!reuse) await context.route('**/*', route => server.handle(route));
   const seeds = [options.localStorage, options.sessionStorage, options.rawLocalStorage, options.rawSessionStorage];
   if (seeds.some(Boolean) && !reuse) {
-    // Seed once per test (not again on reload), before the script runs.
+    // Seed once per test (not again on reload or in a second tab), before the
+    // script runs. localStorage is shared by every tab of the context, so its
+    // marker lives there; sessionStorage is per tab and has its own marker.
     // raw*Storage values are stored as given (corrupt-data tests).
     await context.addInitScript(seed => {
-      if (location.host === seed.host && !sessionStorage.getItem('__seeded')) {
-        sessionStorage.setItem('__seeded', '1');
+      if (location.host !== seed.host) return;
+      const tabSeeded = sessionStorage.getItem('__seeded');
+      if (!tabSeeded && !localStorage.getItem('__seeded')) {
+        localStorage.setItem('__seeded', '1');
         for (const [k, v] of Object.entries(seed.local)) localStorage.setItem(k, JSON.stringify(v));
-        for (const [k, v] of Object.entries(seed.session)) sessionStorage.setItem(k, JSON.stringify(v));
         for (const [k, v] of Object.entries(seed.rawLocal)) localStorage.setItem(k, v);
+      }
+      if (!tabSeeded) {
+        sessionStorage.setItem('__seeded', '1');
+        for (const [k, v] of Object.entries(seed.session)) sessionStorage.setItem(k, JSON.stringify(v));
         for (const [k, v] of Object.entries(seed.rawSession)) sessionStorage.setItem(k, v);
       }
     }, {
