@@ -108,6 +108,22 @@ const MUTANTS = [
     }]
   },
   {
+    name: 'a failure already old on first sight raises a card and a notification',
+    selectedTests: ['a failure already idle when first listed settles silently; a fresh one alerts, dated by its idle time'],
+    edits: [{
+      from: 'pending: !(idleMs > LION_FAILURE_FRESH_MS) };',
+      to: 'pending: true };'
+    }]
+  },
+  {
+    name: 'a new failure is dated with the laptop clock instead of the board idle time',
+    selectedTests: ['a failure already idle when first listed settles silently; a fresh one alerts, dated by its idle time'],
+    edits: [{
+      from: 'failedAt: Number.isFinite(idleMs) ? Date.now() - idleMs : NaN,',
+      to: 'failedAt: NaN,'
+    }]
+  },
+  {
     name: 'a replaced MPY source supplies obsolete PASS evidence after its read finishes',
     selectedTests: ['an MPY source replaced during a delayed read cannot complete the run from its obsolete payload'],
     edits: [{
