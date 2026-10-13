@@ -32,6 +32,9 @@ skill). This guide and the user's current instructions win where they conflict.
 - Do not add credentials, real unit/ticket data or production exports to Git.
   Fixture identities are synthetic. Inspection helpers are developer tools,
   not runtime dependencies or commands to run during an ordinary code edit.
+  One owner-approved exception (zay, 2026-10-13): the real fixture serials of
+  rows B6/B7 ship in `LION_DEFAULT_FIXTURES`. Tests still use synthetic serials
+  only (`tests/harness/fixtures.mjs` swaps the table). Add no other real data.
 - 2.0.1 shipped without test execution at the user's request. 2.0.2 ran the
   fixture suites; actual results are in `docs/LION_KING_QA.md`. Follow
   `docs/TESTING.md` for coverage and report unrun checks plainly.
@@ -52,9 +55,24 @@ skill). This guide and the user's current instructions win where they conflict.
   source failure; quarantine malformed/conflicting identities.
 - SLT SYS_DEKIT is diagnostic. Detail-confirmed SLT PRETEST and TEST failure
   handling must remain separate; retain failure-specific Jira behavior.
-- Ramses failed-board timestamps mean detection, not test Started/Finished.
-  Preserve its operation; PRETEST maps to `GPU_JBOG_TEST_PRETEST`. Existing
-  membership is baselined quietly, including v1-to-v2 PRETEST migration.
+- Ramses failed-board entries carry no test Started/Finished. Preserve their
+  operation; PRETEST maps to `GPU_JBOG_TEST_PRETEST`. Existing membership is
+  baselined quietly, including v1-to-v2 PRETEST migration. An entry new to the
+  saved state whose Idle Time is over 15 min (`LION_FAILURE_FRESH_MS`,
+  `lionIdleMs`) settles silently: no card, no notification. A fresher one alerts
+  with `ts = now - idle` (`timeSource: 'source-idle'`); an unreadable idle time
+  alerts as before. The log `iso` stays the detection time (the log merge
+  filters on it). Idle Time = time since the JBOG landed on the board is an
+  unverified assumption. Passes are unchanged.
+- Fixture mapping: a rack position is anchored by its fixtures
+  (`LION_DEFAULT_FIXTURES`, shipped; a per-PC override lives in
+  `eveLionRackFixtureRegistryV1`); the JBOG on it is resolved from TestView
+  records into `eveLionRackOccupancyV1`, tied to the slot `rev`. Only an active
+  test or an operator confirmation fills a slot; history, an outage or a
+  timeout never clears one. Slot words: Occupied / Waiting for new / Empty /
+  No fixture. Changing fixtures needs the Dev box (`eveLionRackDevV1`, per-tab
+  sessionStorage). A saved registry without `LION_FIXTURE_MAP_REVISION` is
+  ignored once on mapped racks. E2/E4/BL has no built-in fixtures yet.
 - Persist the audit record before event claims/acknowledgment. Storage failure
   retries the same event. Claims and locks deduplicate across tabs.
 - Lion defaults: B6, B7, E2/E4/BL and Unassigned are off on one-time migration.
@@ -82,6 +100,8 @@ skill). This guide and the user's current instructions win where they conflict.
 | Lion events/persistence | `scanLionKing`, `scanRamsesFailedBoard`, `syncRamsesPassedCards`, `emitLionKingCompletion` | CODE_NOTES: Lion event state |
 | Rack assignment/map/resize | `LION_RACK_ROWS`, `assignLionRackSlot`, `clearLionRackSlot`, `renderLionRackSlot`, `refreshLionRackBoard`, `fitLionRackWindow` | CODE_NOTES: rack board |
 | Rack scan-to-find / header status chips | `locateLionRack`, `lionRackRollup`, `lionRackSlotState`, `mountLionRackBoard` | CODE_NOTES: rack board; lionking-rackscan test |
+| Fixture map / Dev gate / per-PC override | `LION_DEFAULT_FIXTURES`, `normalizeLionFixtureRegistry`, `lionSlotIdentities`, `lionRackSlotView`, `lionFixtureState`, `resolveLionSlot`, `setLionFixture`, `lionDevLocked`, `lionRouteScan`, `renderLionFixtureSetup` | CODE_NOTES: fixture mapping; lionking-fixtures / fixture-defaults tests |
+| Failed-board alert time / idle rule | `scanRamsesFailedBoard`, `lionIdleMs`, `emitLionKingCompletion`, `updateLionRackSeenTimes` | CODE_NOTES: Lion event state; lionking-ramses tests |
 | Row enable/area location | `lionAreaSettings`, `lionRowPreference`, `setLionKingAreas`, `renderLionRackWorkControls`, `lionAreaForRow` | CODE_NOTES: work controls |
 | Jira navigation/cards | `jiraListUrl`, `jiraFoundUrl`, `resolveJiraUrl`, `syncJiraForCard`, `openLionRackJira` | CODE_NOTES: Jira; jira/jiraux tests |
 | TestView navigation | `lookupLionKingDirect`, `lookupLionKingDetail`, `openLionKingTestView`, `openTestView` | SOURCE_NOTES; testview / lionking-testview tests |

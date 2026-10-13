@@ -1,9 +1,11 @@
 // Rack Map first-load state, per-rack status chips and the scan-to-find box.
-// Uses the installed userscript and a local, synthetic Lion source.
+// Uses the installed userscript and a local, synthetic Lion source. The built-in fixture list is emptied, so
+// these racks are mapped by hand only (the fixture-mapped behaviour has its own suites).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { launchBrowser, openWithScript, instrument, SCRIPT_SOURCE, HOOK_NAMES } from './harness/userscript.mjs';
 import { FixtureServer } from './harness/server.mjs';
+import { withBuiltIn } from './harness/fixtures.mjs';
 
 const LION_URL = 'https://rack.test/out/out.evelionking_all.php';
 const BOARD = '#eve-lion-rack-board';
@@ -34,7 +36,7 @@ class RackScanServer extends FixtureServer {
 }
 
 async function openMap({ enabled = true } = {}) {
-  const source = instrument(SCRIPT_SOURCE, [...new Set([...HOOK_NAMES, 'scanLionKing'])]);
+  const source = instrument(withBuiltIn(SCRIPT_SOURCE), [...new Set([...HOOK_NAMES, 'scanLionKing'])]);
   const tm = await openWithScript(browser, LION_URL, new RackScanServer(), { source });
   await tm.waitFor(() => tm.page.$('#eve-tracker-panel'), { message: 'Lion panel' });
   await tm.eval('__eve.scanLionKing()');
@@ -105,9 +107,14 @@ test('rack headers summarise their servers and scanning finds a rack or a server
     assert.match(await note(tm), /TA\.B6-EVE99 is not on the board/);
 
     await tm.page.uncheck(`${BOARD} [data-work-area="b6"]`);
-    await scan(tm, RACK);
+    await scan(tm, ROWS[2].tail);
     assert.match(await note(tm), /is in B6, which is off/);
     assert.equal(await tm.page.locator(`${BOARD} [data-rack="${RACK}"] .lion-rack-rollup`).count(), 0, 'a disabled row shows no status');
+    // Scanning the rack itself turns its row on (a serial scan does not).
+    await scan(tm, RACK);
+    assert.match(await note(tm), /^B6 turned on\. TA\.B6-EVE03 \u00b7 3\/4 assigned/);
+    assert.equal(await tm.page.isChecked(`${BOARD} [data-work-area="b6"]`), true);
+    assert.equal(await tm.page.locator(`${BOARD} [data-rack="${RACK}"] .lion-rack-rollup`).count(), 1, 'the enabled row shows its status again');
     assert.deepEqual(tm.errors, []);
   } finally { await tm.close(); }
 });

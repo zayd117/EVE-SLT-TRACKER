@@ -43,6 +43,10 @@ Session storage holds baselines/cards/cooldowns and Jira cache; local storage
 holds shift audit logs and durable Lion delivery state. Read/write helpers catch
 storage errors; shape guards remain the responsibility of each loader.
 
+Fixture mapping adds `eveLionRackFixtureRegistryV1` and `eveLionRackOccupancyV1`
+(GM shared with local fallback, see the fixture mapping section) and the per-tab
+`eveLionRackDevV1` in sessionStorage.
+
 The physical registry key is `eveLionRackBoardV1`, shared through GM storage
 with local-storage fallback. Board schema stays `version: 1`,
 `layoutRevision: 2`, `workRevision: 1`; settings use `lionRowWorkRevision: 1`.
@@ -114,6 +118,18 @@ its outcome. Invalid/conflicting CSV preserves the last validated data.
 Timestamp precision is retained; a minute-resolution CSV cannot silently bind
 to a different attempt. PASS duration is finish minus start, not FPY or idle.
 
+The failed board has no start time. `lionIdleMs` parses its Idle Time cell
+(`0h24m`, `1d3h20m`; unreadable gives NaN). In `scanRamsesFailedBoard` a member
+new to the saved state whose idle time is over `LION_FAILURE_FRESH_MS` (15 min)
+is created with `pending=false`: no card, no notification, only the quiet log of
+the baseline. A fresher one alerts with `failedAt = now - idle`; the record's
+`ts` and relative time use it (`timeSource: 'source-idle'`) while `iso` stays the
+detection time because the log merge filters on `iso`. The age is decided once,
+when the episode is created, so a retry after a storage failure is never
+dropped. `updateLionRackSeenTimes` stamps Seen with the earliest of the alert
+time and `now - idle`. That Idle Time means "time since the JBOG landed on the
+board" is an assumption; if a real new failure fails to alert, check the cell.
+
 Failures use `TEST_FAILURE` versus `PRETEST_FAILURE`; PRETEST is recognized as
 `PRETEST` or `GPU_JBOG_TEST_PRETEST`. Titles, filters and counts remain separate.
 Failed-board state accepts v1/v2; v1→v2 quietly baselines existing PRETEST members
@@ -163,14 +179,63 @@ hides tracker/alerts and Back restores them. The map starts closed: only a saved
 when the user opens it) reopens it on load.
 `locateLionRack` (title-bar scan box, Enter submits, input always cleared) finds
 a rack by `lionRackBarcode` or a slot by tail/head serial in `lionRackBoard.slots`,
-refuses a disabled row with a message instead of enabling it (row Enabled also
-controls notifications), and highlights with a transient `is-found` class.
+refuses a serial in a disabled row with a message, turns a scanned rack's own row
+on through `updateLionAreaEnabled` (the Enabled box, so no history replays), and
+highlights with a transient `is-found` class. `lionRackBarcode` accepts a dot
+before EVE (`TA.B6.EVE03`). A mapped rack's summary lists Top/Right/Left/Bottom
+(`lionRackFixtureLines`) and resolves its fixtures first.
 `lionRackSlotState` is the single state source for slot cards, `lionRackRollup`
 header chips (fail, check, run, pass order) and the scan summary; disabled rows
 render no chips. Main Lion controls stay compact;
 Jira/source/history/registry diagnostics remain behind Dev mode.
 `fitLionRackWindow` reapplies viewport-relative width/height and margins on
 resize. Never save a temporary smaller browser size as permanent map geometry.
+
+## Fixture-based rack mapping
+
+A position is anchored by the fixtures installed there; the JBOG on a fixture
+rotates (about every 6 h, fixtures about every 2 weeks) and is resolved from
+TestView. `LION_DEFAULT_FIXTURES` ships the list: rack to `{ top, right, left,
+bottom }` (a serial, an array or `''`; `LION_POSITION_KEYS` maps names to slot
+indices 0 top, 1 bottom, 2 left, 3 right). It is the one place to edit when a
+fixture is swapped for everyone; E2/E4/BL is not listed yet. The real serials
+of rows B6/B7 ship by the owner's decision; tests swap the table
+(`tests/harness/fixtures.mjs`, `withBuiltIn`) and use synthetic serials.
+
+- Registry `eveLionRackFixtureRegistryV1` (GM shared, local fallback):
+  `slots[rack][i] = { fixtures, custom, maintenance, rev, changedAt, suppress }`,
+  `history`, `revision`, `mapRevision`. `slot.fixtures` is always the effective
+  list: the tester's own (`custom`) or the built-in one. An own list equal to
+  the built-in one is not custom; a fixture belongs to one position (own beats
+  built-in); a built-in list that changed under a saved position bumps `rev`.
+  A registry without `LION_FIXTURE_MAP_REVISION` is ignored once on mapped racks
+  (a list scanned before the map existed must not hide it).
+- Occupancy `eveLionRackOccupancyV1` caches what the resolver saw per position
+  and is valid only for the slot `rev`, so a replaced fixture drops its old
+  answer and any lookup still in flight. `lionSlotIdentities` (layer 1) decides
+  who is where; `lionRackSlotView` (layer 2) adds the test row and state.
+- Lookups: `resolveLionSlot`, `resolveLionRack`, `pumpLionFixtures` (enabled
+  rows only, two positions at a time, the focused rack first) call TestView
+  `/api/v1/uut_status/view` per fixture and operation with exact operation and
+  full history; `lionFixtureAttempt` validates id, serial, times and that the
+  record's fixture is the one asked for (a server that ignores the filter is
+  harmless). `evaluateLionSlot` is the pure rule: only an active test (under
+  48 h) or an operator confirmation fills a slot; a finished test keeps its unit;
+  an outage, timeout or empty answer never clears; two units active at once or
+  one unit claimed by two positions is a conflict, not a guess; the x suppresses
+  that attempt only.
+- Words (`lionFixtureState`, `lionSlotWord`): Occupied (a test is running),
+  Waiting for new (nothing running; the last unit is history only), Empty (no
+  record), No fixture (the list leaves the position empty). The fixture serial
+  shows in the slot note, the tooltip, the selected slot and the rack summary;
+  never as a JBOG or a paired node.
+- Dev gate: `lionDevLocked` makes `setLionFixture`, `removeLionFixture`,
+  `resetLionFixtures`, `setLionMaintenance` and the backup restore refuse unless
+  the Dev box (`#lion-dev-mode`, sessionStorage `eveLionRackDevV1`) is on, and
+  `setLionDevMode` hides `#lion-fixture-setup` and `#lion-fixture-backup`. With
+  Dev on, `lionRouteScan` sends a scan to the fixture flow when it is a saved
+  fixture, to the JBOG flow when the live source lists it, and asks
+  (`lionAnswerScanChoice`) otherwise in a mapped rack.
 
 ## Navigation, timestamps and integration limits
 

@@ -71,7 +71,24 @@ monitoring diagnostics and synthetic notification tools are behind **Dev**.
    or failed; a tail or head serial highlights its rack slot. Each rack header
    also shows small count chips, with a colored underline for a failure or a
    location conflict. A rack in a disabled row shows no status; enable the
-   row to see it.
+   row to see it (scanning the rack's own barcode turns its row on).
+5. Racks of rows **B6** and **B7** are mapped by fixture. The script carries
+   the fixture installed at each position (top, right, left, bottom), and the
+   JBOG on a fixture is read from TestView test records, so a tester scans
+   nothing. A mapped position shows its fixture serial and one state:
+   **Occupied** (a JBOG is testing on it), **Waiting for new** (nothing is
+   testing now; the last unit is history, not proof it is still plugged in),
+   **Empty** (TestView has no test record for the fixture) or **No fixture**
+   (the list leaves the position empty). Scanning a mapped rack lists all four
+   positions with their fixture and state and looks the fixtures up at once;
+   scanning a fixture serial finds its position. E2/E4/BL has no built-in
+   fixtures yet.
+6. Changing a fixture needs **Dev** (the board's **...** menu; it is per tab
+   and off by default, so everyday testers cannot change the map). With Dev on,
+   **Fixture setup** replaces, adds, moves or removes a fixture, marks a slot
+   under maintenance and backs up the fixture list. A change stays on that PC
+   until **Reset to built-in**; the scan box then also accepts a fixture serial
+   and asks when it cannot tell a fixture from a JBOG.
 
 Physical slots use the rack's cross layout:
 
@@ -137,8 +154,12 @@ fallback for manual selection rather than guessing a record ID or run.
   is not required. It keeps running PRETEST, failed-board observations and
   validated GPU passes separate; a disappeared row alone is not a pass.
 - The Ramses failed board tracks new entries after its baseline. It does not
-  supply authoritative test Started or Finished times; its alert timestamps
-  are detection times. Passed records use validated source Finished times.
+  supply test Started or Finished times, but its **Idle Time** column dates an
+  entry: one that is new to the saved state and idle for more than 15 minutes
+  settles quietly (no card, no desktop notification), which stops a long-closed
+  tab from replaying old failures. A fresher entry alerts with its time taken
+  as now minus Idle Time, and an unreadable Idle Time alerts as before. Passed
+  records use validated source Finished times.
 - Hidden areas continue contributing audit observations/logs, but their
   cards and desktop notifications are suppressed. Polling can miss a run
   that starts and finishes entirely between usable observations.
@@ -186,7 +207,9 @@ sessions. It makes no ticket, test or inventory edits and asks for no password
 or API key. It adjusts the page's display locally, saves settings/assignments,
 and can export logs. No analytics or telemetry are sent. Browser storage and
 exports can contain node serials and test details; share only the information
-needed for a bug report.
+needed for a bug report. The script itself lists the fixture serials of rows
+B6 and B7 (owner's decision, 2026-10-13); no ticket, credential or test result
+is stored in it.
 
 ## Development and AI handoff
 
