@@ -52,7 +52,7 @@ class RamsesServer extends FixtureServer {
       '<div class="small-table"><table id="ramses-online"><thead><tr>' +
       ONLINE_HEADERS.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>' + this.online.map(r =>
         `<tr data-ramses-failed="${escape(r.id || r.serial)}">` +
-        [r.serial, r.operation, r.route || 'SLT', r.idle || '0h24m', r.status || 'Online',
+        [r.serial, r.operation, r.route || 'SLT', r.idle || '0h2m', r.status || 'Online',
           r.ticket || ''].map(cell).join('') + '</tr>').join('') + '</tbody></table></div></div>' +
       (this.nativeRefresh ? '<iframe src="/component/streamlit_autorefresh.st_autorefresh/index.html"></iframe>' : '') +
       '</body></html>';
@@ -138,7 +138,7 @@ test('Ramses selects the Lion profile; PRETEST stays separate and existing faile
   ]));
   try {
     assert.match(await tm.page.textContent('#eve-tracker-panel'), /EVE SLT\+JBOG TRACKER/);
-    assert.equal(await tm.page.locator('#lion-passed-csv, input[type="file"]').count(), 0,
+    assert.equal(await tm.page.locator('#lion-passed-csv, input[type="file"]:not(#lion-rack-file)').count(), 0,
       'the tracker has no manual CSV import UI');
     const current = await states(tm);
     assert.equal(current[runKey(active)]?.status, 'RUNNING');
@@ -211,9 +211,10 @@ test('two distinct visible running tables remain ambiguous and preserve the obse
   } finally { await tm.close(); }
 });
 
+// A fresh failure has only just landed on the board (idle 2 minutes); the tracker settles older ones quietly.
 function failed(values = {}) {
   return { id: 'failure', serial: '2699YW1005', operation: 'GPU_JBOG_TEST', route: 'SLT',
-    idle: '0h24m', status: 'Online', ticket: '', ...values };
+    idle: '0h2m', status: 'Online', ticket: '', ...values };
 }
 async function appendFailed(tm, row = failed()) {
   await tm.page.evaluate(row => {
@@ -324,6 +325,88 @@ test('ticket, idle time, route and Online text edits cannot repeat a failed-boar
     assert.equal((await log(tm)).length, 1);
     assert.equal((await notify(tm)).length, 1);
     assert.equal(await cards(tm), 1);
+  } finally { await tm.close(); }
+});
+
+test('a failure already idle when first listed settles silently; a fresh one alerts, dated by its idle time', async () => {
+  const { tm } = await openRamses();
+  try {
+    // The page was just opened: these failed long before the tracker looked, so they are not news.
+    await appendFailed(tm, failed({ id: 'old-gpu', serial: '2699YW1011', idle: '1h5m' }));
+    await appendFailed(tm, failed({ id: 'old-pretest', serial: '2699YW1012', operation: 'PRETEST', idle: '3d4h10m' }));
+    await tm.eval('__eve.scanLionKing(); __eve.scanLionKing()');
+    await quiet(tm);
+    // A failure that has just landed alerts, and its card is as old as the board says, not as old as this tab's look at it.
+    const landed = Date.now();
+    await appendFailed(tm, failed({ id: 'fresh', serial: '2699YW1013', idle: '0h3m' }));
+    const entry = await failureCount(tm);
+    assert.equal(entry.tailSerial, '2699YW1013');
+    assert.equal(entry.timeSource, 'source-idle');
+    assert.ok(Math.abs(entry.ts - (landed - 3 * 60000)) < 30000, 'the card time is now minus the idle time');
+    assert.ok(Math.abs(Date.parse(entry.iso) - landed) < 30000, 'the audit log still records when it was detected');
+    assert.match(entry.statusText, /idle 0h3m/);
+    assert.match(await tm.page.textContent('.eve-alert .eve-alert-time'), /\b3m ago\b/);
+    // The settled entries stay quiet however often the board is read.
+    await tm.eval('__eve.scanLionKing(); __eve.scanLionKing()');
+    await tm.page.waitForTimeout(400);
+    assert.equal((await log(tm)).length, 1);
+    assert.equal((await notify(tm)).length, 1);
+    assert.deepEqual(tm.errors, []);
+  } finally { await tm.close(); }
+});
+
+test('an idle time the board does not give as a duration cannot hide a new failure', async () => {
+  const { tm } = await openRamses();
+  try {
+    await appendFailed(tm, failed({ idle: 'n/a' }));
+    const entry = await failureCount(tm);
+    assert.equal(entry.timeSource, 'detected', 'with no readable idle time, the detection time is all there is');
+    assert.equal(entry.ts, Date.parse(entry.iso));
+    assert.deepEqual(tm.errors, []);
+  } finally { await tm.close(); }
+});
+
+test('a settled old failure stays quiet after a reload; the same JBOG failing again with a fresh idle time alerts', async () => {
+  const old = failed({ idle: '2h0m' }), server = new RamsesServer();
+  const { tm } = await openRamses(server);
+  try {
+    await appendFailed(tm, old);
+    await tm.eval('__eve.scanLionKing()');
+    await quiet(tm);
+    server.online = [old];
+    await tm.reload();
+    await tm.waitFor(() => tm.page.$('#lion-csv-feedback'), { message: 'reloaded Ramses controls' });
+    await tm.eval('__eve.scanLionKing()');
+    await quiet(tm);
+    // It leaves the board and fails again: a new episode, and this time it has only just landed.
+    await removeFailed(tm);
+    await tm.eval('__eve.scanLionKing()');
+    await appendFailed(tm, failed({ idle: '0h1m' }));
+    const entry = await failureCount(tm);
+    assert.equal(entry.tailSerial, old.serial);
+    assert.equal(entry.timeSource, 'source-idle');
+    assert.deepEqual(tm.errors, []);
+  } finally { await tm.close(); }
+});
+
+test('the Rack Map Seen time of a failure follows the board idle time, not the moment the tab noticed it', async () => {
+  const { tm } = await openRamses();
+  try {
+    const before = Date.now();
+    await appendFailed(tm, failed({ idle: '2h10m' }));
+    await tm.eval('__eve.scanLionKing()');
+    await quiet(tm);
+    const seen = await tm.waitFor(() => tm.page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem('lionKingTrackerRackSeenTimesV1') || 'null');
+      return saved && Object.values(saved)[0];
+    }), { message: 'saved Seen time' });
+    assert.ok(Math.abs(seen.at - (before - 130 * 60000)) < 30000, 'Seen is about two hours ago');
+    assert.equal(seen.present, true);
+    // A later read cannot move it forward.
+    await tm.eval('__eve.scanLionKing()');
+    const again = await tm.page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('lionKingTrackerRackSeenTimesV1')))[0]);
+    assert.ok(again.at <= seen.at + 1000);
+    assert.deepEqual(tm.errors, []);
   } finally { await tm.close(); }
 });
 

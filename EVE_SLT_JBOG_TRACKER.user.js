@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT+JBOG TRACKER
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      2.0.1
+// @version      2.0.2
 // @description  Monitors EVE SLT racks and Lion King tests with in-page and desktop completion alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -39,7 +39,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '2.0.1';
+      : '2.0.2';
   const LOG_PREFIX = '[EVE SLT+JBOG TRACKER]';
 
   // ===== SOURCE PROFILE =====
@@ -8885,6 +8885,13 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       'TA.E4-EVE05', 'TA.E2-EVE03', 'TA.E4-EVE04', 'TA.E2-EVE02', 'TA.E2-EVE05', 'TA.E4-EVE02'] }
   ];
   const LION_SLOT_LABELS = ['Top middle', 'Bottom middle', 'Left middle', 'Right middle'];
+  // The same four positions by name, in slot order, as the built-in fixture list spells them.
+  const LION_POSITION_KEYS = ['top', 'bottom', 'left', 'right'];
+  const LION_RACK_STATE_LABELS = { RUNNING: 'Running', PASS: 'Passed', FAIL: 'Test fail',
+    PRETEST: 'Pre-test', PRETEST_FAIL: 'Pre-test fail', CONFLICT: 'Check location', ABSENT: 'No current data',
+    UNKNOWN: 'Status unavailable', NOCONFIRM: 'No confirmed JBOG', MAINTENANCE: 'Under maintenance',
+    PENDING: 'Checking fixture' };
+  const LION_ROLLUP_WORDS = { fail: 'failed', check: 'to check', run: 'running', pass: 'passed' };
   let lionRackBoard = null;
   let lionRackIndex = new Map();
   let lionRackSnapshot = null;
@@ -8899,6 +8906,64 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   const lionRackExpectedScroll = new WeakMap();
   let lionRackSelectionLoading = false;
   let lionRackSelectionNextAt = 0;
+  let lionRackNoteTimer = 0;
+  // Fixture-based mapping (see FIXTURE-BASED RACK MAPPING below).
+  const LION_FIXTURE_REGISTRY_KEY = 'eveLionRackFixtureRegistryV1';
+  const LION_OCCUPANCY_KEY = 'eveLionRackOccupancyV1';
+  const LION_FIXTURE_OPERATIONS = ['GPU_JBOG_TEST', 'GPU_JBOG_TEST_PRETEST'];
+  const LION_FIXTURE_ORDER = [0, 2, 3, 1];
+  const LION_FIXTURE_PAGE_SIZE = 10;
+  const LION_FIXTURE_MAX_PAGES = 3;
+  const LION_FIXTURE_ACTIVE_MAX_MS = 48 * 3600000;
+  const LION_FIXTURE_STALE_MS = 15 * 60000;
+  const LION_FIXTURE_TTL_MS = 20000;
+  const LION_FIXTURE_FOCUS_MS = 45000;
+  const LION_FIXTURE_BACKGROUND_MS = 180000;
+  const LION_FIXTURE_HISTORY_MAX = 200;
+  const LION_FIXTURE_QUIET_MS = 7 * 24 * 3600000;
+  // A saved registry without this number predates the built-in map: its lists on mapped racks are ignored once.
+  const LION_FIXTURE_MAP_REVISION = 1;
+  // Built-in fixture map, the same on every install, so a tester scans no fixtures.
+  // rack barcode -> the fixture on each position as you face the rack (top, right, left,
+  // bottom). A position is a serial, an array of serials, or '' when nothing is in that slot.
+  // Left and right are interchangeable in practice. A dev can override any position under
+  // Fixture setup (the Dev box); the override stays on that PC until "Reset to built-in".
+  // Edit this list when a fixture is swapped for everyone; it reaches other testers with
+  // the next script version.
+  const LION_DEFAULT_FIXTURES = {
+    // ROW B6, from the left-facing side to the right-facing side. TA.B7-EVE05 stands in the B6 aisle.
+    'TA.B6-EVE03': { top: '' /* not in slot */, right: '2637YW108Z', left: '2637YW10CJ', bottom: '2637YW108S' },
+    'TA.B6-EVE02': { top: '2639YW107W', right: '2639YW10ZV', left: '2641YW10EY', bottom: '' /* not in slot */ },
+    'TA.B6-EVE01': { top: '2639YW107D', left: '2637YW108M', right: '2637YW1092', bottom: '2637YW109E' },
+    'TA.B6-EVE04': { top: '2637YW10AY', right: '2638YW10KF', left: '2637YW109C', bottom: '2637YW10C7' },
+    'TA.B7-EVE05': { top: '' /* not in slot */, left: '2637YW10AW', right: '2637YW108J', bottom: '' /* not in slot */ },
+    // ROW B7, from the right-facing side to the left-facing side. It mirrors B6 across the aisle:
+    // its first rack faces the first rack of B6. TA.B6-EVE05 stands in the B7 aisle.
+    'TA.B7-EVE02': { top: '2637YW10BJ', right: '2639YW108F', left: '2639YW1108', bottom: '2637YW108G' },
+    'TA.B6-EVE05': { top: '2637YW10CN', right: '2639YW10ZU', left: '' /* not in slot */, bottom: '2639YW10AE' },
+    'TA.B7-EVE01': { top: '2639YW1148', right: '2638YW10NM', left: '2637YW10C6', bottom: '' /* not in slot */ },
+    'TA.B7-EVE03': { top: '2637YW10BW', right: '2639YW10ZE', left: '2637YW10CA', bottom: '2637YW109D' },
+    'TA.B7-EVE04': { top: '2638YW10L6', left: '' /* not in slot */, right: '2639YW107N', bottom: '' /* not in slot */ }
+    // The E2/E4/BL row: to be added.
+  };
+  // The Dev box (under the board's ... menu) unlocks changing fixtures. Per tab, survives reloads.
+  const LION_DEV_KEY = 'eveLionRackDevV1';
+  let lionDevMode = false;
+  let lionFixtureRegistry = null;
+  let lionOccupancy = null;
+  let lionOccupancyTimer = 0;
+  let lionIdentityMemo = null;
+  let lionViewMemo = new Map();
+  let lionIndexSignature = '';
+  let lionResolveBusy = 0;
+  let lionFocusRack = '';
+  let lionFocusUntil = 0;
+  let lionFixtureReplacing = '';
+  let lionFixtureMove = null;
+  let lionScanChoice = null;
+  const lionFixtureEvidence = new Map();
+  const lionSlotRuns = new Map();
+  const lionSlotTried = new Map();
 
   function lionRackSerial(value) {
     const text = String(value || '').trim().toUpperCase();
@@ -8906,7 +8971,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   }
 
   function lionRackBarcode(value) {
-    const text = String(value || '').trim().toUpperCase();
+    // A rack typed with a dot before EVE (TA.B6.EVE03) is the rack TA.B6-EVE03.
+    const text = String(value || '').trim().toUpperCase().replace(/^(TA\.[A-Z0-9]{1,12})\.(?=EVE\d)/, '$1-');
     return /^TA\.[A-Z0-9]{1,12}-EVE\d{1,3}$/.test(text) ? text : '';
   }
 
@@ -8983,14 +9049,19 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   }
 
   function indexLionRacks() {
-    lionRackIndex = new Map();
+    lionRackIndex = new Map(); resetLionViews();
+    const identities = lionSlotIdentities();
     lionRackBoard.rows.forEach(row => row.racks.forEach(rack => {
       lionRackBoard.slots[rack].forEach((entry, position) => {
         const location = { rackId: rack, rackSlot: position + 1, area: row.area };
-        if (entry.serial) lionRackIndex.set(entry.serial, location);
-        if (entry.partner) lionRackIndex.set(entry.partner, location);
+        // What a position shows is what locates it: a manual pair, or a unit
+        // resolved from its fixture. A shadowed or contested serial does not.
+        const shown = identities.get(rack + '|' + position);
+        if (shown.serial) lionRackIndex.set(shown.serial, location);
+        if (shown.mode === 'manual' && shown.partner) lionRackIndex.set(shown.partner, location);
       });
     }));
+    lionIndexSignature = JSON.stringify([...lionRackIndex]);
   }
 
   function lionRackPlacement(row) {
@@ -9092,6 +9163,9 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     if (!sn || (partner && !other) || other === sn) {
       lionRackFeedback('Scan a JBOG serial. The optional other node must be a different serial.'); return false;
     }
+    if (lionFixtureLocation(sn)) {
+      lionRackFeedback(sn + ' is a fixture, not a JBOG, so it was not saved as one.'); return false;
+    }
     const next = readLionRackBoard();
     if (!next.slots[rack] || !Number.isInteger(position) || position < 0 || position > 3) return false;
     const target = next.slots[rack][position];
@@ -9101,7 +9175,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     }
     // Move the whole physical assignment, including a previously saved second
     // node, and remove its old slot before storing the new one.
-    let companion = other;
+    let companion = other && !lionFixtureLocation(other) ? other : '';
     Object.values(next.slots).forEach(entries => entries.forEach(entry => {
       if (entry.serial === sn || entry.partner === sn) {
         if (!companion) companion = entry.serial === sn ? entry.partner : entry.serial;
@@ -9120,16 +9194,21 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
 
   function clearLionRackSlot(rack, position, expectedSerial) {
     const next = readLionRackBoard(), entry = next.slots[rack]?.[position];
-    if (!Number.isInteger(position) || !entry?.serial) return false;
-    if (expectedSerial && entry.serial !== expectedSerial) {
+    const shown = Number.isInteger(position) && entry ? lionSlotIdentities().get(rack + '|' + position) : null;
+    if (!shown || !(entry.serial || shown.attempt)) return false;
+    if (expectedSerial && ![shown.serial, entry.serial].includes(expectedSerial)) {
       // Another tab may have assigned a different JBOG since this was drawn.
       lionRackBoard = next; indexLionRacks();
       refreshLionRackAlertLocations(); refreshLionRackBoard(lionRackSnapshot);
       lionRackFeedback('This slot changed. Use the \u{d7} on its current JBOG.');
       return false;
     }
-    next.slots[rack][position] = { serial: '', partner: '' };
-    if (!saveLionRackBoard(next)) return false;
+    // The x clears the rotating JBOG (a resolved unit and any manual one), never the fixture.
+    if (shown.attempt) clearLionOccupant(rack, position);
+    if (entry.serial) {
+      next.slots[rack][position] = { serial: '', partner: '' };
+      if (!saveLionRackBoard(next)) return false;
+    }
     if (lionRackSelected?.rack === rack && lionRackSelected.position === position) {
       const input = document.getElementById('lion-rack-serial');
       if (input) input.value = '';
@@ -9137,6 +9216,678 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       lionRackFeedback('Slot cleared. Ready for a new JBOG.');
     }
     return true;
+  }
+
+  // ===== FIXTURE-BASED RACK MAPPING =====
+  // A rack position is anchored by the fixture(s) installed there: stable, built into
+  // the script (LION_DEFAULT_FIXTURES) with per-PC overrides that need the Dev box, and
+  // kept in its own registry. The JBOG on a fixture
+  // rotates, so it is resolved from TestView test records into a separate
+  // occupancy cache. History alone never proves a unit is still plugged in:
+  // only an active test or an operator confirmation fills a slot, and a
+  // timeout, login failure or empty result never clears one.
+  function lionSharedRead(key) {
+    let value = null;
+    try {
+      if (typeof GM_getValue === 'function') {
+        const raw = GM_getValue(key, null);
+        value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      }
+    } catch (error) {}
+    return value || readJSON(localStorage, key, null, key);
+  }
+
+  function lionSharedWrite(key, value) {
+    let shared = false;
+    try {
+      if (typeof GM_setValue === 'function') { GM_setValue(key, JSON.stringify(value)); shared = true; }
+    } catch (error) {}
+    return writeJSON(localStorage, key, value, key) || shared;
+  }
+
+  function lionTestViewStatus(raw) {
+    const word = String(raw || '').toUpperCase().replace(/[\s_-]+/g, '');
+    return ['PASS', 'PASSED', 'SUCCESS', 'TESTPASS', 'TESTSUCCESS'].includes(word) ? 'PASS' :
+      ['FAIL', 'FAILED', 'FAILURE', 'TESTFAIL', 'TESTFAILURE'].includes(word) ? 'FAIL' :
+      ['RUNNING', 'INTEST', 'TESTING', 'INPROGRESS'].includes(word) ? 'RUNNING' : 'UNKNOWN';
+  }
+
+  // One validated test attempt on a fixture. Fixture serials stay here, never in a JBOG row.
+  function lionAttempt(value) {
+    const uut = lionRackSerial(value?.uut), startedAt = Number(value?.startedAt), id = String(value?.id || '');
+    if (!uut || !Number.isFinite(startedAt) || !/^[1-9]\d{0,15}$/.test(id)) return null;
+    const text = field => typeof value[field] === 'string' ? value[field].trim().slice(0, 40) : '';
+    return { uut, id, startedAt, op: LION_FIXTURE_OPERATIONS.includes(value.op) ? value.op : 'GPU_JBOG_TEST',
+      status: ['RUNNING', 'PASS', 'FAIL'].includes(value.status) ? value.status : 'UNKNOWN',
+      started: text('started'), finished: text('finished'), raw: text('raw'), fixture: lionRackSerial(value.fixture) };
+  }
+
+  // The fixtures the built-in list gives one position, as clean serials.
+  function lionDefaultFixtures(rack, position, defaults = LION_DEFAULT_FIXTURES) {
+    return [].concat(defaults[rack]?.[LION_POSITION_KEYS[position]] || []).map(lionRackSerial).filter(Boolean).slice(0, 4);
+  }
+
+  // slot.fixtures is always the effective list: the tester's own (custom) or the
+  // built-in one. A built-in list follows script updates; an own list stays until
+  // reset, and one equal to the built-in list is not custom at all.
+  function normalizeLionFixtureRegistry(value, defaults = LION_DEFAULT_FIXTURES) {
+    const valid = isRecordObject(value) && value.version === 1 && isRecordObject(value.slots);
+    const given = valid ? value.slots : {}, used = new Set(), slots = {}, claims = [];
+    const current = valid && value.mapRevision === LION_FIXTURE_MAP_REVISION;
+    [...new Set([...Object.keys(given), ...Object.keys(defaults)])].filter(lionRackBarcode).slice(0, 96).forEach(rack => {
+      slots[rack] = Array.from({ length: 4 }, (_, position) => {
+        const saved = Array.isArray(given[rack]) && isRecordObject(given[rack][position]) ? given[rack][position] : {}, sup = saved.suppress;
+        const own = (Array.isArray(saved.fixtures) ? saved.fixtures : []).slice(0, 4).map(lionRackSerial).filter(Boolean);
+        const base = lionDefaultFixtures(rack, position, defaults);
+        // Lists saved before this built-in map existed (the first test's scans) must not hide it: on a mapped
+        // rack they are ignored once. A list with no flag was scanned on this PC and is the tester's own.
+        const trusted = current || !defaults[rack];
+        const custom = trusted && (saved.custom === true || (saved.custom === undefined && own.length > 0)) && own.join() !== base.join();
+        const slot = {
+          fixtures: [], custom,
+          maintenance: saved.maintenance === true,
+          rev: Number.isSafeInteger(saved.rev) && saved.rev >= 0 ? saved.rev : 0,
+          changedAt: Number.isFinite(saved.changedAt) ? saved.changedAt : 0,
+          suppress: isRecordObject(sup) && lionRackSerial(sup.uut) && /^[1-9]\d{0,15}$/.test(String(sup.id)) && Number.isFinite(sup.at)
+            ? { uut: lionRackSerial(sup.uut), id: String(sup.id), at: sup.at } : null
+        };
+        claims.push({ slot, custom, list: custom ? own : base, was: own });
+        return slot;
+      });
+    });
+    // A fixture belongs to one position: a tester's own choice beats a built-in one, later duplicates are dropped.
+    claims.sort((a, b) => b.custom - a.custom).forEach(({ slot, list }) => {
+      slot.fixtures = list.filter(sn => !used.has(sn) && used.add(sn));
+    });
+    // A built-in list that changed under a saved position is a new binding: its old lookups no longer apply.
+    claims.forEach(({ slot, custom, was }) => {
+      if (!custom && slot.fixtures.join() !== was.join()) { slot.rev += 1; slot.suppress = null; }
+    });
+    const history = (valid && Array.isArray(value.history) ? value.history : []).slice(-LION_FIXTURE_HISTORY_MAX)
+      .filter(item => isRecordObject(item) && Number.isFinite(item.at) && /^[A-Z_]{3,32}$/.test(String(item.type)))
+      .map(item => ({ at: item.at, type: item.type, rack: lionRackBarcode(item.rack),
+        slot: Number.isInteger(item.slot) && item.slot >= 0 && item.slot <= 3 ? item.slot : -1,
+        from: lionRackSerial(item.from), to: lionRackSerial(item.to),
+        note: typeof item.note === 'string' ? item.note.slice(0, 120) : '' }));
+    return { version: 1, kind: 'eve-lion-fixture-registry', mapRevision: LION_FIXTURE_MAP_REVISION,
+      revision: valid && Number.isSafeInteger(value.revision) && value.revision >= 0 ? value.revision : 0, slots, history };
+  }
+
+  // Cache of what the resolver last saw per position; rev ties it to one fixture binding.
+  function normalizeLionOccupancy(value) {
+    const valid = isRecordObject(value) && value.version === 1 && isRecordObject(value.slots), slots = {};
+    Object.keys(valid ? value.slots : {}).slice(0, 96).forEach(rack => {
+      if (!lionRackBarcode(rack) || !Array.isArray(value.slots[rack])) return;
+      slots[rack] = Array.from({ length: 4 }, (_, position) => {
+        const saved = value.slots[rack][position];
+        if (!isRecordObject(saved) || !Number.isSafeInteger(saved.rev)) return null;
+        const occ = lionAttempt(saved.occ), list = field => Array.isArray(saved[field]) ? saved[field] : [];
+        return { rev: saved.rev, at: Number.isFinite(saved.at) ? saved.at : 0,
+          state: ['ok', 'incomplete', 'unavailable'].includes(saved.state) ? saved.state : 'unavailable',
+          active: list('active').slice(0, 4).map(lionAttempt).filter(Boolean), last: lionAttempt(saved.last),
+          occ: occ ? { ...occ, evidence: saved.occ.evidence === 'operator' ? 'operator' : 'active',
+            seenAt: Number.isFinite(saved.occ.seenAt) ? saved.occ.seenAt : 0 } : null,
+          conflict: list('conflict').slice(0, 4).map(lionRackSerial).filter(Boolean),
+          events: list('events').slice(-8).filter(isRecordObject).map(event => ({ at: Number(event.at) || 0,
+            type: /^[A-Z_]{3,32}$/.test(String(event.type)) ? event.type : 'EVENT',
+            uut: lionRackSerial(event.uut), from: lionRackSerial(event.from), id: String(event.id || '').slice(0, 16) })) };
+      });
+    });
+    return { version: 1, kind: 'eve-lion-rack-occupancy', slots };
+  }
+
+  function readLionFixtureRegistry() { return normalizeLionFixtureRegistry(lionSharedRead(LION_FIXTURE_REGISTRY_KEY)); }
+  function readLionOccupancy() { return normalizeLionOccupancy(lionSharedRead(LION_OCCUPANCY_KEY)); }
+
+  function lionOccupancySlot(rack, position) {
+    const cache = lionOccupancy?.slots[rack]?.[position];
+    return cache && cache.rev === lionFixtureRegistry?.slots[rack]?.[position]?.rev ? cache : null;
+  }
+
+  function flushLionOccupancy() {
+    clearTimeout(lionOccupancyTimer); lionOccupancyTimer = 0;
+    if (lionOccupancy) lionSharedWrite(LION_OCCUPANCY_KEY, lionOccupancy);
+  }
+
+  function queueLionOccupancySave() {
+    if (!lionOccupancyTimer) lionOccupancyTimer = setTimeout(flushLionOccupancy, 5000);
+  }
+
+  function resetLionViews() { lionIdentityMemo = null; lionViewMemo = new Map(); }
+
+  function adoptLionIdentities() {
+    const before = lionIndexSignature;
+    indexLionRacks();
+    if (lionIndexSignature !== before) refreshLionRackAlertLocations();
+    refreshLionRackBoard(lionRackSnapshot);
+    scanLionKing();
+  }
+
+  function saveLionFixtureRegistry(next) {
+    const candidate = normalizeLionFixtureRegistry({ ...next,
+      revision: Math.max(lionFixtureRegistry?.revision || 0, next.revision || 0) + 1 });
+    if (!lionSharedWrite(LION_FIXTURE_REGISTRY_KEY, candidate)) return false;
+    lionFixtureRegistry = candidate;
+    adoptLionIdentities();
+    return true;
+  }
+
+  function lionFixtureLocation(serial, registry = lionFixtureRegistry) {
+    for (const [rack, slots] of Object.entries(registry?.slots || {})) {
+      const position = slots.findIndex(slot => slot.fixtures.includes(serial));
+      if (position >= 0) return { rack, position };
+    }
+    return null;
+  }
+
+  function lionFixtureFeedback(message) {
+    setTextIfChanged(document.getElementById('lion-fixture-feedback'), message);
+  }
+
+  // A rack is mapped when at least one of its positions has a fixture.
+  function lionRackMapped(rack) {
+    return !!lionFixtureRegistry?.slots[rack]?.some(slot => slot.fixtures.length);
+  }
+
+  // Changing a fixture needs the Dev box (board menu). Reading, finding and the JBOG tools stay open to everyone.
+  function lionDevLocked() {
+    return lionDevMode ? null : { ok: false, message: 'Turn on Dev in the \u{22ef} board menu to change fixtures.' };
+  }
+
+  function lionFixtureSlot(registry, rack, position) {
+    if (!registry.slots[rack]) registry.slots[rack] = Array.from({ length: 4 }, () =>
+      ({ fixtures: [], custom: false, maintenance: false, rev: 0, changedAt: 0, suppress: null }));
+    return registry.slots[rack][position];
+  }
+
+  // Every change to a binding bumps the slot revision, which discards its
+  // occupancy and any lookup still in flight.
+  function changeLionFixtureSlot(registry, rack, position, type, from, to, note, change) {
+    const slot = lionFixtureSlot(registry, rack, position);
+    change(slot); slot.rev += 1; slot.changedAt = Date.now(); slot.suppress = null;
+    registry.history = [...registry.history, { at: Date.now(), type, rack, slot: position, from: from || '', to: to || '',
+      note: note || '' }].slice(-LION_FIXTURE_HISTORY_MAX);
+  }
+
+  function setLionFixture(rack, position, serial, options = {}) {
+    const locked = lionDevLocked(), sn = lionRackSerial(serial);
+    if (locked) return locked;
+    if (!sn || sn.length < 6) return { ok: false, message: 'Scan the complete fixture serial, then press Enter.' };
+    if (!lionRackBoard?.slots[rack] || !Number.isInteger(position) || position < 0 || position > 3) {
+      return { ok: false, message: 'Select a rack position first.' };
+    }
+    const next = readLionFixtureRegistry(), slot = lionFixtureSlot(next, rack, position), where = lionFixtureLocation(sn, next);
+    if (where && where.rack === rack && where.position === position) return { ok: false, message: 'This fixture is already saved here.' };
+    if (where && !options.move) {
+      return { ok: false, move: sn, message: sn + ' is saved at ' + where.rack + ' \u{b7} ' + LION_SLOT_LABELS[where.position] +
+        '. Choose Move here to transfer it.' };
+    }
+    const replacing = options.replace && slot.fixtures.includes(options.replace) ? options.replace : '';
+    if (!replacing && slot.fixtures.length >= 4) return { ok: false, message: 'A position holds at most four fixtures.' };
+    if (where) {
+      changeLionFixtureSlot(next, where.rack, where.position, 'FIXTURE_MOVED', sn, '', 'moved to ' + rack + ' ' + LION_SLOT_LABELS[position],
+        source => { source.fixtures = source.fixtures.filter(item => item !== sn); source.custom = true; });
+    }
+    changeLionFixtureSlot(next, rack, position, replacing ? 'FIXTURE_REPLACED' : where ? 'FIXTURE_MOVED' : 'FIXTURE_ADDED', replacing, sn, '',
+      target => {
+        target.fixtures = replacing ? target.fixtures.map(item => item === replacing ? sn : item) : [...target.fixtures, sn];
+        target.custom = true;
+      });
+    if (!saveLionFixtureRegistry(next)) return { ok: false, message: 'Could not save the fixture registry. Nothing was changed.' };
+    return { ok: true, message: sn + ' saved to ' + LION_SLOT_LABELS[position] + '.' };
+  }
+
+  // Validate a registry backup before replacing anything: a file that normalization
+  // would shrink (bad barcode, duplicate fixture) is rejected as a whole.
+  function restoreLionFixtureBackup(imported) {
+    if (!lionDevMode) return false;
+    // Checked against the file alone: the built-in list would add fixtures it never had,
+    // and only a tester's own lists count (a built-in one comes from this script).
+    const own = normalizeLionFixtureRegistry(imported, {});
+    const count = value => Object.values(value.slots).reduce((sum, list) => sum + (Array.isArray(list)
+      ? list.reduce((total, slot) => total + (Array.isArray(slot?.fixtures) && slot.custom !== false ? slot.fixtures.length : 0), 0) : 0), 0);
+    if (imported.version !== 1 || !isRecordObject(imported.slots) ||
+        Object.keys(own.slots).length !== Object.keys(imported.slots).length || count(own) !== count(imported)) return false;
+    const clean = normalizeLionFixtureRegistry(imported);
+    // A changed binding gets a new revision, so no old occupancy or lookup survives it.
+    Object.entries(clean.slots).forEach(([rack, slots]) => slots.forEach((slot, position) => {
+      const current = lionFixtureRegistry?.slots[rack]?.[position];
+      if (current && JSON.stringify([current.fixtures, current.maintenance]) === JSON.stringify([slot.fixtures, slot.maintenance])) {
+        Object.assign(slot, { rev: current.rev, suppress: current.suppress });
+      } else slot.rev = Math.max(slot.rev, current?.rev || 0) + 1;
+    }));
+    return saveLionFixtureRegistry(clean);
+  }
+
+  function removeLionFixture(rack, position, serial) {
+    const locked = lionDevLocked();
+    if (locked) return locked;
+    const next = readLionFixtureRegistry(), slot = next.slots[rack]?.[position];
+    if (!slot?.fixtures.includes(serial)) return { ok: false, message: 'That fixture is no longer saved here.' };
+    changeLionFixtureSlot(next, rack, position, 'FIXTURE_REMOVED', serial, '', '',
+      target => { target.fixtures = target.fixtures.filter(item => item !== serial); target.custom = true; });
+    return saveLionFixtureRegistry(next) ? { ok: true, message: 'Fixture removed.' }
+      : { ok: false, message: 'Could not save the fixture registry. Nothing was changed.' };
+  }
+
+  // Drop this PC's override of a position and go back to the built-in fixtures.
+  function resetLionFixtures(rack, position) {
+    const locked = lionDevLocked();
+    if (locked) return locked;
+    const next = readLionFixtureRegistry(), slot = next.slots[rack]?.[position], back = lionDefaultFixtures(rack, position);
+    if (!slot?.custom) return { ok: false, message: 'This position already uses the built-in fixtures.' };
+    // A built-in fixture that this PC has set elsewhere stays there until that position is reset.
+    const taken = back.map(sn => lionFixtureLocation(sn, next)).find(at => at && !(at.rack === rack && at.position === position));
+    if (taken) {
+      return { ok: false, message: 'A built-in fixture here is set at ' + taken.rack + ' \u{b7} ' + LION_SLOT_LABELS[taken.position] +
+        ' on this PC. Reset that position first.' };
+    }
+    changeLionFixtureSlot(next, rack, position, 'FIXTURE_RESET', slot.fixtures[0], back[0], 'back to built-in',
+      target => { target.custom = false; });
+    return saveLionFixtureRegistry(next) ? { ok: true, message: 'Back to the built-in fixtures.' }
+      : { ok: false, message: 'Could not save the fixture registry. Nothing was changed.' };
+  }
+
+  function setLionMaintenance(rack, position, on) {
+    const locked = lionDevLocked();
+    if (locked) return locked;
+    const next = readLionFixtureRegistry(), slot = next.slots[rack]?.[position];
+    if (!slot) return { ok: false, message: 'Add a fixture before changing maintenance.' };
+    changeLionFixtureSlot(next, rack, position, 'SLOT_MAINTENANCE_CHANGED', '', '', on ? 'under maintenance' : 'restored',
+      target => { target.maintenance = on; });
+    return saveLionFixtureRegistry(next) ? { ok: true, message: on ? 'Marked under maintenance.' : 'Slot restored. Looking up its fixture.' }
+      : { ok: false, message: 'Could not save the fixture registry. Nothing was changed.' };
+  }
+
+  // The mini-card x clears the rotating JBOG, never the fixture. A suppression
+  // record keeps the same test attempt from being added back by the next poll.
+  function clearLionOccupant(rack, position) {
+    const cache = lionOccupancySlot(rack, position), attempt = cache?.occ;
+    const next = readLionFixtureRegistry(), slot = next.slots[rack]?.[position];
+    if (!attempt || !slot) return false;
+    slot.suppress = { uut: attempt.uut, id: attempt.id, at: Date.now() };
+    next.history = [...next.history, { at: Date.now(), type: 'JBOG_REMOVED', rack, slot: position, from: attempt.uut, to: '',
+      note: 'cleared by operator' }].slice(-LION_FIXTURE_HISTORY_MAX);
+    cache.occ = null; queueLionOccupancySave();
+    return saveLionFixtureRegistry(next);
+  }
+
+  function restoreLionOccupant(rack, position) {
+    const next = readLionFixtureRegistry(), slot = next.slots[rack]?.[position];
+    if (!slot?.suppress) return false;
+    slot.suppress = null;
+    const saved = saveLionFixtureRegistry(next);
+    if (saved) resolveLionSlot(rack, position, true);
+    return saved;
+  }
+
+  // Operator evidence: the last tested unit is physically installed.
+  function confirmLionLastTested(rack, position) {
+    const cache = lionOccupancySlot(rack, position), last = cache?.last;
+    if (!last) return false;
+    cache.occ = { ...last, evidence: 'operator', seenAt: Date.now() };
+    cache.events = [...cache.events, { at: Date.now(), type: 'JBOG_ASSOCIATED', uut: last.uut, from: '', id: last.id }].slice(-8);
+    const next = readLionFixtureRegistry(), slot = next.slots[rack]?.[position];
+    if (slot) {
+      slot.suppress = null;
+      next.history = [...next.history, { at: Date.now(), type: 'JBOG_ASSOCIATED', rack, slot: position, from: '', to: last.uut,
+        note: 'confirmed by operator' }].slice(-LION_FIXTURE_HISTORY_MAX);
+    }
+    queueLionOccupancySave();
+    return slot ? saveLionFixtureRegistry(next) : false;
+  }
+
+  // A row shaped like the collector/Ramses ones so the existing card, timing,
+  // Jira and TestView code works on a resolved occupant. No fixture serial
+  // goes into headSerial (that field is shown as the paired node).
+  function lionAttemptRow(attempt) {
+    const pretest = attempt.op === 'GPU_JBOG_TEST_PRETEST';
+    const status = pretest && attempt.status === 'RUNNING' ? 'PRETEST' : pretest && attempt.status === 'FAIL' ? 'PRETEST_FAIL' : attempt.status;
+    const finishedAt = attempt.finished ? lionStartedAt(attempt.finished) : NaN;
+    const done = Number.isFinite(finishedAt) && finishedAt >= attempt.startedAt;
+    return { source: 'rack-api', jbog: attempt.uut, tailSerial: attempt.uut, headSerial: '', fixtureSerial: attempt.fixture,
+      started: attempt.started, startedAt: attempt.startedAt, finished: done ? attempt.finished : '', finishedAt: done ? finishedAt : null,
+      durationMs: done ? finishedAt - attempt.startedAt : null, status,
+      statusText: attempt.op + ' \u{b7} ' + (attempt.raw || 'Unknown status'), operation: attempt.op, uutId: attempt.id,
+      detailURL: new URL('/uut/detail/' + attempt.id, TESTVIEW_LIST_URL).href, lookupAt: attempt.seenAt || 0 };
+  }
+
+  // Layer 1: who is at each position, from manual scans, fixture evidence and
+  // the claims between positions. Needs no live source data.
+  function lionSlotIdentities() {
+    if (lionIdentityMemo) return lionIdentityMemo;
+    const now = Date.now(), result = new Map(), claims = new Map();
+    lionRackBoard.rows.forEach(row => row.racks.forEach(rack => lionRackBoard.slots[rack].forEach((manual, position) => {
+      const config = lionFixtureRegistry?.slots[rack]?.[position], cache = lionOccupancySlot(rack, position);
+      const cleared = (config?.suppress && cache?.occ && config.suppress.uut === cache.occ.uut && config.suppress.id === cache.occ.id);
+      const id = { rack, position, mode: 'empty', serial: '', partner: '', manual, config, cache, attempt: null, last: null,
+        candidates: [], running: false, stale: false, note: '' };
+      const useManual = () => { id.mode = 'manual'; id.serial = manual.serial; id.partner = manual.partner; };
+      if (config?.maintenance) id.mode = 'maintenance';
+      else if (config?.fixtures.length) {
+        id.stale = !cache || cache.state === 'unavailable' || now - cache.at > LION_FIXTURE_STALE_MS;
+        if (cache && cache.conflict.length > 1) { id.mode = 'conflict'; id.candidates = cache.conflict; }
+        else if (cache?.occ && !cleared) {
+          id.mode = id.stale ? 'stale' : cache.occ.evidence === 'operator' ? 'confirmed' : 'observed';
+          id.serial = cache.occ.uut; id.attempt = cache.occ; id.running = cache.occ.status === 'RUNNING' && !id.stale;
+        } else if (manual.serial) useManual();
+        else {
+          id.last = cache?.last || null;
+          id.mode = !cache ? 'pending' : id.last ? 'last' : cache.state === 'unavailable' ? 'unavailable' : 'none';
+        }
+      } else if (manual.serial) useManual();
+      result.set(rack + '|' + position, id);
+      if (id.serial) claims.set(id.serial, [...(claims.get(id.serial) || []), id]);
+    })));
+    // A unit can be in one place: a currently running test wins over older
+    // claims; otherwise every claimant is flagged rather than guessing.
+    claims.forEach((list, serial) => {
+      if (list.length < 2) return;
+      const running = list.filter(id => id.running);
+      list.forEach(id => {
+        if (running.length === 1 && id === running[0]) return;
+        Object.assign(id, running.length === 1
+          ? { mode: 'last', last: id.attempt || id.last, note: serial + ' is testing in ' + running[0].rack + ' \u{b7} ' + LION_SLOT_LABELS[running[0].position] }
+          : { mode: 'conflict', candidates: [serial], note: serial + ' is claimed by more than one position' },
+        { serial: '', partner: '', attempt: null, running: false });
+      });
+    });
+    lionIdentityMemo = result;
+    return result;
+  }
+
+  function lionIdentityKey() {
+    return [...lionSlotIdentities().values()].map(id => id.rack + id.position + id.mode + id.serial +
+      (id.attempt ? id.attempt.status + id.attempt.finished : '') + (id.last ? id.last.id + id.last.status : '')).join('|');
+  }
+
+  // Layer 2: identity plus the merged test row and card state.
+  function lionRackSlotView(rack, position) {
+    const key = rack + '|' + position, memo = lionViewMemo.get(key);
+    if (memo) return memo;
+    const id = lionSlotIdentities().get(key);
+    const info = id.serial ? lionRackInfoForSerial(id.serial) || lionRackInfoForSerial(id.partner) : null;
+    const attempt = id.attempt ? lionAttemptRow(id.attempt) : null;
+    const row = attempt && (!info || info.startedAt < attempt.startedAt) ? attempt : info;
+    const state = id.mode === 'maintenance' ? 'MAINTENANCE' : id.mode === 'conflict' ? 'CONFLICT' :
+      id.serial ? (row && lionRackPlacement(row)?.conflict ? 'CONFLICT' : row?.status || 'ABSENT') :
+      id.mode === 'last' || id.mode === 'none' ? 'NOCONFIRM' : id.mode === 'pending' ? 'PENDING' :
+      id.mode === 'unavailable' ? 'UNKNOWN' : 'EMPTY';
+    const view = { ...id, row, state };
+    lionViewMemo.set(key, view);
+    return view;
+  }
+
+  // A fixture-backed position in plain words. Occupied: a JBOG is testing on it. Waiting for new:
+  // the fixture is there but nothing is testing now. Empty: TestView has no test record for it.
+  // '' for a position with no fixture.
+  function lionFixtureState(view) {
+    if (!view.config?.fixtures.length) return '';
+    const mode = view.mode;
+    return mode === 'none' ? 'Empty' : mode === 'last' ? 'Waiting for new' : mode === 'stale' ? 'Last known' :
+      ['observed', 'confirmed', 'manual'].includes(mode)
+        ? (view.running || ['RUNNING', 'PRETEST'].includes(view.row?.status) ? 'Occupied' : 'Waiting for new')
+        : LION_RACK_STATE_LABELS[view.state] || '';
+  }
+
+  // The heading of a card or pill that shows no JBOG.
+  function lionSlotWord(view) {
+    return lionFixtureState(view) || (view.mode === 'empty' && lionRackMapped(view.rack) ? 'No fixture' : LION_RACK_STATE_LABELS[view.state] || 'Empty');
+  }
+
+  // A mapped rack's fixtures in the order they are written down (top, right, left, bottom), each with its state.
+  function lionRackFixtureLines(rack) {
+    return [0, 3, 2, 1].map(position => {
+      const view = lionRackSlotView(rack, position), fixture = view.config?.fixtures.join(', ');
+      return ['Top', 'Bottom', 'Left', 'Right'][position] + ': ' +
+        (fixture ? fixture + ' (' + (lionFixtureState(view) || 'Empty') + ')' : 'no fixture');
+    });
+  }
+
+  function lionRackSlotNote(view) {
+    if (view.note) return view.note;
+    if (view.mode === 'empty') return 'No fixture in this position';
+    if (view.mode === 'conflict') return view.candidates.join(' / ');
+    if (view.mode === 'maintenance') return 'Excluded from lookups';
+    if (view.mode === 'pending') return 'Looking up TestView\u{2026}';
+    const last = view.last;
+    if (!last) return view.mode === 'unavailable' ? 'TestView unavailable' : 'No test records yet';
+    const finished = last.finished ? lionStartedAt(last.finished) : NaN;
+    return 'Last tested \u{b7} ' + ({ PASS: 'Passed', FAIL: 'Failed', RUNNING: 'Running' }[last.status] || 'Unknown') + ' \u{b7} ' +
+      lionHoursMinutes(Date.now() - (Number.isFinite(finished) ? finished : last.startedAt)) + ' ago' + (view.stale ? ' \u{b7} not refreshed' : '');
+  }
+
+  // A swapped fixture looks like one TestView stopped seeing, so a fixture quiet for a
+  // week (read from a fresh lookup) points at the fixture list. A hint, never a verdict.
+  function lionFixtureQuietHint(view) {
+    const age = view.last ? Date.now() - view.last.startedAt : Infinity;
+    if (view.stale || age < LION_FIXTURE_QUIET_MS) return '';
+    return (view.last ? ' No tests on this fixture for ' + Math.floor(age / 86400000) + ' days.' : '') +
+      (lionDevMode ? ' If it was replaced, update it under Fixture setup.' : ' If it was replaced, the built-in fixture list needs updating.');
+  }
+
+  function lionRackEvidence(view) {
+    const when = time => time ? siteDateTime(new Date(time)) : '', attempt = view.attempt;
+    switch (view.mode) {
+      case 'observed': return attempt.status === 'RUNNING' ? 'Active test observed in TestView \u{b7} ' + when(attempt.seenAt)
+        : 'Seen testing ' + when(attempt.seenAt) + '; that test has finished, so the fixture is waiting for a new JBOG. Physical presence is not verified.';
+      case 'confirmed': return 'Confirmed by an operator \u{b7} ' + when(attempt.seenAt);
+      case 'stale': return 'Last known. TestView data is out of date; the slot was not cleared.';
+      case 'manual': return 'Manual assignment';
+      case 'conflict': return (view.note || 'Conflicting evidence' + (view.candidates.length ? ': ' + view.candidates.join(', ') : '')) +
+        '. Nothing was guessed.';
+      case 'maintenance': return 'Under maintenance. Excluded from lookups until restored.';
+      case 'pending': return 'Looking up this position in TestView.';
+      case 'unavailable': return 'TestView could not be read. Nothing was cleared.';
+      case 'last': return 'The fixture is waiting for a new JBOG. TestView history shows a past test only; it does not prove the unit is still attached.' +
+        (view.note ? ' ' + view.note + '.' : '') + lionFixtureQuietHint(view);
+      case 'none': return 'The fixture looks empty. TestView has no test records for it in range.' + lionFixtureQuietHint(view);
+      default: return '';
+    }
+  }
+
+  // One validated attempt, or null when the record is not usable evidence for this fixture.
+  function lionFixtureAttempt(record, fixture, operation, now) {
+    const uut = lionRackSerial(record?.uut_sn), id = String(record?.id || '');
+    const started = typeof record?.started === 'string' ? record.started.trim() : '', startedAt = lionStartedAt(started);
+    if (!uut || !/^[1-9]\d{0,15}$/.test(id) || !Number.isFinite(startedAt) || startedAt > now + 600000 ||
+        String(record.operation || '').trim().toUpperCase() !== operation) return null;
+    const raw = typeof record.status === 'string' ? record.status.trim().slice(0, 40) : '';
+    const text = typeof record.finished === 'string' ? record.finished.trim().slice(0, 40) : '', finishedAt = lionStartedAt(text);
+    // A finish time counts only if it is a real time at or after the start; placeholders are ignored.
+    const finished = Number.isFinite(finishedAt) && finishedAt >= startedAt && finishedAt <= now + 600000 ? text : '';
+    let status = lionTestViewStatus(raw);
+    // "Running" with a real finish time, or older than any real test, is not an active test.
+    if (status === 'RUNNING' && (finished || now - startedAt > LION_FIXTURE_ACTIVE_MAX_MS)) status = 'UNKNOWN';
+    return { uut, id, startedAt, op: operation, status, started, finished, raw, fixture };
+  }
+
+  // Query one fixture for both operations. Bounded paging: if the last allowed
+  // page is still full the list is reported incomplete rather than assumed whole.
+  async function fetchLionFixture(fixture) {
+    const now = Date.now(), rows = new Map();
+    const diag = { at: now, requests: 0, records: 0, accepted: 0, otherFixture: 0, malformed: 0, statuses: {}, pageInfo: '' };
+    let ok = true, complete = true;
+    for (const operation of LION_FIXTURE_OPERATIONS) {
+      for (let page = 1; ok && page <= LION_FIXTURE_MAX_PAGES; page += 1) {
+        const url = new URL(LION_TESTVIEW_API_PATH, TESTVIEW_LIST_URL);
+        for (const name of ['id', 'uut_sn', 'fixture_sn', 'status', 'started', 'finished', 'operation']) url.searchParams.append('fields', name);
+        for (const [key, value] of Object.entries({ only_latest_uut_status: 'false', operation, operation_is_exact: 'true',
+          page_num: String(page), page_size: String(LION_FIXTURE_PAGE_SIZE), return_page_info: 'true', fixture_sn: fixture })) {
+          url.searchParams.set(key, value);
+        }
+        diag.requests += 1;
+        const body = await requestLionKingAPI(url);
+        if (!body) { ok = false; break; }
+        const records = lionTestViewAPIRecords(body);
+        if (!diag.pageInfo && isRecordObject(body.data?.page_info)) diag.pageInfo = Object.keys(body.data.page_info).slice(0, 6).join(',');
+        records.forEach(record => {
+          diag.records += 1;
+          const status = typeof record.status === 'string' ? record.status.trim().slice(0, 24) : '?';
+          if (status in diag.statuses || Object.keys(diag.statuses).length < 12) diag.statuses[status] = (diag.statuses[status] || 0) + 1;
+          // Never trust the server's filter: reject every record for another fixture.
+          if (lionRackSerial(record.fixture_sn) !== fixture) { diag.otherFixture += 1; return; }
+          const attempt = lionFixtureAttempt(record, fixture, operation, now);
+          if (!attempt) { diag.malformed += 1; return; }
+          diag.accepted += 1; rows.set(attempt.id, attempt);
+        });
+        if (records.length < LION_FIXTURE_PAGE_SIZE) break;
+        if (page === LION_FIXTURE_MAX_PAGES) complete = false;
+      }
+      if (!ok) break;
+    }
+    return { ok, complete: ok && complete, rows: [...rows.values()], diag };
+  }
+
+  function lionFixtureHistory(fixture, force) {
+    const cached = lionFixtureEvidence.get(fixture);
+    if (cached?.promise) return cached.promise;
+    if (cached && !force && Date.now() - cached.at < LION_FIXTURE_TTL_MS) return Promise.resolve(cached.result);
+    const promise = fetchLionFixture(fixture).catch(() => ({ ok: false, complete: false, rows: [], diag: null }))
+      .then(result => { lionFixtureEvidence.set(fixture, { at: Date.now(), result }); return result; });
+    lionFixtureEvidence.set(fixture, { at: cached?.at || 0, result: cached?.result, promise });
+    return promise;
+  }
+
+  // Pure: fold fresh fixture results into the previous occupancy for one position.
+  // config is the registry slot, prior the cached slot (or null), results the
+  // per-fixture lookups, live(uut) the live-source row for that unit.
+  function evaluateLionSlot(config, prior, results, live = () => null, now = Date.now()) {
+    const keep = prior && prior.rev === config.rev ? prior : null, sup = config.suppress;
+    const cleared = !!(sup && keep?.occ && sup.uut === keep.occ.uut && sup.id === keep.occ.id);
+    const next = { rev: config.rev, at: keep?.at || 0, state: 'unavailable', active: keep?.active || [], last: keep?.last || null,
+      occ: cleared ? null : keep?.occ || null, conflict: [], events: keep?.events || [] };
+    const good = results.filter(result => result?.ok);
+    if (!good.length) return next;
+    next.at = now;
+    next.state = good.length === results.length && good.every(result => result.complete) ? 'ok' : 'incomplete';
+    const rows = good.flatMap(result => result.rows), byNewest = (a, b) => b.startedAt - a.startedAt;
+    const running = row => !row.finished && row.startedAt <= now + 600000 && now - row.startedAt <= LION_FIXTURE_ACTIVE_MAX_MS &&
+      (row.status === 'RUNNING' || (row.status === 'UNKNOWN' && ['RUNNING', 'PRETEST'].includes(live(row.uut)?.status) &&
+        live(row.uut).startedAt === row.startedAt));
+    const active = rows.filter(running);
+    const shown = active.filter(row => !(sup && sup.uut === row.uut && sup.id === row.id)).sort(byNewest);
+    next.active = shown.slice(0, 4);
+    const units = [...new Set(shown.map(row => row.uut))];
+    const note = (type, row, from) => { next.events = [...next.events, { at: now, type, uut: row.uut, from: from || '', id: row.id }].slice(-8); };
+    if (units.length > 1) next.conflict = units.slice(0, 4);
+    else if (units.length === 1) {
+      const row = shown.find(item => item.uut === units[0]);
+      if (next.occ?.uut !== row.uut) note(next.occ ? 'JBOG_REPLACED' : 'JBOG_ASSOCIATED', row, next.occ?.uut);
+      next.occ = { ...row, status: 'RUNNING', evidence: 'active', seenAt: now };
+    } else if (next.occ) {
+      // A finished test keeps its slot. Only a newer attempt by another unit replaces it.
+      const newest = rows.slice().sort(byNewest)[0];
+      const mine = rows.filter(row => row.uut === next.occ.uut && row.startedAt >= next.occ.startedAt).sort(byNewest)[0];
+      if (newest && newest.uut !== next.occ.uut && newest.startedAt > next.occ.startedAt) { note('JBOG_REPLACED', newest, next.occ.uut); next.occ = null; }
+      else if (mine) next.occ = { ...next.occ, ...mine };
+    }
+    // A cleared (suppressed) attempt is still the latest one, so the operator can bring it back.
+    next.last = rows.filter(row => !shown.includes(row)).sort(byNewest)[0] || null;
+    return next;
+  }
+
+  async function resolveLionSlot(rack, position, force) {
+    const config = lionFixtureRegistry?.slots[rack]?.[position];
+    if (!config || config.maintenance || !config.fixtures.length) return false;
+    const key = rack + '|' + position, rev = config.rev, run = (lionSlotRuns.get(key) || 0) + 1;
+    lionSlotRuns.set(key, run); lionSlotTried.set(key, Date.now()); lionResolveBusy += 1;
+    try {
+      const results = await Promise.all(config.fixtures.map(fixture => lionFixtureHistory(fixture, force)));
+      const now = lionFixtureRegistry?.slots[rack]?.[position];
+      // A replaced, moved or newer request makes this response stale: discard it.
+      if (!now || now.rev !== rev || now.maintenance || lionSlotRuns.get(key) !== run) return false;
+      if (!lionOccupancy) lionOccupancy = normalizeLionOccupancy(null);
+      const before = lionIdentityKey();
+      const slot = evaluateLionSlot(now, lionOccupancySlot(rack, position), results, sn => lionRackDisplay.get(sn));
+      lionOccupancy.slots[rack] = lionOccupancy.slots[rack] || [null, null, null, null];
+      lionOccupancy.slots[rack][position] = slot;
+      resetLionViews(); queueLionOccupancySave();
+      if (lionIdentityKey() !== before) adoptLionIdentities();
+      return true;
+    } catch (error) {
+      warn('Fixture lookup failed:', error);
+      return false;
+    } finally { lionResolveBusy -= 1; }
+  }
+
+  function resolveLionRack(rack, force) {
+    return Promise.all([0, 1, 2, 3].map(position => resolveLionSlot(rack, position, force)));
+  }
+
+  // Background refresh for enabled rows only: oldest-first, at most two positions
+  // in flight, a slower cadence than the rack being scanned or opened.
+  function pumpLionFixtures() {
+    if (!lionFixtureRegistry || !lionRackBoard || lionResolveBusy >= 2) return;
+    const now = Date.now(), due = [];
+    lionRackBoard.rows.forEach(row => {
+      if (!lionAreaSettings(row.area).show) return;
+      row.racks.forEach(rack => lionFixtureRegistry.slots[rack]?.forEach((config, position) => {
+        if (!config.fixtures.length || config.maintenance) return;
+        const interval = rack === lionFocusRack && now < lionFocusUntil ? LION_FIXTURE_FOCUS_MS : LION_FIXTURE_BACKGROUND_MS;
+        const waited = now - Math.max(lionOccupancySlot(rack, position)?.at || 0, lionSlotTried.get(rack + '|' + position) || 0);
+        if (waited >= interval) due.push({ rack, position, overdue: waited - interval });
+      }));
+    });
+    due.sort((a, b) => b.overdue - a.overdue).slice(0, 2 - lionResolveBusy)
+      .forEach(item => resolveLionSlot(item.rack, item.position, false));
+  }
+
+  function lionFixtureDiagnostics(rack, position) {
+    const config = lionFixtureRegistry?.slots[rack]?.[position], cache = lionOccupancySlot(rack, position);
+    if (!config?.fixtures.length) return 'No fixture saved for this position.';
+    const lines = config.fixtures.map(fixture => {
+      const result = lionFixtureEvidence.get(fixture)?.result, diag = result?.diag;
+      // Unverified: does the collector head node equal TestView FixtureSN? Shown for the operator, never used.
+      const head = lionRackNodeDisplay.get(fixture);
+      const match = head ? ' \u{b7} live source lists this serial as a head node of ' + (head.tailSerial || head.serial || '?') : '';
+      if (!diag) return fixture + ': ' + (result ? 'request failed' : 'not checked in this session') + match;
+      const statuses = Object.entries(diag.statuses).map(([name, count]) => name + ' ' + count).join(', ') || 'none';
+      return fixture + ': ' + (result.ok ? result.complete ? 'complete' : 'first ' + LION_FIXTURE_MAX_PAGES + ' pages only' : 'request failed') +
+        ' \u{b7} ' + diag.requests + ' requests \u{b7} ' + diag.records + ' records, ' + diag.accepted + ' used, ' + diag.otherFixture +
+        ' other fixture, ' + diag.malformed + ' unusable \u{b7} statuses: ' + statuses +
+        (diag.pageInfo ? ' \u{b7} page_info: ' + diag.pageInfo : '') + match;
+    });
+    if (cache) lines.push('Position: ' + cache.state + ' \u{b7} checked ' + (cache.at ? siteDateTime(new Date(cache.at)) : 'never'));
+    return lines.join('\n');
+  }
+
+  function renderLionFixtureSetup(drawer, rack, position, view) {
+    const config = lionFixtureRegistry?.slots[rack]?.[position], fixtures = config?.fixtures || [], cache = lionOccupancySlot(rack, position);
+    const html = fixtures.map(sn => '<span class="lion-fixture-chip' + (sn === lionFixtureReplacing ? ' is-replacing' : '') + '"><code>' +
+      escapeHtml(sn) + '</code><button type="button" data-fixture-action="replace" data-fixture="' + escapeHtml(sn) + '">' +
+      (sn === lionFixtureReplacing ? 'Cancel' : 'Replace') + '</button><button type="button" data-fixture-action="remove" data-fixture="' +
+      escapeHtml(sn) + '" aria-label="Remove fixture ' + escapeHtml(sn) + '">\u{d7}</button></span>').join('') ||
+      '<span class="lion-rack-note">No fixture saved. Scan the one installed at this position.</span>';
+    const list = drawer.querySelector('#lion-fixture-list'), built = lionDefaultFixtures(rack, position);
+    if (list.innerHTML !== html) list.innerHTML = html;
+    // Where the list comes from: the built-in one, or this PC's own (with a way back).
+    setTextIfChanged(drawer.querySelector('#lion-fixture-setup > summary'), 'Fixture setup' + (config?.custom && built.length ? ' \u{b7} overridden' : ''));
+    // A built-in fixture that this PC set at another position is left out here; say so.
+    const dropped = built.filter(sn => !fixtures.includes(sn));
+    setTextIfChanged(drawer.querySelector('#lion-fixture-source'), config?.custom
+      ? (built.length ? 'Overridden on this PC. Built-in: ' + built.join(', ') + '.' : 'Set on this PC. The built-in list has no fixture here.')
+      : dropped.length ? 'Built-in list, except ' + dropped.join(', ') + ' (set at another position on this PC).'
+      : fixtures.length ? 'Built-in fixture list.' : 'The built-in list has no fixture here.');
+    drawer.querySelector('#lion-fixture-reset').hidden = !config?.custom;
+    setTextIfChanged(drawer.querySelector('#lion-fixture-label'), lionFixtureReplacing
+      ? 'Scan the new fixture to replace ' + lionFixtureReplacing : 'Scan a fixture installed at this position');
+    setTextIfChanged(drawer.querySelector('#lion-fixture-save'), lionFixtureReplacing ? 'Replace fixture' : 'Add fixture');
+    const maintenance = drawer.querySelector('#lion-fixture-maintenance');
+    setTextIfChanged(maintenance, config?.maintenance ? 'Restore slot' : 'Mark under maintenance');
+    maintenance.hidden = !fixtures.length && !config?.maintenance;
+    drawer.querySelector('#lion-fixture-move').hidden = !lionFixtureMove;
+    drawer.querySelector('#lion-fixture-confirm').hidden = !(cache?.last && !view.serial && !config?.maintenance);
+    drawer.querySelector('#lion-fixture-undo').hidden = !(config?.suppress && !view.serial);
+    const stamp = item => siteDateTime(new Date(item.at)) + ' \u{b7} ' + item.type.replace(/_/g, ' ').toLowerCase() +
+      (item.from ? ' ' + item.from : '') + (item.to ? ' \u{2192} ' + item.to : '') + (item.note ? ' (' + item.note + ')' : '');
+    const events = [...(lionFixtureRegistry?.history || []).filter(item => item.rack === rack && item.slot === position),
+      ...(cache?.events || []).map(item => ({ at: item.at, type: item.type, from: item.from, to: item.uut, note: 'TestView' }))]
+      .sort((a, b) => b.at - a.at).slice(0, 6);
+    const historyHTML = events.map(item => '<div>' + escapeHtml(stamp(item)) + '</div>').join('') || 'None yet.';
+    const history = drawer.querySelector('#lion-fixture-history');
+    if (history.innerHTML !== historyHTML) history.innerHTML = historyHTML;
+    setTextIfChanged(drawer.querySelector('#lion-fixture-diag'), lionFixtureDiagnostics(rack, position));
   }
 
   function updateLionRackSeenTimes(snapshot) {
@@ -9157,14 +9908,15 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     snapshot.attention.rows.forEach(row => {
       const episode = ramsesFailedState?.members[row.key]?.episode || 0;
       const eventKey = JSON.stringify(['ramses-failed-board', row.serial, row.operation, episode]);
-      const alertAt = alerts.get(eventKey);
+      // Earliest evidence of when it failed: its alert, or now minus the board's Idle Time (not when this tab noticed it).
+      const evidence = Math.min(...[alerts.get(eventKey), now - lionIdleMs(row.idle)].filter(Number.isFinite));
       const prior = lionRackSeenTimes[row.key];
       present.add(row.key);
       if (!prior || !prior.present || prior.episode !== episode) {
-        lionRackSeenTimes[row.key] = { at: Number.isFinite(alertAt) ? alertAt : now, episode, present: true };
+        lionRackSeenTimes[row.key] = { at: Math.min(now, evidence), episode, present: true };
         changed = true;
-      } else if (Number.isFinite(alertAt) && alertAt < prior.at) {
-        prior.at = alertAt; changed = true;
+      } else if (evidence < prior.at) {
+        prior.at = evidence; changed = true;
       }
     });
     Object.entries(lionRackSeenTimes).forEach(([key, value]) => {
@@ -9238,10 +9990,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     const tail = lionRackSerial(record?.uut_sn), head = lionRackSerial(record?.fixture_sn);
     if (!tail || ![tail, head].includes(serial) || !lionTestViewAPIRun(record, tail)) return null;
     const raw = typeof record.status === 'string' ? record.status.trim() : '';
-    const word = raw.toUpperCase().replace(/[\s_-]+/g, '');
-    const status = ['PASS', 'PASSED', 'SUCCESS', 'TESTPASS', 'TESTSUCCESS'].includes(word) ? 'PASS' :
-      ['FAIL', 'FAILED', 'FAILURE', 'TESTFAIL', 'TESTFAILURE'].includes(word) ? 'FAIL' :
-      ['RUNNING', 'INTEST', 'TESTING', 'INPROGRESS'].includes(word) ? 'RUNNING' : 'UNKNOWN';
+    const status = lionTestViewStatus(raw);
     const started = record.started.trim(), startedAt = lionStartedAt(started);
     const finished = typeof record.finished === 'string' ? record.finished.trim() : '';
     const finish = finished ? lionStartedAt(finished) : NaN;
@@ -9292,8 +10041,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   async function loadLionRackSlotInfo(rack, position, serial, onUpdate) {
     const sn = lionRackSerial(serial);
     const current = () => {
-      const entry = lionRackBoard?.slots[rack]?.[position];
-      return !!sn && !!entry && [entry.serial, entry.partner].includes(sn);
+      const shown = lionRackBoard?.slots[rack]?.[position] ? lionSlotIdentities().get(rack + '|' + position) : null;
+      return !!sn && !!shown && [shown.serial, shown.partner].includes(sn);
     };
     const update = (loading, message) => {
       if (!current() || typeof onUpdate !== 'function') return;
@@ -9370,18 +10119,20 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       const prior = lionRackNodeDisplay.get(head);
       if (head && (!prior || (row.startedAt || 0) > (prior.startedAt || 0))) lionRackNodeDisplay.set(head, row);
     });
+    resetLionViews();
     const average = lionKingPassAverage(lionRackSnapshot?.rows || []).averageMs;
     const rackCount = lionRackBoard.rows.reduce((total, row) => total + row.racks.length, 0);
-    const occupied = Object.values(lionRackBoard.slots).flat().filter(entry => entry.serial).length;
+    const occupied = [...lionSlotIdentities().values()].filter(id => id.serial).length;
     setTextIfChanged(board.querySelector('#lion-rack-count'), occupied + '/' + rackCount * 4 + ' slots assigned \u{b7} ' + rackCount + ' racks');
     setTextIfChanged(board.querySelector('#lion-rack-source'), !lionHasCompletedSnapshot
       ? 'Waiting for the live source; assignments are saved.' : 'Last source update: ' + siteDateTime(new Date(rackDataAt)));
     const signature = JSON.stringify([lionRackBoard, [...lionRackDisplay].map(([sn, row]) =>
       [sn, row.headSerial, row.status, row.started, row.finished, row.durationMs, row.statusText, row.boardNote, row.jiraKey, row.observedAt]), average, settings.sections,
-      lionRackSelected, Math.floor(Date.now() / 60000), Object.values(lionRackBoard.slots).flat().filter(entry => entry.serial).map(entry => {
-        const info = lionRackInfoForSerial(entry.serial);
-        return [entry.serial, info?.status, info?.started, info?.finished, info?.durationMs,
-          info?.jiraKey || jiraLatestKey(info?.tailSerial || entry.serial), info?.lookupAt];
+      lionRackSelected, Math.floor(Date.now() / 60000), lionFixtureRegistry?.revision, lionIdentityKey(),
+      [...lionSlotIdentities().values()].filter(id => id.serial).map(id => {
+        const info = lionRackInfoForSerial(id.serial);
+        return [id.serial, info?.status, info?.started, info?.finished, info?.durationMs,
+          info?.jiraKey || jiraLatestKey(info?.tailSerial || id.serial), info?.lookupAt];
       })]);
     const grid = board.querySelector('#lion-rack-grid');
     if (board.dataset.signature !== signature) {
@@ -9400,15 +10151,20 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         '<summary hidden>' + escapeHtml(LION_AREAS[row.area]) + ' racks</summary>' +
         '<div class="lion-rack-row-scroll"><div class="lion-rack-row-content">' +
         row.racks.map(rack => {
-          const occupied = lionRackBoard.slots[rack].filter(entry => entry.serial).length;
-          return '<article class="lion-physical-rack" data-rack="' + rack + '">' +
-            '<header draggable="true" data-rack-drag="' + rack + '"><strong>' + rack + '</strong>' +
-            '<span class="lion-rack-assigned">' + occupied + '/4</span><span class="lion-rack-layout-actions">' +
+          const occupied = [0, 1, 2, 3].filter(position => lionSlotIdentities().get(rack + '|' + position).serial).length;
+          const rollup = lionRackAreaSettings(rack).show ? lionRackRollup(rack) : { worst: '', summary: '', chips: '' };
+          return '<article class="lion-physical-rack" data-rack="' + rack + '"' + (rollup.worst ? ' data-worst="' + rollup.worst + '"' : '') + '>' +
+            '<header draggable="true" data-rack-drag="' + rack + '"' +
+            (lionRackMapped(rack) ? ' title="' + escapeHtml(rack + '\n' + lionRackFixtureLines(rack).join('\n')) + '"' : '') +
+            '><strong>' + rack + '</strong>' +
+            '<span class="lion-rack-assigned">' + occupied + '/4</span>' +
+            (rollup.chips ? '<span class="lion-rack-rollup" role="img" aria-label="' + rollup.summary + '" title="' + rollup.summary + '">' + rollup.chips + '</span>' : '') +
+            '<span class="lion-rack-layout-actions">' +
             '<button type="button" data-rack-action="left" title="Move rack left" aria-label="Move ' + rack + ' left">\u{2039}</button>' +
             '<button type="button" data-rack-action="right" title="Move rack right" aria-label="Move ' + rack + ' right">\u{203a}</button>' +
             '<button type="button" data-rack-action="remove" title="Remove empty rack" aria-label="Remove empty ' + rack + '">\u{d7}</button></span></header>' +
             '<div id="lion-rack-positions-' + rack + '" class="lion-rack-positions">' +
-            [0, 2, 3, 1].map(position => renderLionRackSlot(rack, position, lionRackBoard.slots[rack][position])).join('') +
+            [0, 2, 3, 1].map(position => renderLionRackSlot(rack, position)).join('') +
             '</div></article>';
         }).join('') + '</div></div></details></section>');
       grid.innerHTML = '<section class="lion-rack-linked-rows" aria-label="B6 and B7 racks">' + renderedRows.slice(0, 2).join('') +
@@ -9463,40 +10219,61 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     return html ? '<span class="lion-rack-stamps' + (completed ? ' has-two' : '') + '">' + html + '</span>' : '';
   }
 
-  function renderLionRackSlot(rack, position, entry) {
-    const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
-    const conflict = row && lionRackPlacement(row)?.conflict;
-    const state = conflict ? 'CONFLICT' : row?.status || (entry.serial ? 'ABSENT' : 'EMPTY');
+  function lionRackSlotState(rack, position) {
+    return lionRackSlotView(rack, position).state;
+  }
+
+  // Header chips and accent: counts per rack, worst state first (fail, check, run, pass).
+  function lionRackRollup(rack) {
+    const counts = { fail: 0, check: 0, run: 0, pass: 0 };
+    [0, 1, 2, 3].forEach(position => {
+      const key = { FAIL: 'fail', PRETEST_FAIL: 'fail', CONFLICT: 'check', RUNNING: 'run', PRETEST: 'run', PASS: 'pass' }[lionRackSlotState(rack, position)];
+      if (key) counts[key] += 1;
+    });
+    const keys = Object.keys(counts).filter(key => counts[key]);
+    return { worst: keys[0] || '', summary: keys.map(key => counts[key] + ' ' + LION_ROLLUP_WORDS[key]).join(' \u{b7} '),
+      chips: keys.map(key => '<b class="rollup-' + key + '">' + counts[key] + '</b>').join('') };
+  }
+
+  function renderLionRackSlot(rack, position) {
+    const view = lionRackSlotView(rack, position), row = view.row, state = view.state;
     const work = lionRackAreaSettings(rack);
     const selected = lionRackSelected?.rack === rack && lionRackSelected.position === position;
-    const label = { RUNNING: 'Running', PASS: 'Passed', FAIL: 'Test fail',
-      PRETEST: 'Pre-test', PRETEST_FAIL: 'Pre-test fail', CONFLICT: 'Check location', ABSENT: 'No current data',
-      UNKNOWN: 'Status unavailable' }[state] || 'Empty';
+    const tag = { observed: lionFixtureState(view).toLowerCase(), confirmed: 'confirmed', stale: 'last known' }[view.mode];
+    const label = (LION_RACK_STATE_LABELS[state] || 'Empty') + (tag ? ' \u{b7} ' + tag : '');
     const timing = row?.status === 'RUNNING' && Number.isFinite(row.startedAt)
       ? lionHoursMinutes(Date.now() - row.startedAt)
       : row?.status === 'PASS' && row.durationMs ? lionHoursMinutes(row.durationMs) : '';
-    const jira = row?.jiraKey || jiraLatestKey(row?.tailSerial || entry.serial);
-    const muted = work.show && entry.serial && !lionRowWatch(row || { tailSerial: entry.serial, headSerial: entry.partner });
-    const description = escapeHtml(rack + ', ' + LION_SLOT_LABELS[position] + ', ' + (entry.serial || 'scan a JBOG'));
+    const jira = row?.jiraKey || jiraLatestKey(row?.tailSerial || view.serial);
+    const muted = work.show && view.serial && !lionRowWatch(row || { tailSerial: view.serial, headSerial: view.partner });
+    const description = escapeHtml(rack + ', ' + LION_SLOT_LABELS[position] + ', ' +
+      (view.serial || (view.mode === 'empty' && !lionRackMapped(rack) ? 'scan a JBOG' : lionSlotWord(view))));
+    // The fixture this position is bound to, so the map can be checked against the written list.
+    const fixture = view.config?.fixtures.join(', ') || '';
+    const tip = work.show ? [fixture && 'Fixture ' + fixture, !['manual', 'empty'].includes(view.mode) && lionRackEvidence(view)]
+      .filter(Boolean).join('. ') : '';
     return '<div class="lion-rack-slot lion-rack-' + (work.show ? state.toLowerCase() : 'hidden-slot') + (selected ? ' is-selected' : '') +
-      (entry.serial ? ' has-remove' : '') +
+      (view.serial ? ' has-remove' : '') + (view.mode === 'stale' ? ' is-stale' : '') +
       '" data-slot="' + position + '" role="group" aria-label="' + description + '">' +
-      (entry.serial ? '<button type="button" class="lion-rack-slot-remove" data-slot-action="remove" data-slot-serial="' +
-        escapeHtml(entry.serial) + '" draggable="false" title="Remove ' + escapeHtml(entry.serial) +
+      (view.serial ? '<button type="button" class="lion-rack-slot-remove" data-slot-action="remove" data-slot-serial="' +
+        escapeHtml(view.serial) + '" draggable="false" title="Remove ' + escapeHtml(view.serial) +
         ' from this slot" aria-label="Remove ' + description + ' from slot">\u{d7}</button>' : '') +
       '<button type="button" class="lion-rack-slot-select" data-slot-action="select" aria-label="Select ' + description + '"' +
-      (entry.serial ? ' draggable="true"' : '') + '>' +
+      (view.mode === 'manual' ? ' draggable="true"' : '') +
+      (tip ? ' title="' + escapeHtml(tip) + '"' : '') + '>' +
       '<span class="lion-rack-slot-label">' + ['Top', 'Bottom', 'Left', 'Right'][position] + '</span>' +
       (!work.show ? '<span class="lion-rack-scan-hint">Hidden \u{b7} click to show</span>' :
-      entry.serial ? '<strong class="lion-rack-sn">' + escapeHtml(entry.serial) + '</strong>' +
+      view.serial ? '<strong class="lion-rack-sn">' + escapeHtml(view.serial) + '</strong>' +
         '<span class="lion-rack-result"><i></i>' + escapeHtml(label) +
         (muted ? '<span class="lion-rack-muted" role="img" aria-label="Alerts muted" title="Alerts muted">\u{1f515}</span>' : '') + '</span>' +
         (timing ? '<small class="lion-rack-time">' + escapeHtml(timing) + '</small>' : '') +
         lionRackTimestampMarkup(row) :
-        '<span class="lion-rack-plus">+</span><span class="lion-rack-scan-hint">Scan</span>') +
+      view.mode === 'empty' && !lionRackMapped(rack) ? '<span class="lion-rack-plus">+</span><span class="lion-rack-scan-hint">Scan</span>' :
+        '<strong class="lion-rack-sn lion-rack-sn-note">' + escapeHtml(lionSlotWord(view)) + '</strong>' +
+        '<span class="lion-rack-result lion-rack-result-note">' + escapeHtml((fixture ? fixture + ' \u{b7} ' : '') + lionRackSlotNote(view)) + '</span>') +
       '</button>' +
-      (entry.serial ? '<div class="lion-rack-slot-links"><button type="button" data-slot-action="jira" draggable="false" title="Open Jira for ' +
-        escapeHtml(entry.serial + (JIRA_KEY_PATTERN.test(String(jira || '')) ? ' \u{b7} ' + jira : '')) + '" aria-label="Open Jira for ' + description + '">' +
+      (view.serial ? '<div class="lion-rack-slot-links"><button type="button" data-slot-action="jira" draggable="false" title="Open Jira for ' +
+        escapeHtml(view.serial + (JIRA_KEY_PATTERN.test(String(jira || '')) ? ' \u{b7} ' + jira : '')) + '" aria-label="Open Jira for ' + description + '">' +
         'Jira \u{2197}</button>' +
         '<button type="button" data-slot-action="testview" draggable="false" title="Open this JBOG in TestView 2.0" aria-label="Open TestView for ' +
         description + '">TestView \u{2197}</button></div>' : '') + '</div>';
@@ -9511,39 +10288,60 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     const area = lionRackBoard.rows.find(item => item.racks.includes(rack))?.area || 'unassigned';
     const parent = lionAreaSettings(area);
     setTextIfChanged(drawer.querySelector('#lion-rack-work-note'), !parent.show ? 'This row is disabled: hidden and alerts muted.' : '');
-    const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
+    const view = lionRackSlotView(rack, position), row = view.row;
     setTextIfChanged(drawer.querySelector('#lion-rack-selected-name'), rack);
     setTextIfChanged(drawer.querySelector('#lion-rack-selected-position'), LION_SLOT_LABELS[position] + ' \u{b7} JBOG ' + (position + 1));
-    setTextIfChanged(drawer.querySelector('#lion-rack-scan-label'), entry.serial ? 'Scan a new serial to replace this JBOG' : 'Scan the JBOG serial');
-    setTextIfChanged(drawer.querySelector('#lion-rack-scan-save'), entry.serial ? 'Replace JBOG' : 'Add JBOG');
+    // In Dev, a rack with fixtures takes a fixture or a JBOG here and asks when it cannot tell which.
+    const either = lionDevMode && lionRackMapped(rack);
+    setTextIfChanged(drawer.querySelector('#lion-rack-scan-label'),
+      either ? 'Scan a JBOG or a fixture serial' : entry.serial ? 'Scan a new serial to replace this JBOG' : 'Scan the JBOG serial');
+    setTextIfChanged(drawer.querySelector('#lion-rack-scan-save'), either ? 'Add' : entry.serial ? 'Replace JBOG' : 'Add JBOG');
     const detail = drawer.querySelector('#lion-rack-selected-info');
     const average = lionKingPassAverage(lionRackSnapshot?.rows || []).averageMs;
     const finish = row?.status === 'RUNNING' && average && Number.isFinite(row.startedAt) ? row.startedAt + average : null;
-    const key = row?.jiraKey || jiraLatestKey(row?.tailSerial || entry.serial);
-    const paired = row ? [row.tailSerial, row.headSerial].find(sn => lionRackSerial(sn) && lionRackSerial(sn) !== entry.serial) : entry.partner;
+    const key = row?.jiraKey || jiraLatestKey(row?.tailSerial || view.serial);
+    const pairedNode = row ? [row.tailSerial, row.headSerial].find(sn => lionRackSerial(sn) && lionRackSerial(sn) !== view.serial) : view.partner;
+    // A saved fixture serial is never listed as the JBOG's paired node, even when TestView calls it the head node.
+    const paired = lionFixtureLocation(lionRackSerial(pairedNode)) ? '' : pairedNode;
     const data = [
       ['Started', row?.started], ['Finished', row?.finished],
       ['Elapsed', row?.status === 'RUNNING' && Number.isFinite(row.startedAt) ? lionHoursMinutes(Date.now() - row.startedAt) : ''],
       ['Pass time', row?.status === 'PASS' && row.durationMs ? lionHoursMinutes(row.durationMs) : ''],
       ['Estimated finish', finish ? siteDateTime(new Date(finish)) : ''],
       ['Paired node', paired], ['Model', row?.model], ['Part number', row?.customer_ipn],
-      ['Route', row?.route], ['Ticket', JIRA_KEY_PATTERN.test(String(key || '')) ? key : '']
+      ['Route', row?.route], ['Ticket', JIRA_KEY_PATTERN.test(String(key || '')) ? key : ''],
+      ['Evidence', view.mode === 'manual' ? '' : lionRackEvidence(view)]
     ].filter(([, value]) => value);
-    const html = entry.serial ? '<div class="lion-selected-serial">' + escapeHtml(entry.serial) + '</div>' +
+    const facts = list => '<dl class="lion-selected-facts">' + list.map(([name, value]) => '<div><dt>' + escapeHtml(name) +
+      '</dt><dd>' + escapeHtml(value) + '</dd></div>').join('') + '</dl>';
+    const lastRow = view.last ? lionAttemptRow(view.last) : null;
+    // The fixture comes first: it is known from the built-in list (or this PC's own), whatever the JBOG shows.
+    const fixtures = view.config?.fixtures || [];
+    const strip = fixtures.length ? '<p class="lion-fixture-line"><b>Fixture detected</b> <code>' + escapeHtml(fixtures.join(', ')) +
+      '</code> \u{b7} ' + escapeHtml(lionFixtureState(view)) + '</p>' : '';
+    const body = view.serial ? '<div class="lion-selected-serial">' + escapeHtml(view.serial) + '</div>' +
       '<div class="lion-selected-status lion-rack-' + (row?.status || 'absent').toLowerCase() + '">' +
       escapeHtml(row ? lionRackStatusText(row, null) : 'Assignment saved \u{b7} waiting for test data') + '</div>' +
-      '<dl class="lion-selected-facts">' + data.map(([name, value]) => '<div><dt>' + escapeHtml(name) +
-        '</dt><dd>' + escapeHtml(value) + '</dd></div>').join('') + '</dl>' +
+      facts(data) +
       (finish ? '<p class="lion-rack-note">Estimate based on ' + lionKingPassAverage(lionRackSnapshot?.rows || []).samples + ' recent passed runs.</p>' : '') +
       (row?.boardNote ? '<p class="lion-rack-note">' + escapeHtml(row.boardNote) + '</p>' : '') :
-      '<div class="lion-scan-empty"><span>\u{2301}</span><strong>Ready to scan</strong><p>Scan one serial. Its test details appear here automatically.</p></div>';
+      view.mode === 'empty' ?
+      '<div class="lion-scan-empty"><span>\u{2301}</span><strong>' + (lionRackMapped(rack) ? 'No fixture here' : 'Ready to scan') + '</strong><p>' +
+        (lionRackMapped(rack) ? 'No fixture is listed for this position. Scan a JBOG to place one by hand.'
+          : 'Scan one serial. Its test details appear here automatically.') + '</p></div>' :
+      '<div class="lion-selected-status lion-rack-' + view.state.toLowerCase() + '">' + escapeHtml(lionSlotWord(view)) + '</div>' +
+      '<p class="lion-rack-note">' + escapeHtml(lionRackEvidence(view)) + '</p>' +
+      (lastRow ? '<p class="lion-rack-note">Last tested, from TestView history:</p>' + facts([['Unit', view.last.uut],
+        ['Result', lionRackStatusText(lastRow, null)], ['Started', lastRow.started], ['Finished', lastRow.finished]].filter(([, value]) => value)) : '');
+    const html = strip + body;
     if (detail.innerHTML !== html) detail.innerHTML = html;
-    drawer.querySelector('#lion-rack-open-test').hidden = !entry.serial;
-    drawer.querySelector('#lion-rack-open-jira').hidden = !entry.serial;
-    drawer.querySelector('#lion-rack-copy-selected').hidden = !entry.serial;
-    drawer.querySelector('#lion-rack-clear-selected').hidden = !entry.serial;
+    drawer.querySelector('#lion-rack-open-test').hidden = !view.serial;
+    drawer.querySelector('#lion-rack-open-jira').hidden = !view.serial;
+    drawer.querySelector('#lion-rack-copy-selected').hidden = !view.serial;
+    drawer.querySelector('#lion-rack-clear-selected').hidden = !view.serial;
     setTextIfChanged(drawer.querySelector('#lion-rack-open-jira'),
       JIRA_KEY_PATTERN.test(String(key || '')) ? key : 'Search Jira');
+    renderLionFixtureSetup(drawer, rack, position, view);
   }
 
   function closeLionRackSelection() {
@@ -9557,7 +10355,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   function linkLionRackPartner(rack, position, serial, row) {
     if (!row) return;
     const companion = [row.tailSerial, row.headSerial].map(lionRackSerial).find(value => value && value !== serial);
-    if (!companion) return;
+    if (!companion || lionFixtureLocation(companion)) return;
     const current = lionRackBoard.slots[rack]?.[position];
     if (!current || current.serial !== serial || current.partner === companion) return;
     const otherLocation = lionRackIndex.get(companion);
@@ -9569,7 +10367,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
 
   async function hydrateLionRackSelection() {
     if (!lionRackSelected) return;
-    const { rack, position } = lionRackSelected, serial = lionRackBoard.slots[rack]?.[position]?.serial;
+    const { rack, position } = lionRackSelected, serial = lionSlotIdentities().get(rack + '|' + position)?.serial;
     if (!serial) return;
     const identity = JSON.stringify([rack, position, serial]);
     if (lionRackSelectionLoading === identity) return;
@@ -9588,14 +10386,76 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     }
   }
 
-  function submitLionRackScan() {
+  // Dev only. A serial scanned into a slot may be a fixture or a JBOG. A saved fixture is a fixture;
+  // a JBOG the live source lists is a JBOG; anything else in a rack that has fixtures asks.
+  // Returns true when the scan was handled here.
+  function lionRouteScan(serial) {
+    const box = document.getElementById('lion-scan-choice'), { rack, position } = lionRackSelected;
+    lionScanChoice = null; box.hidden = true;
+    if (lionFixtureLocation(serial)) { lionApplyFixtureScan(serial); return true; }
+    const info = lionRackInfoForSerial(serial);
+    if (!lionRackMapped(rack) || (info && lionRackSerial(info.tailSerial || info.serial) === serial)) return false;
+    const have = lionFixtureRegistry.slots[rack][position].fixtures;
+    lionScanChoice = { serial, rack, position };
+    setTextIfChanged(box.querySelector('p'), serial + ' is new here. ' +
+      (have.length === 1 ? 'Replace fixture ' + have[0] + ' with it' : 'Save it as a fixture here') + ', or use it as the JBOG?');
+    box.hidden = false;
+    lionRackFeedback('Choose how to use ' + serial + '.');
+    return true;
+  }
+
+  // Dev: save a scanned fixture to the selected slot. It replaces the slot's only fixture (the usual
+  // swap) and is added otherwise; a fixture saved elsewhere offers Move here under Fixture setup.
+  function lionApplyFixtureScan(serial) {
+    const board = document.getElementById('eve-lion-rack-board'), { rack, position } = lionRackSelected;
+    const have = lionFixtureRegistry?.slots[rack]?.[position]?.fixtures || [];
+    const result = setLionFixture(rack, position, serial, { replace: have.length === 1 ? have[0] : '' });
+    lionRackFeedback(result.message);
+    lionFixtureMove = result.move ? { serial: result.move } : null;
+    if (result.move) board.querySelector('#lion-fixture-setup').open = true;
+    if (result.ok) {
+      board.querySelector('#lion-rack-serial').value = ''; lionFixtureReplacing = '';
+      resolveLionSlot(rack, position, true);
+    }
+    renderLionRackSelection();
+  }
+
+  function lionAnswerScanChoice(choice) {
+    const board = document.getElementById('eve-lion-rack-board'), pending = lionScanChoice, input = board.querySelector('#lion-rack-serial');
+    lionScanChoice = null; board.querySelector('#lion-scan-choice').hidden = true;
+    if (!pending || choice === 'cancel') { input.focus(); input.select(); return; }
+    // The question belongs to the slot it was asked in; selecting another slot voids it.
+    if (lionRackSelected?.rack !== pending.rack || lionRackSelected.position !== pending.position) return;
+    input.value = pending.serial;
+    if (choice === 'jbog') submitLionRackScan(true); else lionApplyFixtureScan(pending.serial);
+  }
+
+  // The Dev box unlocks fixture changes. Closing it drops anything half-done, so the hidden panel keeps no pending change.
+  function setLionDevMode(on) {
+    lionDevMode = on === true;
+    try { sessionStorage.setItem(LION_DEV_KEY, lionDevMode ? '1' : '0'); } catch (error) {}
+    const board = document.getElementById('eve-lion-rack-board');
+    if (!board) return;
+    const setup = board.querySelector('#lion-fixture-setup');
+    board.querySelector('#lion-dev-mode').checked = lionDevMode;
+    setup.hidden = !lionDevMode; board.querySelector('#lion-fixture-backup').hidden = !lionDevMode;
+    if (!lionDevMode) {
+      lionFixtureReplacing = ''; lionFixtureMove = null; lionScanChoice = null; setup.open = false;
+      board.querySelector('#lion-scan-choice').hidden = true;
+    }
+    renderLionRackSelection();
+  }
+
+  function submitLionRackScan(forceJbog = false) {
     const board = document.getElementById('eve-lion-rack-board');
     if (!board || board.hidden || !lionRackSelected) return;
     const input = board.querySelector('#lion-rack-serial'), serial = lionRackSerial(input.value);
     if (!serial || serial.length < 6) { lionRackFeedback('Scan the complete JBOG serial, then press Enter.'); input.focus(); return; }
     const { rack, position } = lionRackSelected;
+    if (!forceJbog && lionDevMode && lionRouteScan(serial)) return;
     const known = lionRackInfoForSerial(serial);
     let companion = known ? [known.tailSerial, known.headSerial].map(lionRackSerial).find(value => value && value !== serial) : '';
+    if (companion && lionFixtureLocation(companion)) companion = '';
     const companionLocation = companion && lionRackIndex.get(companion);
     if (companionLocation && (companionLocation.rackId !== rack || companionLocation.rackSlot !== position + 1)) companion = '';
     if (!assignLionRackSlot(rack, position, serial, companion || '', { replace: true })) return;
@@ -9616,22 +10476,104 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       writeJSON(localStorage, LION_RACK_WINDOW_KEY, lionRackUI, 'Rack board window');
     }
     document.documentElement.classList.toggle('lion-rack-map-active', open);
-    if (open) refreshLionRackBoard(lionRackSnapshot);
+    if (open) { refreshLionRackBoard(lionRackSnapshot); board.querySelector('#lion-rack-locate').focus(); }
     else refreshAlertChrome();
+  }
+
+  // Scan a rack barcode to see its servers' states, or a serial to find its slot.
+  // A rack scan also turns its physical row on (the same switch as the row's
+  // Enabled box, so no old history is replayed) and looks up its fixtures now.
+  // shortcut: the highlight is a DOM class, so a board re-render within 5 s clears it.
+  function locateLionRack(text) {
+    const board = document.getElementById('eve-lion-rack-board'), value = String(text || '').trim().toUpperCase();
+    const say = (message, ms = 8000) => {
+      const note = board.querySelector('#lion-rack-locate-note');
+      setTextIfChanged(note, message); clearTimeout(lionRackNoteTimer);
+      lionRackNoteTimer = setTimeout(() => setTextIfChanged(note, ''), ms);
+    };
+    if (!board || !lionRackBoard || !value) return;
+    let rack = lionRackBarcode(value), position = -1, isFixture = false;
+    if (rack) {
+      if (!lionRackBoard.slots[rack]) { say(rack + ' is not on the board.'); return; }
+    } else {
+      const sn = lionRackSerial(value), identities = lionSlotIdentities();
+      for (const id of Object.keys(lionRackBoard.slots)) {
+        position = lionRackBoard.slots[id].findIndex((entry, index) => !!sn && (
+          [entry.serial, entry.partner, identities.get(id + '|' + index).serial].includes(sn) ||
+          !!lionFixtureRegistry?.slots[id]?.[index]?.fixtures.includes(sn)));
+        if (position >= 0) { rack = id; isFixture = !!lionFixtureRegistry?.slots[id]?.[position]?.fixtures.includes(sn); break; }
+      }
+      if (!rack) { say(value + ' is not in any rack. Click a slot and scan it there.'); return; }
+    }
+    const area = lionRackBoard.rows.find(row => row.racks.includes(rack)).area;
+    let turnedOn = '';
+    if (!lionAreaSettings(area).show) {
+      if (position >= 0) { say(rack + ' is in ' + LION_AREAS[area] + ', which is off. Turn that row on to see it.'); return; }
+      updateLionAreaEnabled(area, true); turnedOn = LION_AREAS[area] + ' turned on. ';
+    }
+    const mark = () => {
+      const target = board.querySelector('[data-rack="' + rack + '"]' + (position >= 0 ? ' [data-slot="' + position + '"]' : ''));
+      if (!target) return;
+      target.scrollIntoView({ block: 'nearest', inline: 'center' }); target.classList.add('is-found');
+      setTimeout(() => target.classList.remove('is-found'), 5000);
+    };
+    mark();
+    const configured = !!rack && [0, 1, 2, 3].some(index => lionFixtureRegistry?.slots[rack]?.[index]?.fixtures.length);
+    const summarize = () => {
+      if (position >= 0) {
+        say(isFixture ? 'Fixture ' + value + ' is in ' + rack + ' \u{b7} ' + LION_SLOT_LABELS[position] + ' \u{b7} ' +
+            (lionFixtureState(lionRackSlotView(rack, position)) || 'Empty')
+          : value + ' is in ' + rack + ' \u{b7} ' + LION_SLOT_LABELS[position] + ' \u{b7} ' +
+            (LION_RACK_STATE_LABELS[lionRackSlotState(rack, position)] || 'Empty'));
+        return;
+      }
+      const views = [0, 1, 2, 3].map(index => lionRackSlotView(rack, index)), rollup = lionRackRollup(rack);
+      // Positions that show no JBOG, in fixture words (a position with a JBOG is counted by its test state above).
+      const extra = [[view => view.mode === 'last', 'waiting for new'], [view => view.mode === 'none', 'empty'],
+        [view => view.mode === 'empty' && configured, 'no fixture'], [view => view.state === 'MAINTENANCE', 'under maintenance']]
+        .map(([match, word]) => [views.filter(match).length, word]).filter(([count]) => count)
+        .map(([count, word]) => count + ' ' + word);
+      const fixtures = views.filter(view => view.config?.fixtures.length).length;
+      const anywhere = Object.values(lionFixtureRegistry?.slots || {}).flat().some(slot => slot.fixtures.length);
+      // This PC differs from the shared built-in list: say so where testers look.
+      const changed = [0, 1, 2, 3].filter(index => lionFixtureRegistry?.slots[rack]?.[index]?.custom && lionDefaultFixtures(rack, index).length).length;
+      // A mapped rack lists every position with its fixture and state, in the order the fixtures are written down.
+      say(turnedOn + rack + ' \u{b7} ' + (fixtures ? fixtures + (fixtures > 1 ? ' fixtures' : ' fixture') + ' detected: ' +
+        lionRackFixtureLines(rack).join('; ') + ' \u{b7} ' : '') +
+        views.filter(view => view.serial).length + '/4 assigned' +
+        (rollup.summary ? ' \u{b7} ' + rollup.summary : '') + (!fixtures && extra.length ? ' \u{b7} ' + extra.join(' \u{b7} ') : '') +
+        (changed ? ' \u{b7} ' + changed + (changed > 1 ? ' fixtures' : ' fixture') + ' overridden on this PC' : '') +
+        (anywhere && !configured ? ' \u{b7} no fixtures listed for this rack yet' : ''), 20000);
+    };
+    if (position < 0 && configured) {
+      lionFocusRack = rack; lionFocusUntil = Date.now() + 600000;
+      say(turnedOn + rack + ' \u{b7} checking fixtures\u{2026}');
+      resolveLionRack(rack, true).then(() => { mark(); summarize(); });
+    } else summarize();
   }
 
   function selectLionRackSlot(rack, position, serial) {
     const board = document.getElementById('eve-lion-rack-board');
     if (!board || !lionRackBoard.slots[rack]?.[position]) return;
+    const moved = lionRackSelected?.rack !== rack || lionRackSelected.position !== position;
     lionRackSelected = { rack, position }; lionRackSelectionNextAt = 0;
+    if (moved) {
+      lionFixtureReplacing = ''; lionFixtureMove = null; lionScanChoice = null;
+      board.querySelector('#lion-scan-choice').hidden = true;
+      board.querySelector('#lion-fixture-serial').value = ''; lionFixtureFeedback('');
+    }
+    // The rack being worked on refreshes faster than the rest of the board.
+    lionFocusRack = rack; lionFocusUntil = Date.now() + 600000;
     board.classList.add('has-selection'); board.querySelector('#lion-rack-drawer').hidden = false;
     const input = board.querySelector('#lion-rack-serial');
     input.value = serial || '';
     board.dataset.signature = ''; refreshLionRackBoard(lionRackSnapshot);
     renderLionRackSelection();
-    input.focus(); input.select();
+    const focus = board.querySelector('#lion-fixture-setup').open ? board.querySelector('#lion-fixture-serial') : input;
+    focus.focus(); focus.select();
     lionRackFeedback('Selected ' + rack + ' \u{b7} ' + LION_SLOT_LABELS[position] + '. Scan one serial.');
-    if (lionRackBoard.slots[rack][position].serial) hydrateLionRackSelection();
+    if (lionSlotIdentities().get(rack + '|' + position).serial) hydrateLionRackSelection();
+    resolveLionSlot(rack, position, false);
   }
 
   async function openLionRackJira(serial) {
@@ -9645,10 +10587,10 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   }
 
   function openLionRackSlotLink(rack, position, action) {
-    const entry = lionRackBoard?.slots[rack]?.[position];
-    if (!entry?.serial) return;
-    const row = lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner);
-    const serial = row?.tailSerial || entry.serial;
+    if (!lionRackBoard?.slots[rack]?.[position]) return;
+    const view = lionRackSlotView(rack, position), row = view.row;
+    if (!view.serial) return;
+    const serial = row?.tailSerial || view.serial;
     if (action === 'jira') openLionRackJira(serial);
     else if (action === 'testview') {
       const pretest = ['PRETEST', 'PRETEST_FAIL'].includes(row?.status) ||
@@ -9682,14 +10624,18 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     board.setAttribute('aria-label', 'Lion King physical rack board');
     board.innerHTML = '<header id="lion-rack-title"><div><span class="lion-rack-eyebrow">LION KING \u{b7} LIVE OPERATIONS</span>' +
       '<strong>Rack Board</strong><small id="lion-rack-count" title="Click a slot, then scan its serial"></small>' +
-      '<span id="lion-rack-source" hidden></span></div><div class="lion-rack-window-actions">' +
+      '<span id="lion-rack-source" hidden></span></div>' +
+      '<input id="lion-rack-locate" autocomplete="off" spellcheck="false" maxlength="120" placeholder="Scan rack or serial to find" aria-label="Scan a rack barcode or server serial to find it">' +
+      '<div class="lion-rack-window-actions">' +
       '<details class="lion-rack-board-options"><summary aria-label="Board controls" title="Board controls">\u{22ef}</summary>' +
       '<div class="lion-rack-all-controls"><button type="button" data-all-work="enabled:true">Enable all</button>' +
       '<button type="button" data-all-work="enabled:false">Disable all</button>' +
-      '<button type="button" id="lion-rack-edit-layout" aria-pressed="false">Edit layout</button></div></details>' +
+      '<button type="button" id="lion-rack-edit-layout" aria-pressed="false">Edit layout</button>' +
+      '<label class="lion-work-toggle" title="Unlock fixture changes"><input type="checkbox" id="lion-dev-mode">Dev</label></div></details>' +
       '<button type="button" id="lion-rack-back" title="Show tracker controls and alert cards">Back to tracker</button>' +
       '<button type="button" id="lion-rack-expand" title="Fit board to screen" aria-label="Expand rack board">\u{26f6}</button>' +
       '<button type="button" id="lion-rack-close" aria-label="Close rack board">\u{d7}</button></div></header>' +
+      '<div id="lion-rack-locate-note" role="status"></div>' +
       '<div id="lion-rack-workspace"><div class="lion-rack-body"><div id="lion-rack-grid"></div>' +
       '<section class="lion-rack-area lion-rack-unplaced-section" data-area="unassigned"><div class="lion-rack-area-head">' +
       '<button type="button" class="lion-rack-row-toggle" data-lion-row-toggle="unassigned" aria-controls="lion-rack-row-unassigned" aria-expanded="false">' +
@@ -9703,20 +10649,40 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       '<datalist id="lion-rack-options"></datalist><select id="lion-rack-new-row" aria-label="Row for new rack">' +
       '<option value="0">Row 1 \u{b7} B6</option><option value="1">Row 2 \u{b7} B7</option><option value="2">Row 3 \u{b7} E2/E4/BL</option></select>' +
       '<button type="button" id="lion-rack-add">Add rack</button><button type="button" id="lion-rack-backup">Backup</button>' +
-      '<button type="button" id="lion-rack-restore">Restore</button><input type="file" id="lion-rack-file" accept=".json,application/json" hidden></div>' +
+      '<button type="button" id="lion-rack-restore">Restore</button><input type="file" id="lion-rack-file" accept=".json,application/json" hidden>' +
+      '<button type="button" id="lion-fixture-backup" hidden>Fixture backup</button></div>' +
       '<p class="lion-rack-note">Drag rack headers to arrange them. Drag a JBOG to an empty slot to move it. Each rack holds four JBOGs.</p></section></div>' +
       '<aside id="lion-rack-drawer" hidden><header><div><span class="lion-rack-eyebrow">SELECTED SLOT</span>' +
       '<strong id="lion-rack-selected-name"></strong><small id="lion-rack-selected-position"></small></div>' +
       '<button type="button" id="lion-rack-drawer-close" aria-label="Close slot details">\u{d7}</button></header>' +
       '<div class="lion-rack-drawer-body">' +
       '<div id="lion-rack-work-note" class="lion-rack-note"></div><div id="lion-rack-selected-info"></div>' +
+      '<div class="lion-fixture-actions"><button type="button" id="lion-fixture-confirm" hidden>Mark last tested as installed</button>' +
+      '<button type="button" id="lion-fixture-undo" hidden>Restore cleared JBOG</button></div>' +
       '<form id="lion-rack-scan"><label id="lion-rack-scan-label" for="lion-rack-serial">Scan the JBOG serial</label>' +
       '<div class="lion-rack-scan-input"><span aria-hidden="true">\u{2301}</span><input id="lion-rack-serial" autocomplete="off" spellcheck="false" placeholder="Scan serial here" maxlength="120" required></div>' +
       '<button type="submit" id="lion-rack-scan-save">Add JBOG</button><small>Scanner Enter saves automatically. You can also type a serial and press Enter.</small></form>' +
+      '<div id="lion-scan-choice" hidden><p class="lion-rack-note"></p><div class="lion-fixture-actions">' +
+      '<button type="button" data-scan-choice="fixture">As fixture</button><button type="button" data-scan-choice="jbog">As JBOG</button>' +
+      '<button type="button" data-scan-choice="cancel">Cancel</button></div></div>' +
       '<div id="lion-rack-feedback" role="status">Ready to scan.</div><div class="lion-rack-detail-actions">' +
       '<button type="button" id="lion-rack-open-test">TestView \u{2197}</button><button type="button" id="lion-rack-open-jira">Jira \u{2197}</button>' +
       '<button type="button" id="lion-rack-copy-selected">Copy serial</button></div>' +
-      '<button type="button" id="lion-rack-clear-selected">Remove from slot</button></div></aside></div>';
+      '<button type="button" id="lion-rack-clear-selected">Remove from slot</button>' +
+      '<details id="lion-fixture-setup" hidden><summary>Fixture setup</summary>' +
+      '<p class="lion-rack-note">The fixture is the stable anchor for this position; the JBOG on it is found from TestView. ' +
+      'The built-in list comes with the script; changes made here stay on this PC.</p>' +
+      '<p id="lion-fixture-source" class="lion-rack-note"></p><div id="lion-fixture-list"></div>' +
+      '<form id="lion-fixture-form"><label id="lion-fixture-label" for="lion-fixture-serial">Scan a fixture installed at this position</label>' +
+      '<div class="lion-rack-scan-input"><span aria-hidden="true">\u{2301}</span><input id="lion-fixture-serial" autocomplete="off" spellcheck="false" placeholder="Scan fixture serial" maxlength="120"></div>' +
+      '<button type="submit" id="lion-fixture-save">Add fixture</button></form>' +
+      '<div id="lion-fixture-feedback" role="status"></div>' +
+      '<div class="lion-fixture-actions"><button type="button" id="lion-fixture-move" hidden>Move here</button>' +
+      '<button type="button" id="lion-fixture-reset" hidden>Reset to built-in</button>' +
+      '<button type="button" id="lion-fixture-maintenance">Mark under maintenance</button></div>' +
+      '<h4>Recent changes</h4><div id="lion-fixture-history" class="lion-rack-note"></div>' +
+      '<h4>TestView lookup</h4><pre id="lion-fixture-diag"></pre>' +
+      '<button type="button" id="lion-fixture-diag-copy">Copy lookup details</button></details></div></aside></div>';
     const style = document.createElement('style');
     style.textContent = [
       '.lion-rack-map-active #eve-tracker-panel,.lion-rack-map-active #eve-alert-container{display:none!important}',
@@ -9760,11 +10726,15 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       '@media(max-width:700px){.lion-rack-area-head{flex-wrap:wrap;gap:1px 8px}.lion-rack-area-controls{min-width:240px;gap:6px}.lion-work-counts{gap:4px}.lion-rack-row .lion-physical-rack{flex-basis:518px}.lion-rack-area{padding:0 3px}#lion-rack-title{padding:5px 7px}#lion-rack-back{max-width:120px}}',
       '#eve-lion-rack-board .lion-rack-pool-item:is(.lion-rack-running,.lion-rack-pretest){color:#f0fff4}#eve-lion-rack-board .lion-rack-pool-item:is(.lion-rack-running,.lion-rack-pretest) small{color:#e5f3e8}.lion-rack-area-head{justify-content:flex-start;gap:7px}.lion-rack-area-controls{flex:0 1 auto;gap:10px;min-width:0}.lion-work-counts{flex:0 1 auto}.lion-rack-row .lion-physical-rack{grid-template-columns:max-content minmax(0,1fr);column-gap:8px}.lion-rack-work-row{justify-content:flex-start}.lion-rack-assigned{margin-left:0}#eve-tracker-panel.eve-lion-compact .eve-section-head,#eve-tracker-panel.eve-lion-compact .eve-section-row{grid-template-columns:minmax(0,1fr)}#eve-tracker-panel.eve-lion-compact .lion-section-heading{display:flex;align-items:center;gap:9px}#eve-tracker-panel.eve-lion-compact .eve-bulk-buttons{grid-template-columns:repeat(2,minmax(0,1fr))}#eve-tracker-panel.eve-lion-compact .eve-section-label{width:100%}',
       '#eve-lion-rack-board .lion-physical-rack>header{grid-column:1/3}',
-      '#eve-lion-rack-board .lion-rack-slot-remove{position:absolute;top:2px;right:3px;z-index:3;width:16px;height:16px;min-width:16px;padding:0!important;border:0!important;border-radius:3px;background:transparent!important;color:inherit!important;font-size:15px;line-height:16px;cursor:pointer}#eve-lion-rack-board .lion-rack-slot-remove:hover{background:#0004!important}.lion-rack-slot.has-remove .lion-rack-slot-label{margin-right:16px}'
+      '#lion-rack-locate{flex:0 1 190px;min-width:72px;height:24px;box-sizing:border-box;margin:0 6px 0 auto;padding:0 7px;font-size:11px}#lion-rack-locate-note{flex-shrink:0;padding:3px 12px;font-size:11px;color:#9dc6fc;background:#16202d;border-bottom:1px solid var(--lr-line)}#lion-rack-locate-note:empty{display:none}@media(max-width:600px){#lion-rack-title{flex-wrap:wrap}#lion-rack-locate{order:3;flex:1 0 100%;margin:5px 0 0}}.lion-rack-rollup{display:inline-flex;gap:3px;margin-left:6px}.lion-rack-rollup b{font:700 9px/12px Consolas,monospace;padding:0 4px;border:1px solid;border-radius:3px}.rollup-fail{background:#3d1f2c;border-color:#e65c7d;color:#ffd0dc}.rollup-check{background:#42331d;border-color:#e5b65b;color:#f6dca0}.rollup-run{background:#26371c;border-color:#a8d94c;color:#d8f4ad}.rollup-pass{background:#12392d;border-color:#32c28a;color:#bbefda}.lion-physical-rack[data-worst="fail"]>header{box-shadow:0 1px 0 #e65c7d}.lion-physical-rack[data-worst="check"]>header{box-shadow:0 1px 0 #e5b65b}.lion-physical-rack.is-found,.lion-rack-slot.is-found{box-shadow:inset 0 0 0 2px #ffd166}',
+      '#eve-lion-rack-board .lion-rack-slot-remove{position:absolute;top:2px;right:3px;z-index:3;width:16px;height:16px;min-width:16px;padding:0!important;border:0!important;border-radius:3px;background:transparent!important;color:inherit!important;font-size:15px;line-height:16px;cursor:pointer}#eve-lion-rack-board .lion-rack-slot-remove:hover{background:#0004!important}.lion-rack-slot.has-remove .lion-rack-slot-label{margin-right:16px}',
+      '.lion-rack-noconfirm,.lion-rack-pending{border-style:dashed!important;background:#1a212c!important;color:#b9c8dc}.lion-rack-maintenance{border-style:dashed!important;border-color:#6b7587!important;background:#222731!important;color:#a3afc1}.lion-rack-slot.is-stale{opacity:.62}.lion-rack-sn.lion-rack-sn-note{font:600 10px/12px Segoe UI,Arial,sans-serif}.lion-rack-result.lion-rack-result-note{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;grid-column:1/3;grid-row:2/4;align-self:start;justify-self:stretch;white-space:normal;line-height:11px;color:#b3c3d7;overflow:hidden;text-align:left}',
+      '#lion-fixture-setup{margin-top:14px;padding-top:10px;border-top:1px solid #344156}#lion-fixture-setup>summary{cursor:pointer;font-size:12px;color:#b5c8e4}#lion-fixture-setup h4{margin:14px 0 5px;font-size:11px;color:#cbd7e8}#lion-fixture-source:empty{display:none}#lion-fixture-list{display:flex;flex-direction:column;gap:5px;margin:8px 0}.lion-fixture-chip{display:flex;align-items:center;gap:6px;border:1px solid #40506a;border-radius:7px;padding:3px 6px;background:#18212d}.lion-fixture-chip code{flex:1;font:11px Consolas,monospace;overflow-wrap:anywhere}.lion-fixture-chip button{font-size:10px!important;padding:2px 6px!important}.lion-fixture-chip.is-replacing{border-color:#e5b65b}#lion-fixture-form{display:flex;flex-direction:column;gap:7px;margin-top:8px}#lion-fixture-form label{font-size:11px;color:#b8c9df}#lion-fixture-serial{min-width:0;width:100%;border:0!important;background:transparent!important;font:14px Consolas,monospace!important;outline:0!important}#lion-fixture-save{background:#316ece!important;border-color:#4687e7!important;font-weight:600!important}#lion-fixture-feedback{font-size:11px;line-height:1.5;color:#9dc6fc;margin:8px 0;min-height:16px}.lion-fixture-actions{display:flex;flex-wrap:wrap;gap:6px}.lion-fixture-actions button,#lion-fixture-diag-copy{font-size:11px!important}#lion-fixture-history div{margin-bottom:3px}#lion-fixture-diag{white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.5 Consolas,monospace;color:#9fb2cb;background:#111924;border:1px solid #2d394b;border-radius:6px;padding:6px;margin:4px 0 6px}',
+      '.lion-rack-board-options .lion-work-toggle{grid-column:1/3;font-size:11px;padding:3px 2px}.lion-fixture-line{margin:0 0 12px;font-size:11px;line-height:1.5;color:#b8c9df}.lion-fixture-line code{font:11px Consolas,monospace;color:#d5e0f1;overflow-wrap:anywhere}.lion-fixture-line b{color:#9dc6fc;font-weight:600}#lion-scan-choice{margin:8px 0;padding:8px;border:1px solid #e5b65b;border-radius:8px;background:#2a2417}#lion-scan-choice p{margin:0 0 7px;overflow-wrap:anywhere}'
     ].join('');
     document.head.appendChild(style); document.body.appendChild(board);
     lionRackUI = readJSON(localStorage, LION_RACK_WINDOW_KEY, null, 'Rack board window');
-    fitLionRackWindow(board); board.hidden = lionRackUI?.open === false;
+    fitLionRackWindow(board); board.hidden = lionRackUI?.open !== true;
     document.documentElement.classList.toggle('lion-rack-map-active', !board.hidden);
     board.querySelector('#lion-rack-close').addEventListener('click', () => setLionRackView(false));
     board.querySelector('#lion-rack-back').addEventListener('click', () => setLionRackView(false));
@@ -9779,11 +10749,16 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       board.querySelector('#lion-rack-layout-tools').hidden = !editing;
     });
     board.querySelector('#lion-rack-find').addEventListener('input', () => refreshLionRackBoard(lionRackSnapshot));
+    board.querySelector('#lion-rack-locate').addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault(); locateLionRack(event.currentTarget.value); event.currentTarget.value = '';
+    });
     board.addEventListener('change', event => {
       const input = event.target, property = input.dataset.workProperty;
       if (input.dataset.workArea && property === 'enabled') {
         updateLionAreaEnabled(input.dataset.workArea, input.checked);
       }
+      if (input.id === 'lion-dev-mode') setLionDevMode(input.checked);
     });
     board.querySelector('#lion-rack-scan').addEventListener('submit', event => { event.preventDefault(); submitLionRackScan(); });
     let scanTimer = null, scanStart = 0, lastInput = 0, scanCharacters = 0;
@@ -9841,6 +10816,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         updateLionAreaEnabled(area, !lionAreaSettings(area).show);
         return;
       }
+      if (button?.dataset.scanChoice) { lionAnswerScanChoice(button.dataset.scanChoice); return; }
       if (button?.dataset.allWork) {
         const [property, enabled] = button.dataset.allWork.split(':');
         setLionKingAreas(property, enabled === 'true'); return;
@@ -9866,7 +10842,10 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       if (!row) return;
       const index = row.racks.indexOf(rack), action = button.dataset.rackAction;
       if (action === 'remove') {
-        if (next.slots[rack].some(entry => entry.serial)) { button.title = 'Remove its JBOGs before removing this rack.'; return; }
+        const fixtures = lionFixtureRegistry?.slots[rack]?.some(slot => slot.fixtures.length || slot.maintenance);
+        if (next.slots[rack].some(entry => entry.serial) || fixtures) {
+          button.title = fixtures ? 'Remove its JBOGs and fixtures before removing this rack.' : 'Remove its JBOGs before removing this rack.'; return;
+        }
         row.racks.splice(index, 1); delete next.slots[rack];
       } else {
         const destination = index + (action === 'left' ? -1 : 1);
@@ -9882,8 +10861,9 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       event.preventDefault(); selectLionRackSlot(slot.closest('[data-rack]').dataset.rack, Number(slot.dataset.slot));
     });
     const selectedInfo = () => {
-      const entry = lionRackSelected && lionRackBoard.slots[lionRackSelected.rack]?.[lionRackSelected.position];
-      return { entry, row: entry?.serial ? lionRackInfoForSerial(entry.serial) : null };
+      const entry = lionRackSelected && lionRackBoard.slots[lionRackSelected.rack]?.[lionRackSelected.position]
+        ? lionRackSlotView(lionRackSelected.rack, lionRackSelected.position) : null;
+      return { entry, row: entry?.row || null };
     };
     board.querySelector('#lion-rack-open-test').addEventListener('click', () => {
       if (lionRackSelected) openLionRackSlotLink(lionRackSelected.rack, lionRackSelected.position, 'testview');
@@ -9898,7 +10878,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       if (!lionRackSelected) return;
       clearTimeout(scanTimer);
       const { rack, position } = lionRackSelected;
-      if (clearLionRackSlot(rack, position, lionRackBoard.slots[rack]?.[position]?.serial)) scanInput.focus();
+      if (clearLionRackSlot(rack, position, lionSlotIdentities().get(rack + '|' + position)?.serial)) scanInput.focus();
     });
     board.querySelector('#lion-rack-add').addEventListener('click', () => {
       const input = board.querySelector('#lion-rack-barcode'), rack = lionRackBarcode(input.value), next = readLionRackBoard();
@@ -9984,6 +10964,11 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       if (!file || file.size > 200000) return;
       try {
         const imported = JSON.parse(await file.text());
+        if (imported?.kind === 'eve-lion-fixture-registry') {
+          board.querySelector('#lion-rack-restore').textContent = !lionDevMode ? 'Turn on Dev to restore fixtures'
+            : restoreLionFixtureBackup(imported) ? 'Restored' : 'Invalid backup';
+          return;
+        }
         if (imported.kind !== 'eve-lion-rack-board' || imported.version !== 1 || !Array.isArray(imported.rows) ||
             imported.rows.length !== 3 || !isRecordObject(imported.slots)) throw new Error('Invalid backup.');
         const normalized = normalizeLionRackBoard(imported);
@@ -10004,6 +10989,95 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     if (typeof GM_addValueChangeListener === 'function') GM_addValueChangeListener(LION_RACK_BOARD_KEY, (name, oldValue, newValue, remote) => { if (remote) adopt(); });
     window.addEventListener('storage', event => { if (event.key === LION_RACK_BOARD_KEY) adopt(); });
     window.addEventListener('focus', adopt);
+    const fixtureInput = board.querySelector('#lion-fixture-serial');
+    // Opening Fixture setup is the start of a scan, so the scanner can fire straight away.
+    board.querySelector('#lion-fixture-setup').addEventListener('toggle', event => { if (event.currentTarget.open) fixtureInput.focus(); });
+    const fixtureDone = result => {
+      lionFixtureFeedback(result.message);
+      lionFixtureMove = result.move ? { serial: result.move } : null;
+      renderLionRackSelection();
+    };
+    board.querySelector('#lion-fixture-form').addEventListener('submit', event => {
+      event.preventDefault();
+      if (!lionRackSelected) return;
+      const { rack, position } = lionRackSelected, replacing = lionFixtureReplacing;
+      const result = setLionFixture(rack, position, fixtureInput.value, { replace: replacing });
+      if (result.ok) {
+        fixtureInput.value = ''; lionFixtureReplacing = ''; lionFixtureMove = null;
+        resolveLionSlot(rack, position, true);
+        // Setup is one scan per position: move on to the next one without a fixture.
+        const upcoming = LION_FIXTURE_ORDER[LION_FIXTURE_ORDER.indexOf(position) + 1];
+        if (!replacing && upcoming !== undefined && !lionFixtureRegistry.slots[rack][upcoming].fixtures.length) selectLionRackSlot(rack, upcoming);
+      }
+      fixtureDone(result);
+    });
+    board.querySelector('#lion-fixture-list').addEventListener('click', event => {
+      const button = event.target.closest('button[data-fixture-action]');
+      if (!button || !lionRackSelected) return;
+      const { rack, position } = lionRackSelected, serial = button.dataset.fixture;
+      if (button.dataset.fixtureAction === 'remove') { fixtureDone(removeLionFixture(rack, position, serial)); return; }
+      lionFixtureReplacing = lionFixtureReplacing === serial ? '' : serial; lionFixtureMove = null;
+      renderLionRackSelection(); fixtureInput.focus();
+    });
+    board.querySelector('#lion-fixture-move').addEventListener('click', () => {
+      if (!lionRackSelected || !lionFixtureMove) return;
+      const { rack, position } = lionRackSelected, result = setLionFixture(rack, position, lionFixtureMove.serial, { move: true });
+      if (result.ok) { lionFixtureMove = null; resolveLionSlot(rack, position, true); }
+      fixtureDone(result);
+    });
+    board.querySelector('#lion-fixture-reset').addEventListener('click', () => {
+      if (!lionRackSelected) return;
+      const { rack, position } = lionRackSelected, result = resetLionFixtures(rack, position);
+      if (result.ok) { lionFixtureReplacing = ''; lionFixtureMove = null; resolveLionSlot(rack, position, true); }
+      fixtureDone(result);
+    });
+    board.querySelector('#lion-fixture-maintenance').addEventListener('click', () => {
+      if (!lionRackSelected) return;
+      const { rack, position } = lionRackSelected, on = !lionFixtureRegistry?.slots[rack]?.[position]?.maintenance;
+      const result = setLionMaintenance(rack, position, on);
+      if (result.ok && !on) resolveLionSlot(rack, position, true);
+      fixtureDone(result);
+    });
+    board.querySelector('#lion-fixture-confirm').addEventListener('click', () => {
+      if (!lionRackSelected) return;
+      const { rack, position } = lionRackSelected;
+      fixtureDone(confirmLionLastTested(rack, position) ? { ok: true, message: 'Marked as installed by an operator.' }
+        : { ok: false, message: 'There is no tested unit to confirm.' });
+    });
+    board.querySelector('#lion-fixture-undo').addEventListener('click', () => {
+      if (!lionRackSelected) return;
+      const { rack, position } = lionRackSelected;
+      fixtureDone(restoreLionOccupant(rack, position) ? { ok: true, message: 'Looking for the cleared JBOG again.' }
+        : { ok: false, message: 'Nothing to restore.' });
+    });
+    board.querySelector('#lion-fixture-diag-copy').addEventListener('click', event => {
+      const button = event.currentTarget;
+      copyToClipboard(board.querySelector('#lion-fixture-diag').textContent, null);
+      button.textContent = 'Copied'; setTimeout(() => { button.textContent = 'Copy lookup details'; }, 1500);
+    });
+    board.querySelector('#lion-fixture-backup').addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(lionFixtureRegistry, null, 2)], { type: 'application/json' }));
+      const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'lion-king-fixture-registry.json'; anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+    const adoptFixtures = () => {
+      const before = lionIdentityKey(), registry = readLionFixtureRegistry(), occupancy = readLionOccupancy();
+      const registryChanged = JSON.stringify(registry) !== JSON.stringify(lionFixtureRegistry);
+      if (registryChanged) lionFixtureRegistry = registry;
+      if (JSON.stringify(occupancy) !== JSON.stringify(lionOccupancy)) lionOccupancy = occupancy;
+      resetLionViews();
+      if (registryChanged || lionIdentityKey() !== before) adoptLionIdentities();
+    };
+    if (typeof GM_addValueChangeListener === 'function') {
+      [LION_FIXTURE_REGISTRY_KEY, LION_OCCUPANCY_KEY].forEach(key =>
+        GM_addValueChangeListener(key, (name, oldValue, newValue, remote) => { if (remote) adoptFixtures(); }));
+    }
+    window.addEventListener('storage', event => { if ([LION_FIXTURE_REGISTRY_KEY, LION_OCCUPANCY_KEY].includes(event.key)) adoptFixtures(); });
+    window.addEventListener('focus', adoptFixtures);
+    window.addEventListener('pagehide', flushLionOccupancy);
+    let devSaved = false;
+    try { devSaved = sessionStorage.getItem(LION_DEV_KEY) === '1'; } catch (error) {}
+    setLionDevMode(devSaved);
     refreshLionRackBoard(null);
   }
 
@@ -10344,6 +11418,9 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   let ramsesFailedState = null;
   let ramsesSourceChanged = false;
   const ramsesStartedAt = Date.now();
+  // A failed-board entry already idle longer than this when first seen is not news (the page was just
+  // opened, or the tracker was not watching): it settles without an alert, a card or a notification.
+  const LION_FAILURE_FRESH_MS = 15 * 60000;
 
   function ramsesTime(value) {
     const text = String(value || '').trim();
@@ -10356,6 +11433,15 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
 
   function ramsesRunKey(serial, startedAt) {
     return JSON.stringify(['ramses', 'GPU_JBOG_TEST', serial.toUpperCase(), startedAt]);
+  }
+
+  // The failed board's Idle Time ("0h24m", "1d3h20m") in ms, or NaN when it is not a plain d/h/m/s duration.
+  function lionIdleMs(text) {
+    const value = String(text || '').trim().toLowerCase();
+    const unit = /(\d+)([dhms])/g, scale = { d: 86400000, h: 3600000, m: 60000, s: 1000 };
+    const parts = [...value.matchAll(unit)];
+    return parts.length && value.replace(unit, '').replace(/[\s,]+/g, '') === ''
+      ? parts.reduce((total, [, amount, name]) => total + Number(amount) * scale[name], 0) : NaN;
   }
 
   function ramsesValidPass(row) {
@@ -10786,8 +11872,10 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     });
     for (const row of failures) {
       let member = ramsesFailedState.members[row.key];
+      const idleMs = lionIdleMs(row.idle);
       if (!member || !member.present) {
-        member = { episode: ++ramsesFailedState.sequence, present: true, pending: true };
+        // Already old when first listed: settle it quietly. An unreadable idle time still alerts.
+        member = { episode: ++ramsesFailedState.sequence, present: true, pending: !(idleMs > LION_FAILURE_FRESH_MS) };
         ramsesFailedState.members[row.key] = member;
       }
       if (!member.pending) continue;
@@ -10797,8 +11885,9 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         failureMember: row.key, failureEpisode: member.episode,
         key: JSON.stringify(['ramses-failed-board', row.serial, row.operation, member.episode]),
         jbog: row.serial, tailSerial: row.serial, headSerial: '', started: '', status: 'FAIL', jiraKey: row.jiraKey,
-        operation: row.operation,
-        statusText: `New on JBOG Failed Test board; ${row.operation}; ${row.statusText}; route: ${row.route}` });
+        operation: row.operation, failedAt: Number.isFinite(idleMs) ? Date.now() - idleMs : NaN,
+        statusText: `New on JBOG Failed Test board; ${row.operation}; ${row.statusText}; route: ${row.route}` +
+          (row.idle ? `; idle ${row.idle}` : '') });
     }
     if (Object.keys(ramsesFailedState.members).length > LION_MAX_RUNS) {
       Object.entries(ramsesFailedState.members).filter(([, value]) => !value.present && !value.pending)
@@ -10961,7 +12050,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       `${counts.FAIL} fail, ${counts.UNKNOWN} unknown. ${hidden} old completed rows hidden.` +
       (snapshot.invalidRows ? ` ${snapshot.invalidRows} rows rejected (${lionInvalidRowSummary(snapshot)}); valid rows continue monitoring.` : '') +
       (IS_LION_RAMSES_PAGE ? ` ${snapshot.pretests || 0} running PRETEST rows. Failed board: ` +
-        (snapshot.attention?.usable ? `${attentionGPU} GPU test fails, ${attentionPretest} PRETEST fails. New entries notify separately; Started is not supplied on this board.` :
+        (snapshot.attention?.usable ? `${attentionGPU} GPU test fails, ${attentionPretest} PRETEST fails. New entries notify separately unless already idle over ${LION_FAILURE_FRESH_MS / 60000} min when first seen; Started is not supplied on this board.` :
           'unavailable or incomplete; saved observations retained.') : ''));
     refreshLionRackBoard(snapshot);
     applyAlertFilter();
@@ -10994,7 +12083,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         const pretest = row.status === 'FAIL' && lionIsPretestOperation(operation);
         const transition = row.status === 'PASS' ? 'TEST_SUCCESS' : pretest ? 'PRETEST_FAILURE' : 'TEST_FAILURE';
         const id = 'lion-' + now + '-' + Math.random().toString(36).slice(2);
-        const displayAt = options.history && Number.isFinite(row.finishedAt) ? row.finishedAt : now;
+        const backdated = Number.isFinite(row.failedAt);
+        const displayAt = backdated ? row.failedAt : options.history && Number.isFinite(row.finishedAt) ? row.finishedAt : now;
         record = { id, eventId: id, ts: displayAt, tracker: 'lionking', source: row.source || 'collector', transition,
           title: row.status === 'PASS' ? 'LION KING PASS' : pretest ? 'LION KING PRE-TEST FAIL' : 'LION KING TEST FAIL',
           serial: row.tailSerial, tailSerial: row.tailSerial,
@@ -11004,11 +12094,12 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
           ...lionPhysicalLocation(row), statusLine: `${operation}: ${row.statusText}`,
           detailUrl: row.detailUrl, phaseSource: row.evidence || (row.source === 'ramses' ? 'ramses-passed-data' : 'lionking-table'),
           resultConfirmed: row.source === 'ramses' && row.status === 'PASS',
-          iso: new Date(displayAt).toISOString(), result: row.status, operation,
+          // The log filters on iso (shift floor, cleared-at), so a back-dated card keeps its detection time there.
+          iso: new Date(backdated ? now : displayAt).toISOString(), result: row.status, operation,
           statusText: row.statusText, jbog: row.jbog,
           alertId: lionRowWatch(row) ? id : '',
           eventIso: row.source === 'ramses' && row.finishedAt ? new Date(row.finishedAt).toISOString() : '',
-          timeSource: row.source === 'ramses' && row.finishedAt ? 'source-finished' : 'detected' };
+          timeSource: row.source === 'ramses' && row.finishedAt ? 'source-finished' : backdated ? 'source-idle' : 'detected' };
         appendAlertLog(record);
       }
       flushAlertLog(true);
@@ -11205,7 +12296,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         } catch (error) { return false; }
       });
       if (!nativeRefresh && Date.now() - ramsesStartedAt >= 60000) {
-        savePreviousStates(); flushAlertLog(true); saveRamsesFailedState();
+        savePreviousStates(); flushAlertLog(true); saveRamsesFailedState(); flushLionOccupancy();
         window.location.reload();
         return;
       }
@@ -11300,6 +12391,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         (area === 'lionking1' || (area !== 'unassigned' && Object.prototype.hasOwnProperty.call(LION_AREAS, area)))).slice(0, LION_MAX_RUNS)
       .map(([serial, area]) => [serial.trim().toUpperCase(), area]));
     lionRackBoard = readLionRackBoard();
+    lionFixtureRegistry = readLionFixtureRegistry(); lionOccupancy = readLionOccupancy();
     indexLionRacks();
     Object.keys(LION_AREAS).forEach(lionAreaSettings);
     previousStates = new Map([...loadPreviousStates()].filter(([, value]) => isRecordObject(value) &&
@@ -11557,6 +12649,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       if (tick % 4 === 0) runTickStep('Lion scan', scanLionKing);
       if (tick % 15 === 0) runTickStep('relative times', refreshRelativeTimes);
       if (tick % 60 === 0) runTickStep('log shift', checkLogShiftRollover);
+      if (tick % 10 === 0) runTickStep('fixture lookup', pumpLionFixtures);
       if (tick % HEARTBEAT_EVERY_TICKS === 0) writeHeartbeat(now);
       if (autoRefreshTimer && autoRefreshDueAt && now > autoRefreshDueAt + 2000) refreshLionKing();
     });

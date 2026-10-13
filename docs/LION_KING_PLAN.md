@@ -1,6 +1,6 @@
 # Combined tracker implementation status
 
-**Current:** EVE SLT+JBOG TRACKER **2.0.1**, canonical file
+**Current:** EVE SLT+JBOG TRACKER **2.0.2**, canonical file
 `EVE_SLT_JBOG_TRACKER.user.js`. This replaces the initial v1.1.x discovery plan;
 collector-only source selection, UI-typed UUT navigation and "nothing published"
 statements from that plan are historical, not current instructions.
@@ -26,7 +26,7 @@ statements from that plan are historical, not current instructions.
 ## Constraints for future changes
 
 - Preserve SLT `eveRackTracker*`, Lion `lionKingTracker*` and shared
-  `eveLionRackBoardV1` keys. Display version 2.0.1 is not a storage-schema version.
+  `eveLionRackBoardV1` keys. Display version 2.0.2 is not a storage-schema version.
 - Physical row membership/order is explicit, not inferred from rack prefix,
   list ordinal or source sort. Keep slot 0 top / 1 bottom / 2 left / 3 right.
 - Missing rows, FPY, idle time and ETA never establish PASS. Failed-board
@@ -36,9 +36,8 @@ statements from that plan are historical, not current instructions.
   visuals and surfaced notifications. Do not add child rack switches.
 - Keep real browser sessions, bounded requests/state and validated identities;
   do not store credentials or type into the Lion TestView query form.
-- User instructions override generic repository rules. The current work keeps
-  2.0.1 at the user's request; prior SUBMIT/version-bump prose is not a new
-  approval requirement for an explicitly authorized merge.
+- User instructions override generic repository rules; prior SUBMIT prose is
+  not a new approval requirement for an explicitly authorized merge.
 
 ## Where to continue
 

@@ -510,6 +510,8 @@ test('SLT and Lion King share one installation and origin while keeping settings
     .filter(([key]) => key.startsWith('eveRackTracker'))));
   const { tm } = await openLion(server, { context: slt.context });
   try {
+    // The reused context skips the harness seeds, so Dev-only controls start hidden.
+    await tm.page.check('#eve-developer-mode');
     await tm.page.selectOption('#lion-history-hours', '48');
     await change(tm, 'a', { color: 'red', text: 'CHECK_GPU : 03:12' });
     await eventCount(tm, 1);
