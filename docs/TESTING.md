@@ -65,6 +65,12 @@ and navigation are recorded. `tests/harness/server.mjs` routes requests to local
 fixtures; unexpected requests are retained in `server.unrouted`. There are no
 real Jira/TestView credentials and no changes to production services.
 
+`tests/harness/fixtures.mjs` holds the shared fixture-mapping helpers
+(`FxServer` with a synthetic TestView API, `rec`, `registryOf`, `openFx`,
+`withBuiltIn`). The script ships real fixture serials, so every test swaps the
+built-in list (`withBuiltIn`) and uses synthetic serials; a test must not contain
+a real one.
+
 `instrument()` exposes selected functions as `__eve` in an in-memory copy.
 Update `HOOK_NAMES` only when a named internal function changes. Its terminal
 `bootstrap();` anchor must remain unique. `tests/harness/lion.mjs` explicitly
@@ -82,7 +88,7 @@ these keys or erase saved assignments.
 
 | Files | Main contracts |
 | --- | --- |
-| `static.test.mjs` | Syntax, metadata/grants/hosts, ASCII distribution, matching header/fallback/package/changelog version, current AI guides/function anchors, credentials and sandbox-window guard |
+| `static.test.mjs` | Syntax, metadata/grants/hosts, ASCII distribution, matching header/fallback/package/changelog version, current AI guides/function anchors, credentials and sandbox-window guard, shape of the shipped fixture map (racks on the board, four named positions, no serial listed twice) |
 | `logic.test.mjs` | Transition/phase parsing, dates/time, Jira response parsing, URL/escaping, shifts and dedupe helpers |
 | `rack.test.mjs`, `cellclick.test.mjs`, `dedupe.test.mjs` | SLT baseline/transitions, swaps/retests, independent tabs/copies, click targets, no duplicate audit/toast |
 | `testview.test.mjs` | Existing SLT list/API handoff and controlled form behavior; SLT uses a separate API from JBOGs |
@@ -93,8 +99,10 @@ these keys or erase saved assignments.
 | `lionking-loading.test.mjs` | Early controls during streamed parsing, no partial baselines or events, saved RUNNING preservation, completed-source BLIND health |
 | `lionking-controls.test.mjs` | B6/B7/E2-E4-BL/Unassigned default off, linked visibility/notification preference, row arrow/Enabled sync, no per-rack toggles, bulk controls, normalized/conflicting assignments, audit while disabled, Dev synthetic cards |
 | `lionking-resilience.test.mjs` | Row quarantine, conflicting duplicates, valid completions beside bad rows, last-good stale display cache, origin/schema/text safety and recovery |
-| `lionking-ramses.test.mjs` | Native running/failed boards, PRETEST states and separate PRETEST_FAILURE alerts, failed-membership episodes, passed-result CSV/MPY discovery and silent historical PASS cards, ambiguous/stale-source safety, serial Jira queries ordered by updated DESC |
-| `lionking-rackscan.test.mjs` | Rack Map closed on first load and after closing, rack header status chips and worst-state accent, scan-to-find for rack barcode / tail / head serial / unknown / disabled row |
+| `lionking-ramses.test.mjs` | Native running/failed boards, PRETEST states and separate PRETEST_FAILURE alerts, failed-membership episodes, passed-result CSV/MPY discovery and silent historical PASS cards, ambiguous/stale-source safety, serial Jira queries ordered by updated DESC, the failed-board idle rule (an entry idle over 15 min on first sight settles silently, a fresher one alerts dated now minus idle, unreadable idle still alerts, Rack Map Seen time follows idle) |
+| `lionking-rackscan.test.mjs` | Rack Map closed on first load and after closing, rack header status chips and worst-state accent, scan-to-find for rack barcode / tail / head serial / unknown / disabled row (a serial is refused there, a rack barcode turns its row on). Runs with the built-in fixture list emptied |
+| `lionking-fixtures.test.mjs` | Fixture-anchored mapping against a synthetic Lion source and TestView API: one scan per position, only an active test fills a slot, outages dim without clearing, the x suppresses one attempt, maintenance, in-flight answers discarded on replace, explicit moves, rack scan turns its row on and replays no alerts, background lookups (enabled rows, two at a time), backup/restore validation, reload, a server ignoring `fixture_sn`, PRETEST, units claimed twice, fixture/unit scan, cross-tab adoption, alert-card location, the pure `evaluateLionSlot` rules, record validation |
+| `lionking-fixture-defaults.test.mjs` | Built-in list on a fresh PC and the states and lines it shows, per-PC override and Reset to built-in, registries from before the map (`mapRevision`), backup, the quiet-fixture hint, the Dev gate (locked code paths and UI, per-tab, survives reload, drops a half-done replace), Dev scan routing (fixture, JBOG or ask), "No fixture" positions, dotted rack barcode |
 | `lionking-testview.test.mjs` | Direct UUT API resolution with serial/operation/Started and by-ID validation; authenticated-origin retry; useful fallback; no SN typing/Query clicks |
 | `mutation.mjs`, `lionking*.mutation.mjs` | Targeted faults with immutable candidates and exact original baselines; mutation results require the selected original tests to pass first |
 
@@ -108,6 +116,8 @@ these keys or erase saved assignments.
 | Early bootstrap or cached view | `lionking-loading`, `lionking-resilience`, controls/resilience mutation runners |
 | Ramses evidence/source discovery | `lionking-ramses` and its mutation runner |
 | Row enabling, layout or assignments | `lionking-controls`, `lionking-ramses`, then the manual rack-map checks below |
+| Fixture map, Dev gate, override or the shipped list | `lionking-fixtures`, `lionking-fixture-defaults`, `static` (table shape), `lionking-rackscan` |
+| Failed-board alert time / idle rule | `lionking-ramses` and its mutation runner |
 | JBOG TestView operation/attempt | `lionking-testview` and its mutation runner |
 | Time/shift/export | `timezone`, `shiftlog`, `logic` |
 | Header/name/path/version | `static`; check package scripts and both workflow SCRIPT variables |
@@ -142,6 +152,15 @@ and revision; do not infer success from fixtures.
   issue key. No-key/auth fallback retains serial and query order. Jira reads
   existing browser login; no token is embedded. SLT's existing failure-window
   and direct-ticket behavior is a separate contract.
+- Fixture map (rows B6/B7): scan each rack barcode and compare every position's
+  fixture with the physical rack (top, right, left, bottom). Confirm on the real
+  TestView that a fixture serial filters records, that a running test reads as
+  Occupied and a finished one as Waiting for new, and that Dev stays off for an
+  ordinary tester. Swap one fixture through Fixture setup, then Reset to built-in.
+- Failed-board idle rule: reload a tab that was closed while the board held old
+  failures (no card, no notification), then wait for a genuinely new failure
+  (alerts, dated about now). The Idle Time column meaning is assumed from its
+  format; if a real new failure does not alert, record the cell's text.
 - GPU failures and PRETEST failures have separate filters/counts. Upgrade a
   saved failed-board v1 state quietly; its existing PRETEST entries must not
   flood alerts. A newly observed PRETEST membership alerts as PRETEST_FAILURE,
