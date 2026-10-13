@@ -14,7 +14,7 @@ import { chromium } from 'playwright';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 // EVE_SCRIPT lets tests/mutation.mjs point the whole suite at a mutated copy.
-export const SCRIPT_PATH = process.env.EVE_SCRIPT || path.join(ROOT, 'EVE_SLT_Tracker.user.js');
+export const SCRIPT_PATH = process.env.EVE_SCRIPT || path.join(ROOT, 'EVE SLT+JBOG TRACKER.user.js');
 export const SCRIPT_SOURCE = readFileSync(SCRIPT_PATH, 'utf8');
 export const SCRIPT_VERSION = SCRIPT_SOURCE.match(/^\/\/ @version\s+(\S+)/m)[1];
 
@@ -59,7 +59,7 @@ function gmPrelude(seed) {
       store: ${JSON.stringify(seed.gmStore || {})},
       notifications: [], openedTabs: [], windowOpens: [], xhr: []
     };
-    var GM_info = { script: { version: ${JSON.stringify(seed.version)}, name: 'EVE SLT Tracker' } };
+    var GM_info = { script: { version: ${JSON.stringify(seed.version)}, name: 'EVE SLT+JBOG TRACKER' } };
     function GM_notification(details) { __gm.notifications.push(JSON.parse(JSON.stringify(details, (k, v) => typeof v === 'function' ? '[fn]' : v))); __gm.lastNotification = details; }
     function GM_openInTab(url, opts) { __gm.openedTabs.push(String(url)); return { close() {} }; }
     function GM_setValue(k, v) { __gm.store[k] = v; }
@@ -185,7 +185,7 @@ export async function openWithScript(browser, url, server, options = {}) {
       return r.result.value;
     },
     gm(world = 'tm') { return this.eval('JSON.parse(JSON.stringify({store: __gm.store, notifications: __gm.notifications, openedTabs: __gm.openedTabs, windowOpens: __gm.windowOpens, xhr: __gm.xhr}))', world); },
-    trackerLogs(re = /\[EVE Tracker\]/) { return logs.filter(l => re.test(l)); },
+    trackerLogs(re = /\[EVE SLT\+JBOG TRACKER\]/) { return logs.filter(l => re.test(l)); },
     async waitFor(fn, { timeout = 15000, interval = 100, message = 'condition' } = {}) {
       const until = Date.now() + timeout;
       let last;

@@ -75,7 +75,7 @@ test('two installed copies in one tab: the second stays idle and says why', asyn
     assert.deepEqual(await toasts(tm, 'tm2'), []);
     assert.equal((await sharedLog(tm)).length, 1);
     assert.equal((await tm.page.$$('.eve-alert')).length, 1, 'one card in the shared panel');
-    assert.ok(tm.trackerLogs(/Another copy of EVE SLT Tracker .* is already running/).length, 'idle copy warned');
+    assert.ok(tm.trackerLogs(/Another copy of EVE SLT\+JBOG TRACKER .* is already running/).length, 'idle copy warned');
     assert.ok(await tm.page.$('html[data-eve-slt-tracker]'));
   } finally { await tm.close(); }
 });

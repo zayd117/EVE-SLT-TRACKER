@@ -6,8 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing: open the browser console (F12 -> Console) on the rack
-        page and filter on `[EVE Tracker]`. Everything the tracker prints is
+        Before filing: open the browser console (F12 -> Console) on the source
+        page and filter on `[EVE SLT+JBOG TRACKER]`. Everything the tracker prints is
         prefixed with that, so it is easy to pull out.
 
   - type: input
@@ -15,9 +15,21 @@ body:
     attributes:
       label: Tracker version
       description: >
-        The `[EVE Tracker] EVE SLT Tracker vX.Y.Z running` banner in the
-        console, or the version shown in the Tampermonkey dashboard.
-      placeholder: "1.0.1"
+        The version in the EVE SLT+JBOG TRACKER panel title, console startup
+        banner, or Tampermonkey dashboard.
+      placeholder: "2.0.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source page
+      options:
+        - EVE SLT rack page
+        - Lion King collector
+        - Ramses JBOG dashboard
+        - TestView navigation
     validations:
       required: true
 
@@ -45,8 +57,9 @@ body:
     attributes:
       label: What actually happened
       description: >
-        If an alert was missed, say which slot and what colours it went
-        between. If a false alert fired, paste the alert text.
+        Include the row/slot, operation, and whether the area's Enabled or
+        Notifs control was on. For SLT, include the color transition.
+        If a false alert fired, include its phase and timing.
     validations:
       required: true
 
@@ -55,7 +68,7 @@ body:
     attributes:
       label: Console output
       description: >
-        Any red text, plus the `[EVE Tracker]` lines around the time of the
+        Any red text, plus the `[EVE SLT+JBOG TRACKER]` lines around the time of the
         problem.
       render: text
 
@@ -64,9 +77,8 @@ body:
     attributes:
       label: Refresh diagnostics
       description: >
-        Tick the small `Dev` checkbox in the tracker panel footer. Under
-        "Refresh diagnostics" the panel shows three lines (refresh status,
-        last scan, keep-awake). Paste them here.
+        Enable the Dev checkbox. For SLT, include Refresh diagnostics.
+        For Lion King/Ramses, use Copy source diagnostics in Monitoring status.
       render: text
 
   - type: checkboxes
@@ -74,5 +86,5 @@ body:
     attributes:
       label: Sanity checks
       options:
-        - label: I am on the latest version (Tampermonkey -> Utilities -> Check for userscript updates)
+        - label: I have installed the current file from the repository (version-preserving 2.0.1 updates require a manual update)
         - label: I have hard-refreshed the page (Ctrl+Shift+R)

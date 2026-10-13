@@ -133,6 +133,8 @@ test('IMAGE 5: the gold pre-test outline fires once per failure - back after a r
     assert.equal(await paintNoTicket(), true, 'still there after a reload - not acknowledged yet');
     await tm.page.hover('.eve-alert .eve-alert-jira');
     await tm.page.mouse.move(5, 5);
+    assert.equal(await tm.page.$eval('.eve-alert .eve-alert-jira', el => el.classList.contains('eve-jira-attn')), true,
+      'gold attention remains after first hover until its 10-second fade delay');
     await tm.page.waitForTimeout(10800);
     assert.equal(await tm.page.$eval('.eve-alert .eve-alert-jira', el => el.classList.contains('eve-jira-attn')), false, 'faded');
     for (let i = 0; i < 2; i += 1) {

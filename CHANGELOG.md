@@ -1,12 +1,83 @@
 # Changelog
 
-All notable changes to this project are documented here.
-Versions follow [semantic versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
+The installable script is [EVE SLT+JBOG TRACKER.user.js](<EVE SLT+JBOG TRACKER.user.js>).
+The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.1**.
+Changes merged into `main` are available from the userscript install link;
+version-preserving edits may require a manual reinstall/editor update.
+A changelog entry does not imply a GitHub release tag or signed-in live validation.
 
-Tampermonkey offers an update to installed users whenever `@version` in the
-userscript header increases, so every entry below corresponds to a version
-that was actually shipped. The script itself carries no change notes; they
-all live here.
+## [2.0.1] - 2026-10-12
+
+Combined SLT/JBOG update. The previously local 1.1.x Lion King work is
+consolidated here with the subsequent rack-map and navigation changes.
+Version remains 2.0.1 at the user's request.
+
+### Added
+
+- Lion King collector and Ramses JBOG profiles in the existing userscript.
+  EVE SLT retains its detail-confirmed results, Jira workflow and TestView
+  links; Lion King uses separate settings, cards, logs and observations.
+- Automatic Ramses monitoring of native running/PRETEST tables, the failed
+  board and available passed-result CSV data. GPU passes use validated
+  Started/Finished records; unresolved disappearance is not completion.
+- Collector controls during loading, a bounded display-only last-good row
+  cache, malformed-row quarantine and recovery without discarding valid
+  observations. An incomplete or unusable source cannot establish results.
+- A physical 21-rack map with click-slot/scan-serial assignment, automatic
+  detail lookup, saved locations and the supplied fixed rack order.
+- Compact cross-layout mini cards with timestamps, separate Jira/TestView
+  buttons and a quick **×** to remove the saved slot assignment.
+- Direct Lion King TestView UUT API lookup with serial, operation and optional
+  exact Started matching, followed by by-ID verification before detail
+  navigation. Failure preserves a manual list fallback.
+- Separate Lion King test-fail and PRETEST-fail alerts, filters and counts.
+  PRETEST navigation uses `GPU_JBOG_TEST_PRETEST`.
+
+### Changed
+
+- Rename the visible tool to **EVE SLT+JBOG TRACKER**, keeping the canonical
+  file `EVE SLT+JBOG TRACKER.user.js` and existing storage keys.
+- Simplify Lion King work controls to a single row-level **Enabled** state
+  coupling visibility, collapse arrow and notifications. B6, B7, E2/E4/BL
+  and Unassigned start off during the one-time control migration; subsequent
+  choices persist. Individual racks do not have enable switches.
+- Keep B6/B7 physically adjacent with one shared horizontal scrollbar;
+  E2/E4/BL scrolls separately. Use blue B6, green B7 and purple E2/E4/BL
+  backgrounds. Running cards use a readable medium light green with light
+  text, passes dark green, test fails red and PRETEST fails darker red.
+- Reduce spacing and header clutter. Place row controls beside row labels,
+  move advanced details behind Dev and provide a prominent Rack Map button.
+  Opening the map hides the tracker/alerts; returning restores them.
+- Open Lion King Jira buttons as serial searches ordered by **updated DESC**,
+  including cached-key links, so older cached tickets do not hide newer
+  matching issues. EVE SLT retains its failure-specific Jira behavior.
+
+### Fixed
+
+- Refit the map to the viewport after browser resize, including restoration
+  from a smaller window; stale saved geometry no longer pins its dimensions.
+- Select the current Ramses MPY passed source, ignore stale/hidden copies,
+  accept identical duplicate links and reject conflicting sources. Discard
+  replaced in-flight data and recover when source visibility changes.
+- Keep tracker-hidden rows monitorable while excluding unrelated stale
+  source boards. Preserve quiet baseline and event deduplication across
+  reloads, and persist completion logs before acknowledging event claims.
+- Separate new PRETEST failed-board observations from GPU test failures
+  without replaying old entries during saved-state migration.
+
+### Documentation and validation
+
+- Refresh README, testing/source notes and AI handoff guides around the
+  current combined script, its canonical filename and version 2.0.1.
+- Align package metadata, CI, fixtures and release tooling with the spaced
+  filename. Keep UI symbols as JavaScript Unicode escapes for ASCII distribution;
+  future release tooling updates the multiline fallback and package versions.
+- Include the previously pending development tests and inspection helpers
+  in the repository. Historical fixture evidence remains dated separately;
+  it does not validate later rack-map, navigation or source changes.
+- No new tests/checks were run for this documentation integration, following
+  the user's instruction. Live Jira, TestView, Tampermonkey notifications
+  and internal source behavior still need signed-in manual validation.
 
 ## [1.0.1] - 2026-09-25
 

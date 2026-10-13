@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         eve_slt_Jbog_tracker
+// @name         EVE SLT+JBOG TRACKER
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
 // @version      2.0.1
 // @description  Monitors EVE SLT racks and Lion King tests with in-page and desktop completion alerts.
@@ -23,13 +23,13 @@
 // @grant        GM_addValueChangeListener
 // @connect      jira.synnex.com
 // @connect      testview-eve-fmt.hyvesolutions.org
-// @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/eve_slt_Jbog_tracker.user.js
-// @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/eve_slt_Jbog_tracker.user.js
+// @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE%20SLT%2BJBOG%20TRACKER.user.js
+// @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE%20SLT%2BJBOG%20TRACKER.user.js
 // ==/UserScript==
 
-// eve_slt_Jbog_tracker - by Zay Davidson
+// EVE SLT+JBOG TRACKER - by Zay Davidson
 // Docs, changelog and design notes: https://github.com/zayd117/EVE-SLT-TRACKER
-// Every "// ===== SECTION =====" marker below has notes in docs/CODE_NOTES.md.
+// Function maps and design notes: docs/CODE_NOTES.md and AGENTS.md.
 // Bugs: https://github.com/zayd117/EVE-SLT-TRACKER/issues
 
 (function () {
@@ -40,7 +40,7 @@
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
       : '2.0.1';
-  const LOG_PREFIX = '[eve_slt_Jbog_tracker]';
+  const LOG_PREFIX = '[EVE SLT+JBOG TRACKER]';
 
   // ===== SOURCE PROFILE =====
   const LION_RAMSES_URL = 'http://hyve-cmd101-ramses.hyvesolutions.org:8001/?dashboard=jbog';
@@ -48,7 +48,7 @@
     window.location.pathname === '/' && new URLSearchParams(window.location.search).get('dashboard') === 'jbog';
   const IS_LION_KING_PAGE = IS_LION_RAMSES_PAGE || window.location.pathname === '/out/out.evelionking_all.php';
   let lionInitialDocumentComplete = document.readyState !== 'loading';
-  const TRACKER_LABEL = 'eve_slt_Jbog_tracker';
+  const TRACKER_LABEL = 'EVE SLT+JBOG TRACKER';
 
   function trackerStorageKey(legacyKey) {
     return IS_LION_KING_PAGE ? legacyKey.replace(/^eveRackTracker/, 'lionKingTracker') : legacyKey;
@@ -213,7 +213,7 @@
     }
     lastHealthToastAt = now;
     sendDesktopNotification(
-      `eve_slt_Jbog_tracker ${state}`,
+      `EVE SLT+JBOG TRACKER ${state}`,
       `${healthDetail}\nThis page may NOT be monitored.`,
       ICON_FAIL,
       null
@@ -584,7 +584,7 @@
         );
       }
       say(`gave up after ${TESTVIEW_MAX_TRIES} tries.`);
-      showTestViewBanner(`eve_slt_Jbog_tracker: typed SN ${serial} but the list did not filter. Press Query.`);
+      showTestViewBanner(`EVE SLT+JBOG TRACKER: typed SN ${serial} but the list did not filter. Press Query.`);
     } finally {
       document.removeEventListener('keydown', onUserKey, true);
     }
@@ -790,14 +790,14 @@
         if (Date.now() - startedAt > TESTVIEW_WAIT_MS) {
           finish();
           console.warn(LOG_PREFIX + ' TestView: SN input not found; auto-query skipped.');
-          showTestViewBanner(`eve_slt_Jbog_tracker: could not auto-fill SN ${serial}. Enter it manually.`);
+          showTestViewBanner(`EVE SLT+JBOG TRACKER: could not auto-fill SN ${serial}. Enter it manually.`);
         }
         return;
       }
       finish();
       submitTestViewQuery(input, serial).catch(error => {
         console.error(LOG_PREFIX + ' TestView: auto-query crashed:', error);
-        showTestViewBanner(`eve_slt_Jbog_tracker: auto-query failed (${error && error.message}). Press Query.`);
+        showTestViewBanner(`EVE SLT+JBOG TRACKER: auto-query failed (${error && error.message}). Press Query.`);
       });
     };
     observer = new MutationObserver(attempt);
@@ -4453,7 +4453,7 @@
         'shift were cleared.'
     );
     sendDesktopNotification(
-      `eve_slt_Jbog_tracker \u{2014} NEW ${win.shift.label.toUpperCase()} SHIFT LOG`,
+      `EVE SLT+JBOG TRACKER \u{2014} NEW ${win.shift.label.toUpperCase()} SHIFT LOG`,
       `${count} from the previous shift were cleared.\n` + `Now logging: ${shiftWindowLabel(win)}.`,
       null,
       null
@@ -4928,7 +4928,7 @@
     const lines = [];
     lines.push(
       LOG_RULE,
-      'eve_slt_Jbog_tracker \u{2014} ALERT LOG',
+      'EVE SLT+JBOG TRACKER \u{2014} ALERT LOG',
       'by Zay Davidson',
       `Tracker version: ${SCRIPT_VERSION}`,
       LOG_RULE,
@@ -5161,7 +5161,7 @@
       const link = document.createElement('a');
       link.href = url;
       link.download =
-        `eve_slt_Jbog_tracker-log-${localDateKey(win.starts)}-${win.id}-` + `${time}.${extension}`;
+        `EVE SLT+JBOG TRACKER-log-${localDateKey(win.starts)}-${win.id}-` + `${time}.${extension}`;
       withoutObserver(() => {
         document.body.appendChild(link);
         link.click();
@@ -6374,7 +6374,7 @@ placeholder="Search serial, location or Jira\u{2026}"
     applyAlertFilter();
     if (IS_LION_KING_PAGE) {
       const count = [...document.querySelectorAll('#eve-alert-body .eve-alert')].filter(card => card.style.display !== 'none').length;
-      setTextIfChanged(document.getElementById('lion-rack-back'), 'Back to tracker' + (count ? ' · ' + count + ' alerts' : ''));
+      setTextIfChanged(document.getElementById('lion-rack-back'), 'Back to tracker' + (count ? ' \u{b7} ' + count + ' alerts' : ''));
     }
   }
 
@@ -8130,7 +8130,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     const running = root.getAttribute(RUNNING_ATTR);
     if (running) {
       warn(
-        `Another copy of eve_slt_Jbog_tracker (v${running}) is already running in this ` +
+        `Another copy of EVE SLT+JBOG TRACKER (v${running}) is already running in this ` +
           `tab. This copy (v${SCRIPT_VERSION}) stays idle so every alert is not ` +
           'logged and notified twice. Remove the extra copy in the Tampermonkey ' +
           'Dashboard.'
@@ -8202,7 +8202,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         persistBeforeUnload(false);
       });
       log(
-        `eve_slt_Jbog_tracker v${SCRIPT_VERSION} running\n` +
+        `EVE SLT+JBOG TRACKER v${SCRIPT_VERSION} running\n` +
           '  by Zay Davidson\n' +
           '  Report bugs: ' +
           'https://github.com/zayd117/EVE-SLT-TRACKER/issues'
@@ -8238,7 +8238,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         'background:#7f1d1d;color:#fff;border:2px solid #ef4444;' +
         'font:13px Arial,Helvetica,sans-serif;';
       banner.textContent =
-        `eve_slt_Jbog_tracker v${SCRIPT_VERSION} FAILED TO START. ` +
+        `EVE SLT+JBOG TRACKER v${SCRIPT_VERSION} FAILED TO START. ` +
         'This page is NOT being monitored. ' +
         `Error: ${error && error.message ? error.message : error}`;
       document.body.appendChild(banner);
@@ -8837,11 +8837,11 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         window.location.replace(detail);
         return;
       }
-      showTestViewBanner(`eve_slt_Jbog_tracker: could not resolve the ${target.operation} detail for ${target.serial}. ` +
+      showTestViewBanner(`EVE SLT+JBOG TRACKER: could not resolve the ${target.operation} detail for ${target.serial}. ` +
         'Check your TestView login and try again.');
     } catch (error) {
       if (!userTookOver) {
-        showTestViewBanner(`eve_slt_Jbog_tracker: could not resolve the test for ${target.serial}. ` +
+        showTestViewBanner(`EVE SLT+JBOG TRACKER: could not resolve the test for ${target.serial}. ` +
           'Check your TestView login and try again.');
       }
     } finally {
@@ -9006,7 +9006,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     return { area, rackId: placement && !placement.conflict ? placement.rackId : '',
       rackSlot: placement && !placement.conflict ? placement.rackSlot : null,
       location: placement?.conflict ? 'Conflicting rack assignments - check tail and head nodes' :
-        placement ? placement.rackId + ' · JBOG ' + placement.rackSlot + ' (' + LION_SLOT_LABELS[placement.rackSlot - 1] + ')' :
+        placement ? placement.rackId + ' \u{b7} JBOG ' + placement.rackSlot + ' (' + LION_SLOT_LABELS[placement.rackSlot - 1] + ')' :
           LION_AREAS[area] + ' - JBOG ' + (row.jbog || row.tailSerial || row.serial || '') };
   }
 
@@ -9114,7 +9114,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     }));
     next.slots[rack][position] = { serial: sn, partner: companion || '' };
     if (!saveLionRackBoard(next)) return false;
-    lionRackFeedback(sn + ' saved in ' + rack + ' · JBOG ' + (position + 1) + '.');
+    lionRackFeedback(sn + ' saved in ' + rack + ' \u{b7} JBOG ' + (position + 1) + '.');
     return true;
   }
 
@@ -9125,7 +9125,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       // Another tab may have assigned a different JBOG since this was drawn.
       lionRackBoard = next; indexLionRacks();
       refreshLionRackAlertLocations(); refreshLionRackBoard(lionRackSnapshot);
-      lionRackFeedback('This slot changed. Use the × on its current JBOG.');
+      lionRackFeedback('This slot changed. Use the \u{d7} on its current JBOG.');
       return false;
     }
     next.slots[rack][position] = { serial: '', partner: '' };
@@ -9198,7 +9198,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       } else {
         result.set(sn, { ...row, status: row.operation === 'GPU_JBOG_TEST' ? 'FAIL' : 'PRETEST_FAIL',
           started: '', observedAt: lionRackSeenTimes?.[row.key]?.at || null,
-          statusText: 'Failed action board · ' + (row.route || row.statusText || 'Online') });
+          statusText: 'Failed action board \u{b7} ' + (row.route || row.statusText || 'Online') });
       }
     });
     return result;
@@ -9251,7 +9251,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     return { source: 'rack-api', jbog: tail, tailSerial: tail, headSerial: head,
       started, startedAt, finished: finishedAt === null ? '' : finished, finishedAt,
       durationMs: finishedAt === null ? null : finishedAt - startedAt, status,
-      statusText: 'GPU_JBOG_TEST · ' + (raw || 'Unknown status'), operation: 'GPU_JBOG_TEST',
+      statusText: 'GPU_JBOG_TEST \u{b7} ' + (raw || 'Unknown status'), operation: 'GPU_JBOG_TEST',
       model: text('model'), customer_ipn: text('customer_ipn'), customer: text('customer'),
       uutId: String(record.id), detailURL: new URL('/uut/detail/' + record.id, TESTVIEW_LIST_URL).href,
       lookupAt: Date.now() };
@@ -9303,11 +9303,11 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         jiraURL: jiraListUrl(row?.tailSerial || sn, 'updated', validKey) });
     };
     if (!current()) return;
-    update(true, 'Saved · loading test details…');
+    update(true, 'Saved \u{b7} loading test details\u{2026}');
     const row = await lookupLionRackInfo(sn);
     if (!current()) return;
-    update(false, row || lionRackSourceInfo(sn) ? 'Saved · live details ready' :
-      'Saved · no matching test details available. Your rack assignment is kept.');
+    update(false, row || lionRackSourceInfo(sn) ? 'Saved \u{b7} live details ready' :
+      'Saved \u{b7} no matching test details available. Your rack assignment is kept.');
     const jiraSerial = lionRackInfoForSerial(sn)?.tailSerial || sn;
     try { await resolveJiraUrl(jiraSerial, 0); } catch (error) {}
     const cached = lionRackInfoCache.get(sn), jiraKey = jiraLatestKey(jiraSerial);
@@ -9319,12 +9319,12 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     if (!row) return 'Not in current source';
     if (row.status === 'RUNNING') {
       const finish = average ? row.startedAt + average : null;
-      return 'Running' + (finish ? ' · ETA ' + siteDateTime(new Date(finish)) : ' · no estimate yet');
+      return 'Running' + (finish ? ' \u{b7} ETA ' + siteDateTime(new Date(finish)) : ' \u{b7} no estimate yet');
     }
     if (row.status === 'PRETEST') return 'Running PRETEST';
-    if (row.status === 'PRETEST_FAIL') return 'PRETEST · failed action board';
+    if (row.status === 'PRETEST_FAIL') return 'PRETEST \u{b7} failed action board';
     if (row.status === 'FAIL') return row.started ? 'Failed' : 'Failed action board';
-    if (row.status === 'PASS') return 'Passed' + (row.durationMs ? ' · ' + lionHoursMinutes(row.durationMs) : '');
+    if (row.status === 'PASS') return 'Passed' + (row.durationMs ? ' \u{b7} ' + lionHoursMinutes(row.durationMs) : '');
     return 'Unknown result';
   }
 
@@ -9373,7 +9373,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     const average = lionKingPassAverage(lionRackSnapshot?.rows || []).averageMs;
     const rackCount = lionRackBoard.rows.reduce((total, row) => total + row.racks.length, 0);
     const occupied = Object.values(lionRackBoard.slots).flat().filter(entry => entry.serial).length;
-    setTextIfChanged(board.querySelector('#lion-rack-count'), occupied + '/' + rackCount * 4 + ' slots assigned · ' + rackCount + ' racks');
+    setTextIfChanged(board.querySelector('#lion-rack-count'), occupied + '/' + rackCount * 4 + ' slots assigned \u{b7} ' + rackCount + ' racks');
     setTextIfChanged(board.querySelector('#lion-rack-source'), !lionHasCompletedSnapshot
       ? 'Waiting for the live source; assignments are saved.' : 'Last source update: ' + siteDateTime(new Date(rackDataAt)));
     const signature = JSON.stringify([lionRackBoard, [...lionRackDisplay].map(([sn, row]) =>
@@ -9392,7 +9392,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         '<button type="button" class="lion-rack-row-toggle" data-lion-row-toggle="' + row.area +
         '" aria-controls="lion-rack-row-' + row.area + '" aria-expanded="' + lionAreaSettings(row.area).show +
         '" title="Enable or disable ' + escapeHtml(LION_AREAS[row.area]) + ' visibility and notifications">' +
-        '<span class="lion-rack-row-chevron" aria-hidden="true">›</span><strong>' + escapeHtml(LION_AREAS[row.area]) +
+        '<span class="lion-rack-row-chevron" aria-hidden="true">\u{203a}</span><strong>' + escapeHtml(LION_AREAS[row.area]) +
         '</strong><small>' + row.racks.length + ' racks</small></button>' +
         '<div class="lion-rack-area-controls" data-lion-area-controls="' + row.area + '"></div></div>' +
         '<details id="lion-rack-row-' + row.area + '" class="lion-rack-row" data-area="' + row.area + '" data-row="' + rowIndex + '"' +
@@ -9404,9 +9404,9 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
           return '<article class="lion-physical-rack" data-rack="' + rack + '">' +
             '<header draggable="true" data-rack-drag="' + rack + '"><strong>' + rack + '</strong>' +
             '<span class="lion-rack-assigned">' + occupied + '/4</span><span class="lion-rack-layout-actions">' +
-            '<button type="button" data-rack-action="left" title="Move rack left" aria-label="Move ' + rack + ' left">‹</button>' +
-            '<button type="button" data-rack-action="right" title="Move rack right" aria-label="Move ' + rack + ' right">›</button>' +
-            '<button type="button" data-rack-action="remove" title="Remove empty rack" aria-label="Remove empty ' + rack + '">×</button></span></header>' +
+            '<button type="button" data-rack-action="left" title="Move rack left" aria-label="Move ' + rack + ' left">\u{2039}</button>' +
+            '<button type="button" data-rack-action="right" title="Move rack right" aria-label="Move ' + rack + ' right">\u{203a}</button>' +
+            '<button type="button" data-rack-action="remove" title="Remove empty rack" aria-label="Remove empty ' + rack + '">\u{d7}</button></span></header>' +
             '<div id="lion-rack-positions-' + rack + '" class="lion-rack-positions">' +
             [0, 2, 3, 1].map(position => renderLionRackSlot(rack, position, lionRackBoard.slots[rack][position])).join('') +
             '</div></article>';
@@ -9451,8 +9451,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       const parts = isoDateParts(date.toISOString());
       const clock = (parts.date === today ? '' : parts.date.slice(5).replace('-', '/') + ' ') + parts.time.slice(0, 5);
       const shortLabel = label === 'Started' ? 'Start' : label === 'Finished' ? 'End' : label;
-      return '<small class="lion-rack-stamp" title="' + escapeHtml(label + ': ' + siteDateTime(date) + (age ? ' · ' + age : '')) + '"><span>' +
-        escapeHtml(shortLabel + (!completed && age ? ' · ' + age : '')) + '</span><time datetime="' + date.toISOString() + '">' +
+      return '<small class="lion-rack-stamp" title="' + escapeHtml(label + ': ' + siteDateTime(date) + (age ? ' \u{b7} ' + age : '')) + '"><span>' +
+        escapeHtml(shortLabel + (!completed && age ? ' \u{b7} ' + age : '')) + '</span><time datetime="' + date.toISOString() + '">' +
         escapeHtml(clock) + '</time></small>';
     };
     let html = Number.isFinite(startedAt) ? stamp('Started', startedAt, false) : '';
@@ -9483,11 +9483,11 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       '" data-slot="' + position + '" role="group" aria-label="' + description + '">' +
       (entry.serial ? '<button type="button" class="lion-rack-slot-remove" data-slot-action="remove" data-slot-serial="' +
         escapeHtml(entry.serial) + '" draggable="false" title="Remove ' + escapeHtml(entry.serial) +
-        ' from this slot" aria-label="Remove ' + description + ' from slot">×</button>' : '') +
+        ' from this slot" aria-label="Remove ' + description + ' from slot">\u{d7}</button>' : '') +
       '<button type="button" class="lion-rack-slot-select" data-slot-action="select" aria-label="Select ' + description + '"' +
       (entry.serial ? ' draggable="true"' : '') + '>' +
       '<span class="lion-rack-slot-label">' + ['Top', 'Bottom', 'Left', 'Right'][position] + '</span>' +
-      (!work.show ? '<span class="lion-rack-scan-hint">Hidden · click to show</span>' :
+      (!work.show ? '<span class="lion-rack-scan-hint">Hidden \u{b7} click to show</span>' :
       entry.serial ? '<strong class="lion-rack-sn">' + escapeHtml(entry.serial) + '</strong>' +
         '<span class="lion-rack-result"><i></i>' + escapeHtml(label) +
         (muted ? '<span class="lion-rack-muted" role="img" aria-label="Alerts muted" title="Alerts muted">\u{1f515}</span>' : '') + '</span>' +
@@ -9496,10 +9496,10 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         '<span class="lion-rack-plus">+</span><span class="lion-rack-scan-hint">Scan</span>') +
       '</button>' +
       (entry.serial ? '<div class="lion-rack-slot-links"><button type="button" data-slot-action="jira" draggable="false" title="Open Jira for ' +
-        escapeHtml(entry.serial + (JIRA_KEY_PATTERN.test(String(jira || '')) ? ' · ' + jira : '')) + '" aria-label="Open Jira for ' + description + '">' +
-        'Jira ↗</button>' +
+        escapeHtml(entry.serial + (JIRA_KEY_PATTERN.test(String(jira || '')) ? ' \u{b7} ' + jira : '')) + '" aria-label="Open Jira for ' + description + '">' +
+        'Jira \u{2197}</button>' +
         '<button type="button" data-slot-action="testview" draggable="false" title="Open this JBOG in TestView 2.0" aria-label="Open TestView for ' +
-        description + '">TestView ↗</button></div>' : '') + '</div>';
+        description + '">TestView \u{2197}</button></div>' : '') + '</div>';
   }
 
   function renderLionRackSelection() {
@@ -9513,7 +9513,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     setTextIfChanged(drawer.querySelector('#lion-rack-work-note'), !parent.show ? 'This row is disabled: hidden and alerts muted.' : '');
     const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
     setTextIfChanged(drawer.querySelector('#lion-rack-selected-name'), rack);
-    setTextIfChanged(drawer.querySelector('#lion-rack-selected-position'), LION_SLOT_LABELS[position] + ' · JBOG ' + (position + 1));
+    setTextIfChanged(drawer.querySelector('#lion-rack-selected-position'), LION_SLOT_LABELS[position] + ' \u{b7} JBOG ' + (position + 1));
     setTextIfChanged(drawer.querySelector('#lion-rack-scan-label'), entry.serial ? 'Scan a new serial to replace this JBOG' : 'Scan the JBOG serial');
     setTextIfChanged(drawer.querySelector('#lion-rack-scan-save'), entry.serial ? 'Replace JBOG' : 'Add JBOG');
     const detail = drawer.querySelector('#lion-rack-selected-info');
@@ -9531,12 +9531,12 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     ].filter(([, value]) => value);
     const html = entry.serial ? '<div class="lion-selected-serial">' + escapeHtml(entry.serial) + '</div>' +
       '<div class="lion-selected-status lion-rack-' + (row?.status || 'absent').toLowerCase() + '">' +
-      escapeHtml(row ? lionRackStatusText(row, null) : 'Assignment saved · waiting for test data') + '</div>' +
+      escapeHtml(row ? lionRackStatusText(row, null) : 'Assignment saved \u{b7} waiting for test data') + '</div>' +
       '<dl class="lion-selected-facts">' + data.map(([name, value]) => '<div><dt>' + escapeHtml(name) +
         '</dt><dd>' + escapeHtml(value) + '</dd></div>').join('') + '</dl>' +
       (finish ? '<p class="lion-rack-note">Estimate based on ' + lionKingPassAverage(lionRackSnapshot?.rows || []).samples + ' recent passed runs.</p>' : '') +
       (row?.boardNote ? '<p class="lion-rack-note">' + escapeHtml(row.boardNote) + '</p>' : '') :
-      '<div class="lion-scan-empty"><span>⌁</span><strong>Ready to scan</strong><p>Scan one serial. Its test details appear here automatically.</p></div>';
+      '<div class="lion-scan-empty"><span>\u{2301}</span><strong>Ready to scan</strong><p>Scan one serial. Its test details appear here automatically.</p></div>';
     if (detail.innerHTML !== html) detail.innerHTML = html;
     drawer.querySelector('#lion-rack-open-test').hidden = !entry.serial;
     drawer.querySelector('#lion-rack-open-jira').hidden = !entry.serial;
@@ -9630,7 +9630,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     board.dataset.signature = ''; refreshLionRackBoard(lionRackSnapshot);
     renderLionRackSelection();
     input.focus(); input.select();
-    lionRackFeedback('Selected ' + rack + ' · ' + LION_SLOT_LABELS[position] + '. Scan one serial.');
+    lionRackFeedback('Selected ' + rack + ' \u{b7} ' + LION_SLOT_LABELS[position] + '. Scan one serial.');
     if (lionRackBoard.slots[rack][position].serial) hydrateLionRackSelection();
   }
 
@@ -9680,20 +9680,20 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     const board = document.createElement('section');
     board.id = 'eve-lion-rack-board'; board.setAttribute('data-lion-tracker-ui', 'physical-racks');
     board.setAttribute('aria-label', 'Lion King physical rack board');
-    board.innerHTML = '<header id="lion-rack-title"><div><span class="lion-rack-eyebrow">LION KING · LIVE OPERATIONS</span>' +
+    board.innerHTML = '<header id="lion-rack-title"><div><span class="lion-rack-eyebrow">LION KING \u{b7} LIVE OPERATIONS</span>' +
       '<strong>Rack Board</strong><small id="lion-rack-count" title="Click a slot, then scan its serial"></small>' +
       '<span id="lion-rack-source" hidden></span></div><div class="lion-rack-window-actions">' +
-      '<details class="lion-rack-board-options"><summary aria-label="Board controls" title="Board controls">⋯</summary>' +
+      '<details class="lion-rack-board-options"><summary aria-label="Board controls" title="Board controls">\u{22ef}</summary>' +
       '<div class="lion-rack-all-controls"><button type="button" data-all-work="enabled:true">Enable all</button>' +
       '<button type="button" data-all-work="enabled:false">Disable all</button>' +
       '<button type="button" id="lion-rack-edit-layout" aria-pressed="false">Edit layout</button></div></details>' +
       '<button type="button" id="lion-rack-back" title="Show tracker controls and alert cards">Back to tracker</button>' +
-      '<button type="button" id="lion-rack-expand" title="Fit board to screen" aria-label="Expand rack board">⛶</button>' +
-      '<button type="button" id="lion-rack-close" aria-label="Close rack board">×</button></div></header>' +
+      '<button type="button" id="lion-rack-expand" title="Fit board to screen" aria-label="Expand rack board">\u{26f6}</button>' +
+      '<button type="button" id="lion-rack-close" aria-label="Close rack board">\u{d7}</button></div></header>' +
       '<div id="lion-rack-workspace"><div class="lion-rack-body"><div id="lion-rack-grid"></div>' +
       '<section class="lion-rack-area lion-rack-unplaced-section" data-area="unassigned"><div class="lion-rack-area-head">' +
       '<button type="button" class="lion-rack-row-toggle" data-lion-row-toggle="unassigned" aria-controls="lion-rack-row-unassigned" aria-expanded="false">' +
-      '<span class="lion-rack-row-chevron" aria-hidden="true">›</span><strong>Unassigned</strong><small id="lion-rack-unplaced-count">0</small></button>' +
+      '<span class="lion-rack-row-chevron" aria-hidden="true">\u{203a}</span><strong>Unassigned</strong><small id="lion-rack-unplaced-count">0</small></button>' +
       '<div class="lion-rack-area-controls" data-lion-area-controls="unassigned"></div></div>' +
       '<details id="lion-rack-row-unassigned"><summary hidden>Unassigned JBOGs</summary>' +
       '<input id="lion-rack-find" placeholder="Find a serial or status" aria-label="Find an unassigned JBOG">' +
@@ -9701,20 +9701,20 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       '<section id="lion-rack-layout-tools" hidden><h3>Layout &amp; backup</h3><div class="lion-rack-layout-controls">' +
       '<input id="lion-rack-barcode" list="lion-rack-options" autocomplete="off" placeholder="New rack barcode" aria-label="New rack barcode" maxlength="40">' +
       '<datalist id="lion-rack-options"></datalist><select id="lion-rack-new-row" aria-label="Row for new rack">' +
-      '<option value="0">Row 1 · B6</option><option value="1">Row 2 · B7</option><option value="2">Row 3 · E2/E4/BL</option></select>' +
+      '<option value="0">Row 1 \u{b7} B6</option><option value="1">Row 2 \u{b7} B7</option><option value="2">Row 3 \u{b7} E2/E4/BL</option></select>' +
       '<button type="button" id="lion-rack-add">Add rack</button><button type="button" id="lion-rack-backup">Backup</button>' +
       '<button type="button" id="lion-rack-restore">Restore</button><input type="file" id="lion-rack-file" accept=".json,application/json" hidden></div>' +
       '<p class="lion-rack-note">Drag rack headers to arrange them. Drag a JBOG to an empty slot to move it. Each rack holds four JBOGs.</p></section></div>' +
       '<aside id="lion-rack-drawer" hidden><header><div><span class="lion-rack-eyebrow">SELECTED SLOT</span>' +
       '<strong id="lion-rack-selected-name"></strong><small id="lion-rack-selected-position"></small></div>' +
-      '<button type="button" id="lion-rack-drawer-close" aria-label="Close slot details">×</button></header>' +
+      '<button type="button" id="lion-rack-drawer-close" aria-label="Close slot details">\u{d7}</button></header>' +
       '<div class="lion-rack-drawer-body">' +
       '<div id="lion-rack-work-note" class="lion-rack-note"></div><div id="lion-rack-selected-info"></div>' +
       '<form id="lion-rack-scan"><label id="lion-rack-scan-label" for="lion-rack-serial">Scan the JBOG serial</label>' +
-      '<div class="lion-rack-scan-input"><span aria-hidden="true">⌁</span><input id="lion-rack-serial" autocomplete="off" spellcheck="false" placeholder="Scan serial here" maxlength="120" required></div>' +
+      '<div class="lion-rack-scan-input"><span aria-hidden="true">\u{2301}</span><input id="lion-rack-serial" autocomplete="off" spellcheck="false" placeholder="Scan serial here" maxlength="120" required></div>' +
       '<button type="submit" id="lion-rack-scan-save">Add JBOG</button><small>Scanner Enter saves automatically. You can also type a serial and press Enter.</small></form>' +
       '<div id="lion-rack-feedback" role="status">Ready to scan.</div><div class="lion-rack-detail-actions">' +
-      '<button type="button" id="lion-rack-open-test">TestView ↗</button><button type="button" id="lion-rack-open-jira">Jira ↗</button>' +
+      '<button type="button" id="lion-rack-open-test">TestView \u{2197}</button><button type="button" id="lion-rack-open-jira">Jira \u{2197}</button>' +
       '<button type="button" id="lion-rack-copy-selected">Copy serial</button></div>' +
       '<button type="button" id="lion-rack-clear-selected">Remove from slot</button></div></aside></div>';
     const style = document.createElement('style');
@@ -10949,8 +10949,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         setSectionStat(stats.querySelector('.eve-stat-pretest'), counts.pretest, 'pre');
         setSectionStat(stats.querySelector('.eve-stat-testing'), counts.testing, 'test');
         setSectionStat(stats.querySelector('.eve-stat-pretest-failed'), counts.pretestFailed, 'pre fail');
-        stats.title = `${counts.pretest} running PRETEST · ${counts.testing} running GPU tests · ` +
-          `${counts.pretestFailed} PRETEST fails · ${counts.failed} test fails · ${counts.passed} passed. ` +
+        stats.title = `${counts.pretest} running PRETEST \u{b7} ${counts.testing} running GPU tests \u{b7} ` +
+          `${counts.pretestFailed} PRETEST fails \u{b7} ${counts.failed} test fails \u{b7} ${counts.passed} passed. ` +
           'Failed-board entries are detected observations; the board does not supply test start times.';
         return;
       }
@@ -11261,7 +11261,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       return row;
     };
     if (csv) return [headers.join(','), ...entries.map(entry => values(entry).map(csvEscape).join(','))].join('\r\n');
-    return ['eve_slt_Jbog_tracker - ALERT LOG', `Tracker version: ${SCRIPT_VERSION}`,
+    return ['EVE SLT+JBOG TRACKER - ALERT LOG', `Tracker version: ${SCRIPT_VERSION}`,
       `Shift: ${shiftWindowLabel(currentShiftWindow())}`, `Total alerts: ${entries.length}`,
       IS_LION_RAMSES_PAGE ? 'Detection times are separate from passed-source Finished times. Failed-board entries have no authoritative Started or Finished.' :
         'Times are detection times; the source does not expose a verified Finished timestamp.', '',
@@ -11366,8 +11366,8 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     }
     main.querySelectorAll('.eve-dev-group').forEach(group => group.classList.add('eve-dev-only'));
     panel.querySelector('.eve-bulk-buttons').insertAdjacentHTML('afterend',
-      '<button id="lion-rack-open" type="button" class="lion-rack-quick-open"><span>▦ Rack Map</span>' +
-      '<small>Click a slot · scan a serial</small><b aria-hidden="true">→</b></button>');
+      '<button id="lion-rack-open" type="button" class="lion-rack-quick-open"><span>\u{25a6} Rack Map</span>' +
+      '<small>Click a slot \u{b7} scan a serial</small><b aria-hidden="true">\u{2192}</b></button>');
     panel.querySelector('#eve-show-all').textContent = 'Enable all';
     panel.querySelector('#eve-hide-all').textContent = 'Disable all';
     panel.querySelector('#eve-watch-all').style.display = 'none';
