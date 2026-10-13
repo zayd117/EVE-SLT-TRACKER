@@ -961,9 +961,9 @@
 
   function jiraFoundUrl(serial, failedAt) {
     const hit = jiraCached(serial, failedAt);
-    return hit && hit.state === 'found' && JIRA_KEY_PATTERN.test(String(hit.key))
-      ? jiraIssueUrl(hit.key)
-      : '';
+    if (!hit || hit.state !== 'found' || !JIRA_KEY_PATTERN.test(String(hit.key))) return '';
+    // A cached JBOG ticket may be old; keep the serial's latest activity visible.
+    return IS_LION_KING_PAGE ? jiraListUrl(serial, 'updated', hit.key) : jiraIssueUrl(hit.key);
   }
 
   function jiraUrlFor(serial, failedAt) {
@@ -1283,7 +1283,9 @@
           : count > 1
             ? `\nMost recently updated of ${count} tickets for ${serial}`
             : '') +
-        '\nClick to open in Jira';
+        (IS_LION_KING_PAGE
+          ? '\nClick to search all tickets for this serial, most recently updated first'
+          : '\nClick to open in Jira');
     } else if (result && result.state === 'waiting') {
       cls += ' eve-jira-waiting';
       text = pretest ? 'No ticket yet' : 'Ticket pending';
@@ -1356,11 +1358,15 @@
       : null;
     if (copy) {
       copy.hidden = !found;
-      const link = found ? jiraIssueUrl(result.key) : '';
+      const link = found
+        ? (IS_LION_KING_PAGE ? jiraListUrl(button.dataset.serial || '', 'updated', result.key) : jiraIssueUrl(result.key))
+        : '';
       if (found && copy.dataset.link !== link) {
         copy.dataset.link = link;
         copy.title = `Copy link: ${link}`;
-        copy.setAttribute('aria-label', `Copy link to Jira ticket ${result.key}`);
+        copy.setAttribute('aria-label', IS_LION_KING_PAGE
+          ? `Copy Jira search for ${button.dataset.serial}, most recently updated first`
+          : `Copy link to Jira ticket ${result.key}`);
       }
     }
     if (!loading && result && JIRA_PENDING_STATES.indexOf(result.state) !== -1) {
@@ -6742,7 +6748,7 @@ style="display:none"
 <label class="eve-dev-row" for="eve-notification-click">
 <span>Toast click opens</span>
 <select id="eve-notification-click" class="eve-dev-input">
-<option value="jira">Jira ticket</option>
+<option value="jira">${IS_LION_KING_PAGE ? 'Jira serial search' : 'Jira ticket'}</option>
 <option value="detail">TestView search</option>
 <option value="both">Both</option>
 </select>
@@ -6757,8 +6763,9 @@ spellcheck="false"
 >
 </label>
 <div class="eve-debug-hint">
-Card Jira buttons open the most recently updated
-ticket for the serial, using this browser's Jira
+Card Jira buttons open ${IS_LION_KING_PAGE
+  ? 'all tickets for the serial, sorted by most recently updated'
+  : 'the most recently updated ticket for the serial'}, using this browser's Jira
 login. Nothing is stored or sent anywhere else.
 </div>
 </div>
@@ -9293,7 +9300,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       const row = lionRackInfoForSerial(sn);
       const key = row?.jiraKey || jiraLatestKey(row?.tailSerial || sn), validKey = JIRA_KEY_PATTERN.test(String(key || '')) ? key : '';
       onUpdate({ row, loading, message, jiraKey: validKey,
-        jiraURL: validKey ? jiraIssueUrl(validKey) : jiraUrlFor(row?.tailSerial || sn, 0) });
+        jiraURL: jiraListUrl(row?.tailSerial || sn, 'updated', validKey) });
     };
     if (!current()) return;
     update(true, 'Saved · loading test details…');
@@ -9631,7 +9638,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     let tab = null;
     try { tab = window.open('about:blank', '_blank'); if (tab) tab.opener = null; } catch (error) {}
     let url = jiraSearchUrl(serial, 0);
-    try { url = await resolveJiraUrl(serial, 0) || url; } catch (error) {}
+    try { url = await resolveJiraListUrl(serial, 'updated') || url; } catch (error) {}
     if (tab) {
       if (!tab.closed) try { if (tab.location.href === 'about:blank') tab.location.replace(url); } catch (error) {}
     } else openFromNotification(url);
