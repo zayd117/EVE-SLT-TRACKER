@@ -13,7 +13,8 @@
 
 set -euo pipefail
 
-SCRIPT="EVE SLT+JBOG TRACKER.user.js"
+SCRIPT="EVE_SLT_JBOG_TRACKER.user.js"
+LEGACY_SCRIPT="EVE SLT+JBOG TRACKER.user.js"
 CHANGELOG="CHANGELOG.md"
 
 LEVEL="${1:-}"
@@ -92,6 +93,8 @@ for (const file of ['package.json', 'package-lock.json']) {
 }
 JS
 
+cp -- "$SCRIPT" "$LEGACY_SCRIPT"
+
 node --check "$SCRIPT"
 node scripts/validate-header.mjs "$SCRIPT"
 
@@ -111,7 +114,7 @@ TMP="$(mktemp)"
 mv "$TMP" "$CHANGELOG"
 
 # --- commit, tag, push -------------------------------------------------
-git add "$SCRIPT" "$CHANGELOG" package.json package-lock.json
+git add "$SCRIPT" "$LEGACY_SCRIPT" "$CHANGELOG" package.json package-lock.json
 git commit -m "release: v${NEXT}
 
 ${MESSAGE}"

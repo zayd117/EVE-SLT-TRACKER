@@ -1,6 +1,6 @@
 # EVE SLT+JBOG TRACKER 2.0.1: validation status
 
-Installable file: `EVE SLT+JBOG TRACKER.user.js`. Current version: **2.0.1**.
+Installable file: `EVE_SLT_JBOG_TRACKER.user.js`. Current version: **2.0.1**.
 The current integration includes the combined source, rack map, Jira serial
 search fix, revised development tooling and documentation. **No tests, syntax
 checks, browser checks or verification commands were run for this integration,**

@@ -1,6 +1,6 @@
 # Changelog
 
-The installable script is [EVE SLT+JBOG TRACKER.user.js](<EVE SLT+JBOG TRACKER.user.js>).
+The installable script is [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
 The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.1**.
 Changes merged into `main` are available from the userscript install link;
 version-preserving edits may require a manual reinstall/editor update.
@@ -36,7 +36,7 @@ Version remains 2.0.1 at the user's request.
 ### Changed
 
 - Rename the visible tool to **EVE SLT+JBOG TRACKER**, keeping the canonical
-  file `EVE SLT+JBOG TRACKER.user.js` and existing storage keys.
+  file `EVE_SLT_JBOG_TRACKER.user.js` and existing storage keys.
 - Simplify Lion King work controls to a single row-level **Enabled** state
   coupling visibility, collapse arrow and notifications. B6, B7, E2/E4/BL
   and Unassigned start off during the one-time control migration; subsequent
@@ -69,7 +69,11 @@ Version remains 2.0.1 at the user's request.
 
 - Refresh README, testing/source notes and AI handoff guides around the
   current combined script, its canonical filename and version 2.0.1.
-- Align package metadata, CI, fixtures and release tooling with the spaced
+- Restore a simple `EVE_SLT_JBOG_TRACKER.user.js` install/update URL without
+  encoded spaces or plus signs. Retain the prior filename as an identical
+  compatibility copy for existing update URLs, and document the Tampermonkey
+  Import from URL fallback if browser interception is unavailable.
+- Align package metadata, CI, fixtures and release tooling with the canonical
   filename. Keep UI symbols as JavaScript Unicode escapes for ASCII distribution;
   future release tooling updates the multiline fallback and package versions.
 - Include the previously pending development tests and inspection helpers

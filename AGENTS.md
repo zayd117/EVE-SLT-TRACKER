@@ -1,6 +1,6 @@
 # EVE SLT+JBOG TRACKER: start here
 
-Current version: **2.0.1**. Runtime: **`EVE SLT+JBOG TRACKER.user.js`**.
+Current version: **2.0.1**. Runtime: **`EVE_SLT_JBOG_TRACKER.user.js`**.
 One self-contained Tampermonkey IIFE; no runtime build or npm dependencies.
 `main` is the install/update channel. Node/Playwright files are development only.
 
@@ -17,8 +17,11 @@ docs for a small change. Search function names with `rg -n`; line numbers drift.
   releases, normally bump both `@version` and the `SCRIPT_VERSION` fallback,
   and update CHANGELOG/current docs. Docs/tests-only edits need no runtime bump.
 - Keep branding **EVE SLT+JBOG TRACKER** in the header, panel, logs and current
-  guides. The source filename contains spaces and `+`: quote it in commands;
-  encode the raw URL as `EVE%20SLT%2BJBOG%20TRACKER.user.js`.
+  guides. The canonical filename is `EVE_SLT_JBOG_TRACKER.user.js`; keep install,
+  update and download URLs free of spaces and encoded `+` characters.
+- `EVE SLT+JBOG TRACKER.user.js` is a compatibility copy for already-installed
+  update URLs. Edit the canonical file, then copy it to that legacy path.
+  Both files must remain identical; the release helper synchronizes them.
 - Keep the distributed JS plain ASCII; use JS Unicode escapes for UI symbols.
   Preserve existing storage keys, DOM IDs, locks and migration revisions.
   The displayed release version is separate from persisted schema versions.

@@ -23,8 +23,8 @@
 // @grant        GM_addValueChangeListener
 // @connect      jira.synnex.com
 // @connect      testview-eve-fmt.hyvesolutions.org
-// @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE%20SLT%2BJBOG%20TRACKER.user.js
-// @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE%20SLT%2BJBOG%20TRACKER.user.js
+// @updateURL    https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_JBOG_TRACKER.user.js
+// @downloadURL  https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_JBOG_TRACKER.user.js
 // ==/UserScript==
 
 // EVE SLT+JBOG TRACKER - by Zay Davidson

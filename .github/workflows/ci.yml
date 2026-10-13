@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  SCRIPT: EVE SLT+JBOG TRACKER.user.js
+  SCRIPT: EVE_SLT_JBOG_TRACKER.user.js
 
 jobs:
   validate:

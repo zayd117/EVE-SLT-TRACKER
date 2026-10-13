@@ -1,7 +1,7 @@
 # Combined tracker implementation status
 
 **Current:** EVE SLT+JBOG TRACKER **2.0.1**, canonical file
-`EVE SLT+JBOG TRACKER.user.js`. This replaces the initial v1.1.x discovery plan;
+`EVE_SLT_JBOG_TRACKER.user.js`. This replaces the initial v1.1.x discovery plan;
 collector-only source selection, UI-typed UUT navigation and "nothing published"
 statements from that plan are historical, not current instructions.
 

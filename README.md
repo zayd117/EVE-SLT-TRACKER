@@ -4,16 +4,20 @@
 collector and the Ramses JBOG dashboard. It selects its source from the page
 being viewed and uses the browser's existing Jira and TestView logins.
 
-Installable source: [EVE SLT+JBOG TRACKER.user.js](<EVE SLT+JBOG TRACKER.user.js>).
+Installable source: [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
 Users need only Tampermonkey and this file; Node and the repository tooling
 are for development.
 
 ## Install or update
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) for Edge, Chrome or Firefox.
-2. Open the [userscript install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE%20SLT%2BJBOG%20TRACKER.user.js) and choose **Install** or **Update**.
+2. Open the [userscript install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_JBOG_TRACKER.user.js) and choose **Install** or **Update**.
 3. Open or reload one of the supported pages below. Allow Jira and TestView
    connections when Tampermonkey requests them.
+
+If the link shows code, open **Tampermonkey Dashboard → Utilities → Import
+from URL**, paste the install link and choose **Install**. Automatic opening
+of the installer depends on Tampermonkey being enabled and having site access.
 
 Keep one enabled copy. If the renamed script installs beside an older copy,
 disable the older copy in the Tampermonkey Dashboard. Existing storage keys
@@ -22,6 +26,9 @@ are preserved, including saved rack assignments and SLT state.
 This update intentionally keeps **2.0.1**. Tampermonkey normally offers an
 automatic update only when `@version` increases; existing 2.0.1 users should
 open the install link or replace the editor contents with the complete file.
+The filename uses underscores for a simple install URL; the displayed name
+remains **EVE SLT+JBOG TRACKER**. The previous filename is retained as an
+identical compatibility copy for existing update URLs.
 
 ## Supported pages
 
@@ -182,7 +189,7 @@ relevant source section and deeper notes for the requested change.
 
 | File | Purpose |
 |---|---|
-| [EVE SLT+JBOG TRACKER.user.js](<EVE SLT+JBOG TRACKER.user.js>) | The single installable userscript |
+| [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>) | The single installable userscript |
 | [CHANGELOG.md](CHANGELOG.md) | Current 2.0.1 changes and historical releases |
 | [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Detailed implementation and storage rationale |
 | [docs/TESTING.md](docs/TESTING.md) | Test commands, fixtures, coverage and manual checks |

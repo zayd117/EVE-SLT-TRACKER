@@ -1,6 +1,6 @@
 # Code notes — EVE SLT+JBOG TRACKER 2.0.1
 
-Canonical runtime: `EVE SLT+JBOG TRACKER.user.js`, one self-contained Tampermonkey
+Canonical runtime: `EVE_SLT_JBOG_TRACKER.user.js`, one self-contained Tampermonkey
 IIFE. No build output or backend is needed. Use function names below as search
 anchors; line numbers and old file names are not stable. For the shortest working
 handoff, start with [../AGENTS.md](../AGENTS.md), then open only the relevant
