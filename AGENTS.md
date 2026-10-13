@@ -8,6 +8,10 @@ Read this guide first, then use the task map below to read the relevant
 functions and documentation. Do not rescan the whole repository or load all
 docs for a small change. Search function names with `rg -n`; line numbers drift.
 
+Before any coding task (write, fix, refactor, review), apply the ponytail
+rules in `.claude/skills/ponytail/SKILL.md` (Claude: invoke the `ponytail`
+skill). This guide and the user's current instructions win where they conflict.
+
 ## Editing and delivery
 
 - Honor the user's current scope and authorization. A request to commit,
