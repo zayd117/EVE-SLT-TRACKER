@@ -166,7 +166,7 @@ test('menu: TXT and CSV download the log and close the menu; Dismiss all asks, t
   try {
     await openMenu(tm);
     const [txt] = await Promise.all([tm.page.waitForEvent('download'), tm.page.click('#eve-alert-export')]);
-    assert.match(txt.suggestedFilename(), /^eve-slt-tracker-log-.*\.txt$/);
+    assert.match(txt.suggestedFilename(), /^EVE SLT\+JBOG TRACKER-log-.*\.txt$/);
     assert.equal(await menuOpen(tm), false, 'closes after export');
     await openMenu(tm);
     const [csv] = await Promise.all([tm.page.waitForEvent('download'), tm.page.click('#eve-alert-export-csv')]);

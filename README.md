@@ -1,6 +1,6 @@
 # EVE SLT+JBOG TRACKER
 
-**Version 2.0.1** · One Tampermonkey userscript for EVE SLT, the Lion King
+**Version 2.0.2** · One Tampermonkey userscript for EVE SLT, the Lion King
 collector and the Ramses JBOG dashboard. It selects its source from the page
 being viewed and uses the browser's existing Jira and TestView logins.
 
@@ -23,9 +23,9 @@ Keep one enabled copy. If the renamed script installs beside an older copy,
 disable the older copy in the Tampermonkey Dashboard. Existing storage keys
 are preserved, including saved rack assignments and SLT state.
 
-This update intentionally keeps **2.0.1**. Tampermonkey normally offers an
-automatic update only when `@version` increases; existing 2.0.1 users should
-open the install link or replace the editor contents with the complete file.
+This update is **2.0.2**. Tampermonkey normally offers it as an automatic
+update; otherwise open the install link or replace the editor contents with
+the complete file.
 The filename uses underscores for a simple install URL; the displayed name
 remains **EVE SLT+JBOG TRACKER**. The previous filename is retained as an
 identical compatibility copy for existing update URLs.
@@ -61,10 +61,17 @@ monitoring diagnostics and synthetic notification tools are behind **Dev**.
 
 ### Rack Map
 
-1. Open **Rack Map**.
+1. Open **Rack Map**. It stays closed until you open it.
 2. Enable a physical row, click its rack slot and scan the node serial.
 3. The tracker saves the location and looks up available status, timing and
    linked test information. It does not require manual ticket or test IDs.
+4. To find something later, scan into the box in the title bar (it is focused
+   when the map opens). A rack barcode such as `TA.B6-EVE03` scrolls to and
+   highlights that rack and lists how many of its servers are running, passed
+   or failed; a tail or head serial highlights its rack slot. Each rack header
+   also shows small count chips, with a colored underline for a failure or a
+   location conflict. A rack in a disabled row shows no status; enable the
+   row to see it.
 
 Physical slots use the rack's cross layout:
 
@@ -162,7 +169,7 @@ Finished time, over the latest 24 hours.
 | Rejected rows, BLIND or stale data | Enable Dev and use **Copy source diagnostics**. Preserve the source and error details when reporting the issue. |
 | Storage error | Export the available shift log and free browser storage. Pending completions retry instead of acknowledging an unsaved log. |
 | Another copy is already running | Disable the duplicate userscript. |
-| Window returns at the wrong size | Update to this 2.0.1 file; Rack Map now refits the browser viewport on resize. |
+| Window returns at the wrong size | Update to the current file; Rack Map now refits the browser viewport on resize. |
 
 The tracker uses browser wake mechanisms where available, but a sleeping PC
 cannot monitor. Edge's **Never put these sites to sleep** setting can help
@@ -190,7 +197,7 @@ relevant source section and deeper notes for the requested change.
 | File | Purpose |
 |---|---|
 | [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>) | The single installable userscript |
-| [CHANGELOG.md](CHANGELOG.md) | Current 2.0.1 changes and historical releases |
+| [CHANGELOG.md](CHANGELOG.md) | Current 2.0.2 changes and historical releases |
 | [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Detailed implementation and storage rationale |
 | [docs/TESTING.md](docs/TESTING.md) | Test commands, fixtures, coverage and manual checks |
 | [docs/LION_KING_QA.md](docs/LION_KING_QA.md) | Historical test evidence and current validation limits |
@@ -199,9 +206,8 @@ relevant source section and deeper notes for the requested change.
 | `tests/`, `scripts/`, `package.json` | Development-only tests and helpers |
 
 `main` supplies the userscript install/update URL. A merge is not a release
-tag or evidence that live internal pages have been tested. No new test or
-verification run accompanies this documentation merge; use the testing guide
-for existing evidence and the checks appropriate to a future change. Keep
-version **2.0.1** for this requested update.
+tag or evidence that live internal pages have been tested. Fixture-suite
+results for the current version are recorded in
+[docs/LION_KING_QA.md](docs/LION_KING_QA.md).
 
 MIT. See [LICENSE](LICENSE).

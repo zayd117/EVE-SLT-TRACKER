@@ -1,10 +1,46 @@
-# EVE SLT+JBOG TRACKER 2.0.1: validation status
+# EVE SLT+JBOG TRACKER 2.0.2: validation status
 
-Installable file: `EVE_SLT_JBOG_TRACKER.user.js`. Current version: **2.0.1**.
-The current integration includes the combined source, rack map, Jira serial
-search fix, revised development tooling and documentation. **No tests, syntax
-checks, browser checks or verification commands were run for this integration,**
-following the user's instruction. Editing tests is not evidence they passed.
+Installable file: `EVE_SLT_JBOG_TRACKER.user.js`. Current version: **2.0.2**.
+2.0.2 adds the first-load Rack Map fix, a scan-to-find box and per-rack status
+chips on top of the 2.0.1 integration, and is the first version with recorded
+test results. Those results come from synthetic fixtures only.
+
+## 2.0.2 executed checks
+
+Cloud container, 2026-10-13, Node 22.22, Playwright 1.56.1, Chromium 141.0.7390.37.
+
+| Check | Result |
+|---|---|
+| `npm run check` (syntax, header, `@version`) | pass; four deliberate "@match any host" warnings |
+| Plain-ASCII check of the userscript | 0 non-ASCII lines |
+| `npm test` (9 static, 18 unit, 250 browser tests, including 2 new rack-scan tests) | 277 run, 277 passed, 0 failed |
+| Same browser suites on `main` at 58b6cbc, before this change | 248 run, 208 passed, 40 failed |
+| Browser suites with only the first-load Rack Map fix | 248 run, 241 passed, 7 failed (the 7 are fixed in 2.0.2) |
+| Lion mutation runners (`npm run test:lionking:mutation`, each runner started separately because the first one exits non-zero when anything is not tested) | 27 killed, 1 survived, 5 not tested of 33 mutants |
+| New tests against four deliberate bugs (first-load default, worst-state order, partner serial lookup, disabled-row check) | 4 of 4 caught |
+
+The 40 failures on `main` were mostly one bug: with no saved window state the
+Rack Map opened on first load and hid the tracker panel. The other failures were
+test or harness drift, not product defects: storage re-seeded in every new tab,
+an out-of-date export filename, a Dev-only control tested while hidden, an
+over-broad file-input selector, and Ctrl/Shift/middle-click tests that asserted
+where Chromium lands a fixture-routed new tab.
+
+Mutation detail: collector 7 killed, 3 not tested; direct TestView 4 killed;
+controls 3 killed, 1 not tested; resilience 4 killed, 1 not tested; Ramses 9
+killed, 1 survived. Four not-tested mutants name source lines that were
+reformatted before 2.0.1 ("expected one source anchor, found 0"; they are stale
+on `main` too) and one timed out (`spawnSync ETIMEDOUT`, "Lion storage overwrites
+the original SLT namespace"). The survivor is "an absent running row is
+manufactured into a PASS result": the Ramses suite passes with that bug, a gap
+in an existing test. It was not measurable before, because the Ramses runner's
+baseline times out on `main` (0 of 10 mutants tested there) while the Rack Map
+covers the page. The legacy SLT mutation runner (`npm run test:mutation`) was not
+run; this change does not touch SLT code.
+
+Not verified: real signed-in TestView, Jira or Ramses pages, a real handheld
+scanner (assumed to end each scan with Enter), Tampermonkey on Windows, and
+desktop toasts. Before and after screenshots use the synthetic fixture page.
 
 ## Current manual coverage needed
 
@@ -26,6 +62,11 @@ validation should cover:
   modifier clicks and notification clicks, using the existing login.
 - TestView exact serial/operation/Started matching, PRETEST detail navigation,
   by-ID verification, login errors and manual list fallback.
+- Rack Map closed on a clean first load with the tracker panel visible, and
+  remembered open/closed state after a reload.
+- Scan-to-find with the real handheld scanner (Enter-terminated): rack barcode,
+  tail and head serial, an unknown scan and a rack in a disabled row; header
+  chips and the failure underline.
 - Real Tampermonkey/Windows desktop notifications and background-tab recovery.
 
 ## Historical fixture evidence

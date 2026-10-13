@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         EVE SLT+JBOG TRACKER
 // @namespace    https://github.com/zayd117/EVE-SLT-TRACKER
-// @version      2.0.1
+// @version      2.0.2
 // @description  Monitors EVE SLT racks and Lion King tests with in-page and desktop completion alerts.
 // @author       Zay Davidson
 // @homepageURL  https://github.com/zayd117/EVE-SLT-TRACKER
@@ -39,7 +39,7 @@
   const SCRIPT_VERSION =
     typeof GM_info !== 'undefined' && GM_info && GM_info.script && GM_info.script.version
       ? GM_info.script.version
-      : '2.0.1';
+      : '2.0.2';
   const LOG_PREFIX = '[EVE SLT+JBOG TRACKER]';
 
   // ===== SOURCE PROFILE =====
@@ -8885,6 +8885,10 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       'TA.E4-EVE05', 'TA.E2-EVE03', 'TA.E4-EVE04', 'TA.E2-EVE02', 'TA.E2-EVE05', 'TA.E4-EVE02'] }
   ];
   const LION_SLOT_LABELS = ['Top middle', 'Bottom middle', 'Left middle', 'Right middle'];
+  const LION_RACK_STATE_LABELS = { RUNNING: 'Running', PASS: 'Passed', FAIL: 'Test fail',
+    PRETEST: 'Pre-test', PRETEST_FAIL: 'Pre-test fail', CONFLICT: 'Check location', ABSENT: 'No current data',
+    UNKNOWN: 'Status unavailable' };
+  const LION_ROLLUP_WORDS = { fail: 'failed', check: 'to check', run: 'running', pass: 'passed' };
   let lionRackBoard = null;
   let lionRackIndex = new Map();
   let lionRackSnapshot = null;
@@ -8899,6 +8903,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
   const lionRackExpectedScroll = new WeakMap();
   let lionRackSelectionLoading = false;
   let lionRackSelectionNextAt = 0;
+  let lionRackNoteTimer = 0;
 
   function lionRackSerial(value) {
     const text = String(value || '').trim().toUpperCase();
@@ -9401,9 +9406,12 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
         '<div class="lion-rack-row-scroll"><div class="lion-rack-row-content">' +
         row.racks.map(rack => {
           const occupied = lionRackBoard.slots[rack].filter(entry => entry.serial).length;
-          return '<article class="lion-physical-rack" data-rack="' + rack + '">' +
+          const rollup = lionRackAreaSettings(rack).show ? lionRackRollup(rack) : { worst: '', summary: '', chips: '' };
+          return '<article class="lion-physical-rack" data-rack="' + rack + '"' + (rollup.worst ? ' data-worst="' + rollup.worst + '"' : '') + '>' +
             '<header draggable="true" data-rack-drag="' + rack + '"><strong>' + rack + '</strong>' +
-            '<span class="lion-rack-assigned">' + occupied + '/4</span><span class="lion-rack-layout-actions">' +
+            '<span class="lion-rack-assigned">' + occupied + '/4</span>' +
+            (rollup.chips ? '<span class="lion-rack-rollup" role="img" aria-label="' + rollup.summary + '" title="' + rollup.summary + '">' + rollup.chips + '</span>' : '') +
+            '<span class="lion-rack-layout-actions">' +
             '<button type="button" data-rack-action="left" title="Move rack left" aria-label="Move ' + rack + ' left">\u{2039}</button>' +
             '<button type="button" data-rack-action="right" title="Move rack right" aria-label="Move ' + rack + ' right">\u{203a}</button>' +
             '<button type="button" data-rack-action="remove" title="Remove empty rack" aria-label="Remove empty ' + rack + '">\u{d7}</button></span></header>' +
@@ -9463,15 +9471,29 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     return html ? '<span class="lion-rack-stamps' + (completed ? ' has-two' : '') + '">' + html + '</span>' : '';
   }
 
+  function lionRackSlotState(entry) {
+    const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
+    return row && lionRackPlacement(row)?.conflict ? 'CONFLICT' : row?.status || (entry.serial ? 'ABSENT' : 'EMPTY');
+  }
+
+  // Header chips and accent: counts per rack, worst state first (fail, check, run, pass).
+  function lionRackRollup(rack) {
+    const counts = { fail: 0, check: 0, run: 0, pass: 0 };
+    lionRackBoard.slots[rack].forEach(entry => {
+      const key = { FAIL: 'fail', PRETEST_FAIL: 'fail', CONFLICT: 'check', RUNNING: 'run', PRETEST: 'run', PASS: 'pass' }[lionRackSlotState(entry)];
+      if (key) counts[key] += 1;
+    });
+    const keys = Object.keys(counts).filter(key => counts[key]);
+    return { worst: keys[0] || '', summary: keys.map(key => counts[key] + ' ' + LION_ROLLUP_WORDS[key]).join(' \u{b7} '),
+      chips: keys.map(key => '<b class="rollup-' + key + '">' + counts[key] + '</b>').join('') };
+  }
+
   function renderLionRackSlot(rack, position, entry) {
     const row = entry.serial ? lionRackInfoForSerial(entry.serial) || lionRackInfoForSerial(entry.partner) : null;
-    const conflict = row && lionRackPlacement(row)?.conflict;
-    const state = conflict ? 'CONFLICT' : row?.status || (entry.serial ? 'ABSENT' : 'EMPTY');
+    const state = lionRackSlotState(entry);
     const work = lionRackAreaSettings(rack);
     const selected = lionRackSelected?.rack === rack && lionRackSelected.position === position;
-    const label = { RUNNING: 'Running', PASS: 'Passed', FAIL: 'Test fail',
-      PRETEST: 'Pre-test', PRETEST_FAIL: 'Pre-test fail', CONFLICT: 'Check location', ABSENT: 'No current data',
-      UNKNOWN: 'Status unavailable' }[state] || 'Empty';
+    const label = LION_RACK_STATE_LABELS[state] || 'Empty';
     const timing = row?.status === 'RUNNING' && Number.isFinite(row.startedAt)
       ? lionHoursMinutes(Date.now() - row.startedAt)
       : row?.status === 'PASS' && row.durationMs ? lionHoursMinutes(row.durationMs) : '';
@@ -9616,8 +9638,42 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       writeJSON(localStorage, LION_RACK_WINDOW_KEY, lionRackUI, 'Rack board window');
     }
     document.documentElement.classList.toggle('lion-rack-map-active', open);
-    if (open) refreshLionRackBoard(lionRackSnapshot);
+    if (open) { refreshLionRackBoard(lionRackSnapshot); board.querySelector('#lion-rack-locate').focus(); }
     else refreshAlertChrome();
+  }
+
+  // Scan a rack barcode to see its servers' states, or a serial to find its slot.
+  // shortcut: the highlight is a DOM class, so a board re-render within 5 s clears it.
+  function locateLionRack(text) {
+    const board = document.getElementById('eve-lion-rack-board'), value = String(text || '').trim().toUpperCase();
+    const say = message => {
+      const note = board.querySelector('#lion-rack-locate-note');
+      setTextIfChanged(note, message); clearTimeout(lionRackNoteTimer);
+      lionRackNoteTimer = setTimeout(() => setTextIfChanged(note, ''), 8000);
+    };
+    if (!board || !lionRackBoard || !value) return;
+    let rack = lionRackBarcode(value), position = -1;
+    if (rack) {
+      if (!lionRackBoard.slots[rack]) { say(rack + ' is not on the board.'); return; }
+    } else {
+      const sn = lionRackSerial(value);
+      for (const id of Object.keys(lionRackBoard.slots)) {
+        position = lionRackBoard.slots[id].findIndex(entry => sn && (entry.serial === sn || entry.partner === sn));
+        if (position >= 0) { rack = id; break; }
+      }
+      if (!rack) { say(value + ' is not in any rack. Click a slot and scan it there.'); return; }
+    }
+    const area = lionRackBoard.rows.find(row => row.racks.includes(rack)).area;
+    if (!lionAreaSettings(area).show) { say(rack + ' is in ' + LION_AREAS[area] + ', which is off. Turn that row on to see it.'); return; }
+    const target = board.querySelector('[data-rack="' + rack + '"]' + (position >= 0 ? ' [data-slot="' + position + '"]' : ''));
+    if (target) {
+      target.scrollIntoView({ block: 'nearest', inline: 'center' }); target.classList.add('is-found');
+      setTimeout(() => target.classList.remove('is-found'), 5000);
+    }
+    const slots = lionRackBoard.slots[rack], rollup = lionRackRollup(rack);
+    say(position >= 0
+      ? value + ' is in ' + rack + ' \u{b7} ' + LION_SLOT_LABELS[position] + ' \u{b7} ' + (LION_RACK_STATE_LABELS[lionRackSlotState(slots[position])] || 'Empty')
+      : rack + ' \u{b7} ' + slots.filter(entry => entry.serial).length + '/4 assigned' + (rollup.summary ? ' \u{b7} ' + rollup.summary : ''));
   }
 
   function selectLionRackSlot(rack, position, serial) {
@@ -9682,7 +9738,9 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
     board.setAttribute('aria-label', 'Lion King physical rack board');
     board.innerHTML = '<header id="lion-rack-title"><div><span class="lion-rack-eyebrow">LION KING \u{b7} LIVE OPERATIONS</span>' +
       '<strong>Rack Board</strong><small id="lion-rack-count" title="Click a slot, then scan its serial"></small>' +
-      '<span id="lion-rack-source" hidden></span></div><div class="lion-rack-window-actions">' +
+      '<span id="lion-rack-source" hidden></span></div>' +
+      '<input id="lion-rack-locate" autocomplete="off" spellcheck="false" maxlength="120" placeholder="Scan rack or serial to find" aria-label="Scan a rack barcode or server serial to find it">' +
+      '<div class="lion-rack-window-actions">' +
       '<details class="lion-rack-board-options"><summary aria-label="Board controls" title="Board controls">\u{22ef}</summary>' +
       '<div class="lion-rack-all-controls"><button type="button" data-all-work="enabled:true">Enable all</button>' +
       '<button type="button" data-all-work="enabled:false">Disable all</button>' +
@@ -9690,6 +9748,7 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       '<button type="button" id="lion-rack-back" title="Show tracker controls and alert cards">Back to tracker</button>' +
       '<button type="button" id="lion-rack-expand" title="Fit board to screen" aria-label="Expand rack board">\u{26f6}</button>' +
       '<button type="button" id="lion-rack-close" aria-label="Close rack board">\u{d7}</button></div></header>' +
+      '<div id="lion-rack-locate-note" role="status"></div>' +
       '<div id="lion-rack-workspace"><div class="lion-rack-body"><div id="lion-rack-grid"></div>' +
       '<section class="lion-rack-area lion-rack-unplaced-section" data-area="unassigned"><div class="lion-rack-area-head">' +
       '<button type="button" class="lion-rack-row-toggle" data-lion-row-toggle="unassigned" aria-controls="lion-rack-row-unassigned" aria-expanded="false">' +
@@ -9760,11 +9819,12 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       '@media(max-width:700px){.lion-rack-area-head{flex-wrap:wrap;gap:1px 8px}.lion-rack-area-controls{min-width:240px;gap:6px}.lion-work-counts{gap:4px}.lion-rack-row .lion-physical-rack{flex-basis:518px}.lion-rack-area{padding:0 3px}#lion-rack-title{padding:5px 7px}#lion-rack-back{max-width:120px}}',
       '#eve-lion-rack-board .lion-rack-pool-item:is(.lion-rack-running,.lion-rack-pretest){color:#f0fff4}#eve-lion-rack-board .lion-rack-pool-item:is(.lion-rack-running,.lion-rack-pretest) small{color:#e5f3e8}.lion-rack-area-head{justify-content:flex-start;gap:7px}.lion-rack-area-controls{flex:0 1 auto;gap:10px;min-width:0}.lion-work-counts{flex:0 1 auto}.lion-rack-row .lion-physical-rack{grid-template-columns:max-content minmax(0,1fr);column-gap:8px}.lion-rack-work-row{justify-content:flex-start}.lion-rack-assigned{margin-left:0}#eve-tracker-panel.eve-lion-compact .eve-section-head,#eve-tracker-panel.eve-lion-compact .eve-section-row{grid-template-columns:minmax(0,1fr)}#eve-tracker-panel.eve-lion-compact .lion-section-heading{display:flex;align-items:center;gap:9px}#eve-tracker-panel.eve-lion-compact .eve-bulk-buttons{grid-template-columns:repeat(2,minmax(0,1fr))}#eve-tracker-panel.eve-lion-compact .eve-section-label{width:100%}',
       '#eve-lion-rack-board .lion-physical-rack>header{grid-column:1/3}',
+      '#lion-rack-locate{flex:0 1 190px;min-width:72px;height:24px;box-sizing:border-box;margin:0 6px 0 auto;padding:0 7px;font-size:11px}#lion-rack-locate-note{flex-shrink:0;padding:3px 12px;font-size:11px;color:#9dc6fc;background:#16202d;border-bottom:1px solid var(--lr-line)}#lion-rack-locate-note:empty{display:none}@media(max-width:600px){#lion-rack-title{flex-wrap:wrap}#lion-rack-locate{order:3;flex:1 0 100%;margin:5px 0 0}}.lion-rack-rollup{display:inline-flex;gap:3px;margin-left:6px}.lion-rack-rollup b{font:700 9px/12px Consolas,monospace;padding:0 4px;border:1px solid;border-radius:3px}.rollup-fail{background:#3d1f2c;border-color:#e65c7d;color:#ffd0dc}.rollup-check{background:#42331d;border-color:#e5b65b;color:#f6dca0}.rollup-run{background:#26371c;border-color:#a8d94c;color:#d8f4ad}.rollup-pass{background:#12392d;border-color:#32c28a;color:#bbefda}.lion-physical-rack[data-worst="fail"]>header{box-shadow:0 1px 0 #e65c7d}.lion-physical-rack[data-worst="check"]>header{box-shadow:0 1px 0 #e5b65b}.lion-physical-rack.is-found,.lion-rack-slot.is-found{box-shadow:inset 0 0 0 2px #ffd166}',
       '#eve-lion-rack-board .lion-rack-slot-remove{position:absolute;top:2px;right:3px;z-index:3;width:16px;height:16px;min-width:16px;padding:0!important;border:0!important;border-radius:3px;background:transparent!important;color:inherit!important;font-size:15px;line-height:16px;cursor:pointer}#eve-lion-rack-board .lion-rack-slot-remove:hover{background:#0004!important}.lion-rack-slot.has-remove .lion-rack-slot-label{margin-right:16px}'
     ].join('');
     document.head.appendChild(style); document.body.appendChild(board);
     lionRackUI = readJSON(localStorage, LION_RACK_WINDOW_KEY, null, 'Rack board window');
-    fitLionRackWindow(board); board.hidden = lionRackUI?.open === false;
+    fitLionRackWindow(board); board.hidden = lionRackUI?.open !== true;
     document.documentElement.classList.toggle('lion-rack-map-active', !board.hidden);
     board.querySelector('#lion-rack-close').addEventListener('click', () => setLionRackView(false));
     board.querySelector('#lion-rack-back').addEventListener('click', () => setLionRackView(false));
@@ -9779,6 +9839,10 @@ body.eve-dev-mode .eve-alert-phase-note { display: block; }
       board.querySelector('#lion-rack-layout-tools').hidden = !editing;
     });
     board.querySelector('#lion-rack-find').addEventListener('input', () => refreshLionRackBoard(lionRackSnapshot));
+    board.querySelector('#lion-rack-locate').addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault(); locateLionRack(event.currentTarget.value); event.currentTarget.value = '';
+    });
     board.addEventListener('change', event => {
       const input = event.target, property = input.dataset.workProperty;
       if (input.dataset.workArea && property === 'enabled') {

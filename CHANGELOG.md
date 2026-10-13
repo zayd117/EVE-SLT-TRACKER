@@ -1,10 +1,37 @@
 # Changelog
 
 The installable script is [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
-The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.1**.
+The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.2**.
 Changes merged into `main` are available from the userscript install link;
 version-preserving edits may require a manual reinstall/editor update.
 A changelog entry does not imply a GitHub release tag or signed-in live validation.
+
+## [2.0.2] - 2026-10-13
+
+Rack Map first-load fix, a scan-to-find box and per-rack status chips.
+
+### Fixed
+
+- The Rack Map no longer opens on first load. With no saved window state it
+  opened over the page and hid the tracker panel and alert cards. It now opens
+  only after **Rack Map** is clicked; an open map is still remembered across
+  page reloads.
+- Test-only: seven browser-test failures. The harness re-seeded storage in every
+  new tab of a context and overwrote saved settings; the log-export, hidden
+  Dev-control and manual-CSV-import assertions were out of date; the modifier
+  click tests asserted where Chromium lands a fixture-routed new tab.
+
+### Added
+
+- **Scan to find** box in the Rack Board title bar (focused when the map opens).
+  Scan a rack barcode such as `TA.B6-EVE03` to scroll to and highlight it with
+  a summary of its servers, or scan a tail/head serial to find its rack and
+  slot. Unknown scans and racks in a disabled row get a plain explanation.
+- Per-rack status chips in each rack header (failed, to check, running, passed)
+  and a colored underline for racks holding a failure or a location conflict.
+  Racks in a disabled row show no status.
+- `tests/lionking-rackscan.test.mjs` covers first-load state, chips and
+  scan-to-find.
 
 ## [2.0.1] - 2026-10-12
 
