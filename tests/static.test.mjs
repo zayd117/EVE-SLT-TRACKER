@@ -72,6 +72,30 @@ test('no credentials or tokens in tracked text files', () => {
   for (const f of files) assert.doesNotMatch(read(f), secret, f);
 });
 
+// The built-in fixture map decides where every tester sees a server, so a typo here mis-maps a rack for everyone.
+test('built-in fixture map: racks on the board, four named positions, no serial listed twice', () => {
+  const literal = (name, close) => new Function('return ' + src.match(new RegExp(`const ${name} = ([\\s\\S]*?${close});`))[1])();
+  const map = literal('LION_DEFAULT_FIXTURES', '\\n  \\}');
+  const rows = literal('LION_RACK_ROWS', '\\n  \\]');
+  const onBoard = new Set(rows.flatMap(row => row.racks)), seen = new Map();
+  for (const [rack, positions] of Object.entries(map)) {
+    assert.ok(onBoard.has(rack), `${rack} is a rack on the board`);
+    assert.deepEqual(Object.keys(positions).sort(), ['bottom', 'left', 'right', 'top'], `${rack} names all four positions`);
+    assert.ok(Object.values(positions).some(Boolean), `${rack} lists at least one fixture`);
+    for (const [position, value] of Object.entries(positions)) {
+      for (const serial of [].concat(value).filter(Boolean)) {
+        assert.match(serial, /^[A-Z0-9]{6,20}$/, `${rack} ${position} is a clean serial`);
+        assert.ok(!seen.has(serial), `${serial} is listed at ${rack} ${position} and at ${seen.get(serial)}`);
+        seen.set(serial, `${rack} ${position}`);
+      }
+    }
+  }
+  // Rows B6 and B7 are written down in full.
+  for (const row of rows.filter(item => ['b6', 'b7'].includes(item.area))) {
+    for (const rack of row.racks) assert.ok(map[rack], `${rack} is in the built-in map`);
+  }
+});
+
 test('only known hosts are hard-coded in the script', () => {
   // Adding a host is a reviewed decision (public repo). Update this list only
   // together with README "Privacy" and docs/TESTING.md.

@@ -85,12 +85,11 @@ for (const [name, opts] of [
       await tm.page.click(`${cellSel(EVE01, 'U2')}//a`, opts);
       const opened = await popup;
       assert.deepEqual(await opens(tm), [], 'tracker did not open TestView');
-      if (opened) {
-        // A new tab starts at about:blank; wait for the browser's own navigation.
-        await opened.waitForURL(/eveserverdetail/, { timeout: 5000 }).catch(() => {});
-        assert.match(opened.url(), /eveserverdetail/, 'browser opened the link itself');
-        await opened.close();
-      }
+      // A tracker-handled click would stub window.open and create no tab. Where
+      // the fixture-routed tab lands is Chromium-version dependent (chrome-error
+      // in the cloud container), so assert only that the browser opened one.
+      assert.ok(opened, 'browser opened the link itself');
+      await opened.close();
     }));
 }
 

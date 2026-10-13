@@ -1,10 +1,69 @@
 # Changelog
 
 The installable script is [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
-The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.1**.
+The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.2**.
 Changes merged into `main` are available from the userscript install link;
 version-preserving edits may require a manual reinstall/editor update.
 A changelog entry does not imply a GitHub release tag or signed-in live validation.
+
+## [2.0.2] - 2026-10-13
+
+Fixture-based rack mapping, a failure-alert fix, the Rack Map first-load fix, a
+scan-to-find box and per-rack status chips.
+
+### Fixed
+
+- Failed-board alerts after a long absence. Every JBOG already on the Ramses
+  failed board when a tab opened fired a card and a desktop notification dated
+  with the laptop clock. An entry that is new to the saved state and idle for
+  more than 15 minutes (the board's own Idle Time) now settles quietly. A
+  fresher entry alerts with its time taken as now minus Idle Time, and the rack
+  map's Seen stamp uses the same evidence. An unreadable Idle Time alerts as
+  before. Passes, the collector and the SLT profile are unchanged.
+- The Rack Map no longer opens on first load. With no saved window state it
+  opened over the page and hid the tracker panel and alert cards. It now opens
+  only after **Rack Map** is clicked; an open map is still remembered across
+  page reloads.
+- Test-only: seven browser-test failures. The harness re-seeded storage in every
+  new tab of a context and overwrote saved settings; the log-export, hidden
+  Dev-control and manual-CSV-import assertions were out of date; the modifier
+  click tests asserted where Chromium lands a fixture-routed new tab.
+
+### Added
+
+- **Fixture-based rack mapping.** Each rack position is anchored by the fixture
+  installed there. The script lists the fixtures of rows B6 and B7 (10 racks),
+  and the JBOG on a fixture is read from TestView test records
+  (`GPU_JBOG_TEST`, `GPU_JBOG_TEST_PRETEST`; exact operation, full history), so
+  a tester scans nothing. A fixture position reads **Occupied** (a test is
+  running), **Waiting for new** (nothing running), **Empty** (no TestView
+  record) or **No fixture** (the list leaves the position empty). History alone
+  never fills a slot; an outage dims it without clearing; a unit claimed by two
+  positions goes to the one testing it now. The slot card, tooltip, selected
+  slot and rack-scan lines show the fixture serial.
+- **Dev box** in the board's **...** menu (per tab, off by default). Fixture
+  changes need it: Fixture setup (replace, add, move, remove), maintenance,
+  Reset to built-in and the fixture backup. A change stays on that PC; the scan
+  box then takes a fixture or a JBOG serial and asks when it cannot tell.
+  Saved lists from before the built-in map are ignored once on mapped racks
+  (`mapRevision`).
+- Scanning a mapped rack lists Top, Right, Left and Bottom with fixture and
+  state, turns the rack's row on and looks its fixtures up at once. A barcode
+  with a dot before EVE (`TA.B6.EVE03`) is read as `TA.B6-EVE03`.
+- Owner decision, 2026-10-13: the fixture serials of rows B6 and B7 ship in the
+  public script. Tests use synthetic serials only.
+- **Scan to find** box in the Rack Board title bar (focused when the map opens).
+  Scan a rack barcode such as `TA.B6-EVE03` to scroll to and highlight it with
+  a summary of its servers, or scan a tail/head serial to find its rack and
+  slot. Unknown scans and racks in a disabled row get a plain explanation.
+- Per-rack status chips in each rack header (failed, to check, running, passed)
+  and a colored underline for racks holding a failure or a location conflict.
+  Racks in a disabled row show no status.
+- `tests/lionking-rackscan.test.mjs` covers first-load state, chips and
+  scan-to-find. `tests/lionking-fixtures.test.mjs` and
+  `tests/lionking-fixture-defaults.test.mjs` (with `tests/harness/fixtures.mjs`)
+  cover the fixture map, the override rules and the Dev gate; `static.test.mjs`
+  checks the shipped table; `lionking-ramses.test.mjs` covers the idle rule.
 
 ## [2.0.1] - 2026-10-12
 
