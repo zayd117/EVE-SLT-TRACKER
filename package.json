@@ -4,7 +4,7 @@
   "description": "Dev-only tooling for the EVE SLT+JBOG TRACKER userscript. Nothing here ships to users.",
   "type": "module",
   "scripts": {
-    "check": "node --check \"EVE SLT+JBOG TRACKER.user.js\" && node scripts/validate-header.mjs \"EVE SLT+JBOG TRACKER.user.js\"",
+    "check": "node --check \"EVE_SLT_JBOG_TRACKER.user.js\" && node scripts/validate-header.mjs \"EVE_SLT_JBOG_TRACKER.user.js\"",
     "test": "node --test --test-concurrency=1 \"tests/*.test.mjs\"",
     "test:static": "node --test tests/static.test.mjs",
     "test:unit": "node --test tests/logic.test.mjs",

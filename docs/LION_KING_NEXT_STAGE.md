@@ -3,7 +3,7 @@
 **EVE SLT+JBOG TRACKER 2.0.1** implements the faster-source adapter and physical
 rack map. This replaces the old "next-stage" proposal; it is a current layout
 reference and a list of remaining evidence limits, not an unimplemented plan.
-Runtime: `EVE SLT+JBOG TRACKER.user.js`. Source contracts:
+Runtime: `EVE_SLT_JBOG_TRACKER.user.js`. Source contracts:
 [LION_KING_SOURCE_NOTES.md](LION_KING_SOURCE_NOTES.md).
 
 ## Exact physical rows, left to right

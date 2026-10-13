@@ -27,7 +27,7 @@ let base = null;
 let baseSource = null;
 
 try {
-    // Keep the spaced canonical filename in one Git object argument rather
+    // Keep the canonical filename in one Git object argument rather
     // than interpolating it into a shell command.
     baseSource = execFileSync('git', ['show', `${baseRef}:${path}`], { encoding: 'utf8' });
     base = versionOf(baseSource);

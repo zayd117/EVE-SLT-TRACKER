@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const original = readFileSync(new URL('../EVE SLT+JBOG TRACKER.user.js', import.meta.url), 'utf8');
+const original = readFileSync(new URL('../EVE_SLT_JBOG_TRACKER.user.js', import.meta.url), 'utf8');
 const dir = mkdtempSync(path.join(tmpdir(), 'eve-mutant-'));
 
 const MUTANTS = [

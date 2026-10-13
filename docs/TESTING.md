@@ -1,6 +1,6 @@
 # Testing EVE SLT+JBOG TRACKER
 
-Current install: [`EVE SLT+JBOG TRACKER.user.js`](../EVE%20SLT%2BJBOG%20TRACKER.user.js), version **2.0.1**.
+Current install: [`EVE_SLT_JBOG_TRACKER.user.js`](../EVE_SLT_JBOG_TRACKER.user.js), version **2.0.1**.
 Read [AGENTS.md](../AGENTS.md) before investigating a failure; use
 [CODE_NOTES.md](CODE_NOTES.md) to locate the relevant function. Historical Lion
 QA notes describe earlier revisions, not evidence that this version passed.
@@ -52,7 +52,7 @@ EVE_CHROMIUM=/usr/bin/chromium npm run test:lionking
 EVE_SCRIPT="/tmp/candidate.user.js" node --test tests/lionking-controls.test.mjs
 ```
 
-The filename contains spaces and `+`; quote it in shell commands. `EVE_SCRIPT`
+The canonical install filename is ASCII without spaces or `+`. `EVE_SCRIPT`
 selects an immutable candidate copy for the harness. Mutation runners read the
 canonical source, create temporary copies and leave the checkout unchanged.
 A failed original baseline, invalid mutant or missing source anchor is
@@ -168,6 +168,8 @@ integration may need manual reinstall. Do not bump it during cleanup.
 For a later authorized release, `scripts/release.sh patch "summary"` requires
 clean `main`, updates all version fields and changelog, checks metadata, commits,
 tags and pushes. It is a publishing action, not a routine docs command. The
-PR guard compares versions using Git arguments safe for the spaced filename.
-Current workflows publish `EVE SLT+JBOG TRACKER.user.js`; update/download URLs
-encode its spaces and plus sign. Keep old storage names for migration.
+PR guard compares versions using Git argument arrays rather than a shell command.
+Current workflows publish `EVE_SLT_JBOG_TRACKER.user.js`; update/download URLs
+use that same simple filename. The old `EVE SLT+JBOG TRACKER.user.js` path is
+an identical compatibility copy, synchronized by the release helper; keep it
+in sync after runtime edits. Keep old storage names for migration.

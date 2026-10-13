@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const original = readFileSync(path.join(ROOT, 'EVE SLT+JBOG TRACKER.user.js'), 'utf8');
+const original = readFileSync(path.join(ROOT, 'EVE_SLT_JBOG_TRACKER.user.js'), 'utf8');
 const MUTANTS = [
   {
     name: 'partial initial document is scanned and consumes the saved RUNNING baseline',

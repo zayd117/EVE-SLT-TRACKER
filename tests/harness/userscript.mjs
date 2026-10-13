@@ -14,7 +14,7 @@ import { chromium } from 'playwright';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 // EVE_SCRIPT lets tests/mutation.mjs point the whole suite at a mutated copy.
-export const SCRIPT_PATH = process.env.EVE_SCRIPT || path.join(ROOT, 'EVE SLT+JBOG TRACKER.user.js');
+export const SCRIPT_PATH = process.env.EVE_SCRIPT || path.join(ROOT, 'EVE_SLT_JBOG_TRACKER.user.js');
 export const SCRIPT_SOURCE = readFileSync(SCRIPT_PATH, 'utf8');
 export const SCRIPT_VERSION = SCRIPT_SOURCE.match(/^\/\/ @version\s+(\S+)/m)[1];
 

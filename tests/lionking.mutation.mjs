@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SCRIPT = path.join(ROOT, 'EVE SLT+JBOG TRACKER.user.js');
+const SCRIPT = path.join(ROOT, 'EVE_SLT_JBOG_TRACKER.user.js');
 const SUITE = path.join(ROOT, 'tests', 'lionking.test.mjs');
 const original = readFileSync(SCRIPT, 'utf8');
 const MUTANTS = [

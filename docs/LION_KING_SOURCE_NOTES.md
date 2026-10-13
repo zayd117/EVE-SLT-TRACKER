@@ -1,7 +1,7 @@
 # Lion King source evidence and current contracts
 
 Current implementation: **EVE SLT+JBOG TRACKER 2.0.1**,
-`EVE SLT+JBOG TRACKER.user.js`. This separates historical observations from the
+`EVE_SLT_JBOG_TRACKER.user.js`. This separates historical observations from the
 contracts now implemented. [CODE_NOTES.md](CODE_NOTES.md) maps them to functions;
 [LION_KING_QA.md](LION_KING_QA.md) records validation scope. No credentials or
 real serial/record IDs are required in fixtures or future captures.

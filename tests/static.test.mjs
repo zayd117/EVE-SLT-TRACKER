@@ -46,7 +46,7 @@ test('AI entry guides and the compact code map point to current runtime function
   const agents = read('AGENTS.md');
   const claude = read('CLAUDE.md');
   for (const guide of [notes, agents, claude]) {
-    assert.ok(guide.includes('EVE SLT+JBOG TRACKER.user.js'), 'guide names the canonical source');
+    assert.ok(guide.includes('EVE_SLT_JBOG_TRACKER.user.js'), 'guide names the canonical source');
   }
   assert.ok(claude.includes('[AGENTS.md](AGENTS.md)'), 'Claude links to the shared entry guide');
   assert.ok(agents.includes('docs/TESTING.md'), 'entry guide points to focused test coverage');
