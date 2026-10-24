@@ -1,6 +1,10 @@
 # Changelog
 
-The installable script is [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
+The current script is [EVE_SLT_TRACKER.user.js](<EVE_SLT_TRACKER.user.js>)
+(3.1.2); its notes are in [CHANGELOG-3.1.2.md](<CHANGELOG-3.1.2.md>). The entries below
+are for the legacy 2.0.2 SLT+JBOG script.
+
+The legacy installable script is [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
 The display name is **EVE SLT+JBOG TRACKER** and the current version is **2.0.2**.
 Changes merged into `main` are available from the userscript install link;
 version-preserving edits may require a manual reinstall/editor update.

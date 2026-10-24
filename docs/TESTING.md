@@ -1,5 +1,9 @@
 # Testing EVE SLT+JBOG TRACKER
 
+`EVE_SLT_TRACKER.user.js` (3.1.2) has only `tests/tracker3.static.test.mjs`
+(syntax, header, ASCII, version); its behavior was checked on a mock board outside
+this repository, not on the live sites. The rest of this page covers the legacy script.
+
 Current install: [`EVE_SLT_JBOG_TRACKER.user.js`](../EVE_SLT_JBOG_TRACKER.user.js), version **2.0.2**.
 Read [AGENTS.md](../AGENTS.md) before investigating a failure; use
 [CODE_NOTES.md](CODE_NOTES.md) to locate the relevant function. Historical Lion

@@ -1,6 +1,9 @@
 # EVE SLT+JBOG TRACKER: start here
 
-Current version: **2.0.2**. Runtime: **`EVE_SLT_JBOG_TRACKER.user.js`**.
+> The current script is `EVE_SLT_TRACKER.user.js` (3.1.2, see `CHANGELOG-3.1.2.md`).
+> This guide describes the legacy 2.0.2 script and its tests, which stay unchanged.
+
+Current legacy version: **2.0.2**. Runtime: **`EVE_SLT_JBOG_TRACKER.user.js`**.
 One self-contained Tampermonkey IIFE; no runtime build or npm dependencies.
 `main` is the install/update channel. Node/Playwright files are development only.
 
