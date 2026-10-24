@@ -7,7 +7,9 @@ on:
     branches: [main]
 
 env:
-  SCRIPT: EVE_SLT_JBOG_TRACKER.user.js
+  # Current script (3.x). The 2.0.2 SLT+JBOG file is kept as a legacy copy.
+  SCRIPT: EVE_SLT_TRACKER.user.js
+  LEGACY_SCRIPT: EVE_SLT_JBOG_TRACKER.user.js
 
 jobs:
   validate:
@@ -27,7 +29,9 @@ jobs:
       #    ships broken and every user's tracker silently dies.
       # ------------------------------------------------------------
       - name: Syntax check
-        run: node --check "$SCRIPT"
+        run: |
+          node --check "$SCRIPT"
+          node --check "$LEGACY_SCRIPT"
 
       # ------------------------------------------------------------
       # 2. The userscript header is the install/update contract.

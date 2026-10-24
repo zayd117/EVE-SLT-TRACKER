@@ -1,7 +1,9 @@
 # EVE SLT+JBOG TRACKER
 
-Current version: **2.0.2**. The installable source is
-`EVE_SLT_JBOG_TRACKER.user.js`.
+Current script: **EVE SLT TRACKER 3.1.2**, `EVE_SLT_TRACKER.user.js` (notes in
+`CHANGELOG-3.1.2.md`; mock-board checks only). The legacy **2.0.2**
+`EVE_SLT_JBOG_TRACKER.user.js`, its compatibility copy and the tests below
+are kept unchanged; AGENTS.md describes that legacy script.
 
 Read [AGENTS.md](AGENTS.md) first. It is the shared ChatGPT/Codex/Claude
 handoff: current architecture, constraints, behavior invariants and a
