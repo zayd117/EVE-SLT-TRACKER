@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  SCRIPT: EVE_SLT_JBOG_TRACKER.user.js
+  SCRIPT: EVE_SLT_TRACKER.user.js
 
 jobs:
   publish:

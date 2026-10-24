@@ -1,5 +1,15 @@
 # EVE SLT+JBOG TRACKER
 
+> **Current script: EVE SLT TRACKER 3.1.2.** Install
+> [EVE_SLT_TRACKER.user.js](<EVE_SLT_TRACKER.user.js>)
+> ([install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_TRACKER.user.js)).
+> It covers EVE SLT racks, the TestView live dashboard, Jira, Send to Repair via
+> SFCS and Bulk PRETEST; Lion King, Ramses and JBOG monitoring were removed. It
+> uses the same browser storage keys. Disable the older "EVE SLT+JBOG TRACKER"
+> copy in Tampermonkey so only one runs. What changed: [CHANGELOG-3.1.2.md](<CHANGELOG-3.1.2.md>).
+> It was checked on a mock board only, not on the live sites. The sections below
+> describe the legacy 2.0.2 script, kept in the repository unchanged with its tests.
+
 **Version 2.0.2** · One Tampermonkey userscript for EVE SLT, the Lion King
 collector and the Ramses JBOG dashboard. It selects its source from the page
 being viewed and uses the browser's existing Jira and TestView logins.
