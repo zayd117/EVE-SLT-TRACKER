@@ -1,246 +1,186 @@
-# EVE SLT+JBOG TRACKER
+# EVE SLT TRACKER
 
-> **Current script: EVE SLT TRACKER 3.1.2.** Install
-> [EVE_SLT_TRACKER.user.js](<EVE_SLT_TRACKER.user.js>)
-> ([install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_TRACKER.user.js)).
-> It covers EVE SLT racks, the TestView live dashboard, Jira, Send to Repair via
-> SFCS and Bulk PRETEST; Lion King, Ramses and JBOG monitoring were removed. It
-> uses the same browser storage keys. Disable the older "EVE SLT+JBOG TRACKER"
-> copy in Tampermonkey so only one runs. What changed: [CHANGELOG-3.1.2.md](<CHANGELOG-3.1.2.md>).
-> It was checked on a mock board only, not on the live sites. The sections below
-> describe the legacy 2.0.2 script, kept in the repository unchanged with its tests.
+**Version 3.1.2** · A Tampermonkey userscript that watches the EVE SLT racks and tells you the moment a server fails, passes or needs repair.
 
-**Version 2.0.2** · One Tampermonkey userscript for EVE SLT, the Lion King
-collector and the Ramses JBOG dashboard. It selects its source from the page
-being viewed and uses the browser's existing Jira and TestView logins.
+![The tracker next to the rack board](docs/img/overview.png)
 
-Installable source: [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>).
-Users need only Tampermonkey and this file; Node and the repository tooling
-are for development.
+*Mock board for screenshots. Left: JIRAlerts. Right: the tracker.*
 
-## Install or update
+---
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) for Edge, Chrome or Firefox.
-2. Open the [userscript install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_JBOG_TRACKER.user.js) and choose **Install** or **Update**.
-3. Open or reload one of the supported pages below. Allow Jira and TestView
-   connections when Tampermonkey requests them.
+## Install in 3 steps
 
-If the link shows code, open **Tampermonkey Dashboard → Utilities → Import
-from URL**, paste the install link and choose **Install**. Automatic opening
-of the installer depends on Tampermonkey being enabled and having site access.
+1. Install [Tampermonkey](https://www.tampermonkey.net/) (Edge, Chrome or Firefox).
+2. Open the **[install link](https://raw.githubusercontent.com/zayd117/EVE-SLT-TRACKER/main/EVE_SLT_TRACKER.user.js)** and click **Install** (or **Update**).
+3. Reload the rack page and allow the Jira, TestView and SFCS connections when asked.
 
-Keep one enabled copy. If the renamed script installs beside an older copy,
-disable the older copy in the Tampermonkey Dashboard. Existing storage keys
-are preserved, including saved rack assignments and SLT state.
+**Good to know**
 
-This update is **2.0.2**. Tampermonkey normally offers it as an automatic
-update; otherwise open the install link or replace the editor contents with
-the complete file.
-The filename uses underscores for a simple install URL; the displayed name
-remains **EVE SLT+JBOG TRACKER**. The previous filename is retained as an
-identical compatibility copy for existing update URLs.
+- Keep only one copy enabled. Disable the old "EVE SLT+JBOG TRACKER" in the Tampermonkey Dashboard.
+- Your saved settings carry over.
+- If the link shows code instead of an installer: Tampermonkey Dashboard, **Utilities**, **Import from URL**.
 
-## Supported pages
+---
 
-| Page | What the tracker reads |
+## What it does
+
+| You want to... | It gives you... |
 |---|---|
-| EVE `/out/out.eveslt.php` | Rack-cell changes, confirmed against the server detail page |
-| Lion King `/out/out.evelionking_all.php` | Tail/head node, Started and status rows |
-| [Ramses JBOG dashboard](http://hyve-cmd101-ramses.hyvesolutions.org:8001/?dashboard=jbog) | Live running/PRETEST tables, failed board and available passed-result data |
-| TestView `/slt/list` and `/uut/gpu_jbog_test/list` | Click handoffs to the appropriate test details |
+| Know when a server fails or passes | An alert card and a desktop notification |
+| Find the Jira ticket | A button on the card with the ticket and its status |
+| Send a unit to repair | A **Send to repair** box on the card that fills in SFCS for you |
+| Know if repair released it | A live status bar that follows the Collector |
+| Jump to your tools | HYVE Quick Links and a **Quick Actions** tray |
+| Start many pre-tests | **Bulk start** on the TestView operator page |
 
-Leave the source page open to monitor it. Each source uses its own settings,
-observations, cards and logs; switching pages does not monitor a closed tab.
+---
 
-## Everyday use
+## Tracker panel
 
-The normal Lion King panel shows section controls, a prominent **Rack Map**
-button, auto refresh and shift selection. Technical settings, source details,
-monitoring diagnostics and synthetic notification tools are behind **Dev**.
+![Tracker panel with the HYVE Quick Links open](docs/img/tracker-and-hyve.png)
 
-- Enable only the areas you work on: **B6**, **B7**, **E2/E4/BL** or **Unassigned**.
-- Each Lion King **Enabled** control combines visibility and notifications.
-  Turning an area off collapses/hides it and silences its alerts. The arrow
-  and switch represent the same saved state; individual racks have no toggle.
-- Areas start **off** on first use of the row-control migration. Later choices
-  are saved. **Enable all / Disable all** applies to the current Lion source.
-- EVE SLT retains its separate **Show** and **Notifs** section controls.
-- Click a card's serial to copy it, its **Jira** button for Jira, or the card
-  body/**TestView** button for test details. The card's **×** dismisses the card;
-  it does not delete its shift-log entry.
+- **Show** switch: show or hide a rack row on the board.
+- **Notifs** bell: green means notifications on, grey with a slash means off.
+- **Show All / Hide All / All Notifs / No Notifs**: change every row at once.
+- **Running ETA**: how many servers are testing and when the next one should pass.
+- **- 70% +**: make the panel smaller or larger (50 to 100%).
+- **Minus button**: fold the panel to a slim bar.
 
-### Rack Map
+![Tracker controls, expanded and folded](docs/img/tracker-controls.png)
 
-1. Open **Rack Map**. It stays closed until you open it.
-2. Enable a physical row, click its rack slot and scan the node serial.
-3. The tracker saves the location and looks up available status, timing and
-   linked test information. It does not require manual ticket or test IDs.
-4. To find something later, scan into the box in the title bar (it is focused
-   when the map opens). A rack barcode such as `TA.B6-EVE03` scrolls to and
-   highlights that rack and lists how many of its servers are running, passed
-   or failed; a tail or head serial highlights its rack slot. Each rack header
-   also shows small count chips, with a colored underline for a failure or a
-   location conflict. A rack in a disabled row shows no status; enable the
-   row to see it (scanning the rack's own barcode turns its row on).
-5. Racks of rows **B6** and **B7** are mapped by fixture. The script carries
-   the fixture installed at each position (top, right, left, bottom), and the
-   JBOG on a fixture is read from TestView test records, so a tester scans
-   nothing. A mapped position shows its fixture serial and one state:
-   **Occupied** (a JBOG is testing on it), **Waiting for new** (nothing is
-   testing now; the last unit is history, not proof it is still plugged in),
-   **Empty** (TestView has no test record for the fixture) or **No fixture**
-   (the list leaves the position empty). Scanning a mapped rack lists all four
-   positions with their fixture and state and looks the fixtures up at once;
-   scanning a fixture serial finds its position. E2/E4/BL has no built-in
-   fixtures yet.
-6. Changing a fixture needs **Dev** (the board's **...** menu; it is per tab
-   and off by default, so everyday testers cannot change the map). With Dev on,
-   **Fixture setup** replaces, adds, moves or removes a fixture, marks a slot
-   under maintenance and backs up the fixture list. A change stays on that PC
-   until **Reset to built-in**; the scan box then also accepts a fixture serial
-   and asks when it cannot tell a fixture from a JBOG.
+---
 
-Physical slots use the rack's cross layout:
+## Alert cards (JIRAlerts)
 
-```text
-       top
-left         right
-      bottom
-```
+![Four alert cards](docs/img/cards.png)
 
-Each occupied slot has **Jira** and **TestView** buttons, compact timing
-information and a small **×** to remove that assignment immediately. Empty
-slots offer **Scan**. Removal clears the saved slot assignment, not source
-records, Jira tickets or test results.
+Each card shows:
 
-**B6** has a blue group background, **B7** green and **E2/E4/BL** purple.
-B6 and B7 stay next to each other and use one horizontal scrollbar; E2/E4/BL
-scrolls separately. Physical row membership and left-to-right order are fixed
-by the supplied rack registry, even when a rack's barcode includes another
-row name. The map fits the viewport again after the browser window changes
-size. While it is open, the tracker and alert windows are hidden; **Back to
-tracker** restores them.
+- the **serial** (click it to copy)
+- the **rack location**
+- the **phase** (Test or Pre-test, fail or pass)
+- **how long ago** it happened
+- the **Jira button** (ticket number, or "No ticket" / "Ticket pending")
 
-| Mini-card color | Meaning |
-|---|---|
-| Medium light green with light text | Running test or PRETEST |
-| Dark green | Passed |
-| Red | Test fail |
-| Darker red | PRETEST fail |
-| Neutral | No current usable status |
+Card colors:
 
-Test fails and PRETEST fails have separate labels, counts and alert filters.
-PRETEST is not treated as a completed GPU test.
+- **Red**: test fail
+- **Dark red**: pre-test fail
+- **Green**: pass
 
-### Jira and TestView links
+Panel tools:
 
-**Lion King Jira** buttons open the serial's query results with
-`ORDER BY updated DESC`, including when a ticket key is already cached.
-A cached ticket is a search anchor, so a click still shows other, newer
-matching issues. With no key, the Jira issue-search page opens. Jira lookup
-uses the existing browser login and never creates or changes a ticket.
+- **Filters**: All, Fails, Pre-test, Passes.
+- **Add card**: type a serial to track it.
+- **Menu**: export the shift log, or dismiss all cards (click twice to confirm).
 
-**EVE SLT Jira** retains its failure-specific ticket lookup, pending-ticket
-states and PuTTY instructions when a ticket has not appeared. The tracker
-checks TestView before prompting for a ticket while a server is re-testing.
+---
 
-**Lion King TestView** first queries the UUT API for the selected serial and
-operation. When a card has a Started value, the matching run must have that
-start time. The candidate is verified through `/api/v1/uut_status/view/<id>/by_id`
-before `/uut/detail/<id>` opens. PRETEST maps to `GPU_JBOG_TEST_PRETEST`;
-GPU tests map to `GPU_JBOG_TEST`. Failed lookup or verification leaves a list
-fallback for manual selection rather than guessing a record ID or run.
+## Quick Actions
 
-## Detection and logs
+Open the **Quick Actions** tab on the right edge of a card.
 
-- EVE SLT colors identify a possible transition; the detail page confirms the
-  phase and result. SYS_DEKIT is diagnostic, not a hardware failure.
-- The Lion collector establishes a quiet baseline for completed rows, then
-  alerts on an observed RUNNING-to-PASS/FAIL change for the same tail/head
-  serials and Started value. Loading fragments and saved snapshots do not
-  establish new results.
-- Ramses watches native table updates and reads the dashboard's available
-  passed-result CSV data automatically. A result download or manual import
-  is not required. It keeps running PRETEST, failed-board observations and
-  validated GPU passes separate; a disappeared row alone is not a pass.
-- The Ramses failed board tracks new entries after its baseline. It does not
-  supply test Started or Finished times, but its **Idle Time** column dates an
-  entry: one that is new to the saved state and idle for more than 15 minutes
-  settles quietly (no card, no desktop notification), which stops a long-closed
-  tab from replaying old failures. A fresher entry alerts with its time taken
-  as now minus Idle Time, and an unreadable Idle Time alerts as before. Passed
-  records use validated source Finished times.
-- Hidden areas continue contributing audit observations/logs, but their
-  cards and desktop notifications are suppressed. Polling can miss a run
-  that starts and finishes entirely between usable observations.
-- Malformed or conflicting rows are excluded with diagnostics; valid rows
-  continue monitoring. A missing or entirely unusable source retains saved
-  observations rather than inventing completion.
-- The latest **50 alert cards** are retained. Shift-log exports can include
-  older recorded events whose cards have aged out. Logs are bounded; export
-  the shift you need rather than using browser storage as a permanent archive.
-- **Log shift: Auto** uses the Day, Swing or Graveyard window, including the
-  hour before the shift. TXT and CSV exports use Fremont/Pacific time.
+![The Quick Actions tray](docs/img/quick-actions.png)
 
-Completed history defaults to **24 hours**, with 48 hours and All in Dev.
-Active runs have no age limit. History changes affect display, not results.
-Recent valid pass durations provide advisory ETAs; an ETA never marks a run
-complete. The collector samples by Started time, while Ramses samples by
-Finished time, over the latest 24 hours.
+- **Jira ticket** (MFGS-number): open it.
+- **TestView 2.0**: open the unit's test page.
+- **Create ticket** (PuTTY): copies the ticket command for this serial. Greyed out when a ticket already exists.
+- **Send to repair**: opens the repair box.
+
+Press **Esc** to close it.
+
+---
+
+## Send to repair
+
+![Repair bar states and the repair box](docs/img/repair-states.png)
+
+The bar at the bottom of a card tells you where the unit is:
+
+| Bar | Meaning | What you do |
+|---|---|---|
+| **SEND TO REPAIR** | Repair asked for it in the Jira comment | Open the card and send it |
+| **SENT TO REPAIR** | SFCS accepted it | Wait, or take it to repair if asked |
+| **WAITING FOR RELEASE** | Collector shows it in the repair queue | Nothing |
+| **RETESTING** | Collector shows it testing again | Nothing |
+| **READY FOR RETEST** | Collector shows it back in the SLT queue | Start the retest |
+
+Steps:
+
+1. Click the bar to open the box.
+2. Check the serial and the symptom code (it is pre-selected from the Jira title).
+3. Click **Send to repair**, then **Confirm**. Nothing is sent before Confirm.
+
+Things to know:
+
+- The bar updates by itself. You do not need to open the card.
+- A unit that is already sent cannot be sent again.
+- If you are not signed in to SFCS, the box tells you and offers **Open SFCS**.
+
+---
+
+## HYVE Quick Links
+
+- Seven links in one drawer: TestView 2.0, Bulk start, Collector, Send to repair, JIRA tickets, Green Bank, Server Excel Sheet Logs.
+- Click the **HYVE Quick Links** tab to open or close it.
+- The **minus** button also closes it when it folds the tracker. Unfolding never opens it.
+
+---
+
+## Bulk start
+
+On the TestView operator page, click **Bulk Server start**.
+
+![Bulk start panel](docs/img/bulk-start.png)
+
+1. Paste the serials, one per line.
+2. Copy the PuTTY commands and paste the output back to tick ILOM and ROT.
+3. Click **Check collector**. Green is ready, orange needs a look, red is not ready.
+4. Click **Start**. You confirm the batch before anything starts.
+
+---
+
+## Developer mode
+
+Flip the **Dev** switch at the bottom of the tracker for diagnostics, the refresh countdown, test buttons and the Collector evidence behind each repair bar. Normal view stays simple.
+
+---
 
 ## Troubleshooting
 
-| Symptom | Action |
+| Problem | Fix |
 |---|---|
-| No Lion rows or alerts | Enable the relevant area; defaults are off. |
-| Cards but no desktop notifications | Check the area setting, browser notification permission and Windows Do not disturb. |
-| Jira lookup unavailable | Log into Jira in the same browser; the serial search remains available. |
-| TestView stays on the list | Log into TestView and select the run manually if its identity could not be verified. |
-| Loading or saved-data indication | Wait for a usable live source; saved rows are a dated display copy. |
-| Rejected rows, BLIND or stale data | Enable Dev and use **Copy source diagnostics**. Preserve the source and error details when reporting the issue. |
-| Storage error | Export the available shift log and free browser storage. Pending completions retry instead of acknowledging an unsaved log. |
-| Another copy is already running | Disable the duplicate userscript. |
-| Window returns at the wrong size | Update to the current file; Rack Map now refits the browser viewport on resize. |
+| No cards | Check the **Show** switch for that rack row |
+| Cards but no desktop notification | Check the **Notifs** bell, the browser's notification permission and Windows Do not disturb |
+| Jira button says login needed | Log in to Jira in the same browser |
+| Repair box asks for sign-in | Click **Open SFCS** and sign in, then reopen the box |
+| Two copies running | Disable the duplicate userscript |
+| Nothing updates | A sleeping PC cannot monitor. In Edge, add the site to **Never put these sites to sleep** |
 
-The tracker uses browser wake mechanisms where available, but a sleeping PC
-cannot monitor. Edge's **Never put these sites to sleep** setting can help
-with background tabs. An HTTP page may not support every wake mechanism.
+Found a bug? [Open an issue](https://github.com/zayd117/EVE-SLT-TRACKER/issues) with the version, the page and what you expected.
 
-Report bugs through [GitHub issues](https://github.com/zayd117/EVE-SLT-TRACKER/issues)
-with version, source page, expected/actual behavior and Dev diagnostics. The
-console prefix is `[EVE SLT+JBOG TRACKER]`.
+---
 
-## Privacy and scope
+## Privacy
 
-The script reads monitoring pages and uses the existing Jira/TestView browser
-sessions. It makes no ticket, test or inventory edits and asks for no password
-or API key. It adjusts the page's display locally, saves settings/assignments,
-and can export logs. No analytics or telemetry are sent. Browser storage and
-exports can contain node serials and test details; share only the information
-needed for a bug report. The script itself lists the fixture serials of rows
-B6 and B7 (owner's decision, 2026-10-13); no ticket, credential or test result
-is stored in it.
+- Reads the pages you already have open, using your existing logins.
+- Never asks for or stores a password or API key.
+- Sends no analytics.
+- Saves settings and cards in your browser. Exports can contain serials, so share only what a bug report needs.
 
-## Development and AI handoff
+---
 
-Start with [AGENTS.md](AGENTS.md) for the current
-architecture, editing constraints and a targeted source map. Read only the
-relevant source section and deeper notes for the requested change.
+## For developers
 
 | File | Purpose |
 |---|---|
-| [EVE_SLT_JBOG_TRACKER.user.js](<EVE_SLT_JBOG_TRACKER.user.js>) | The single installable userscript |
-| [CHANGELOG.md](CHANGELOG.md) | Current 2.0.2 changes and historical releases |
-| [docs/CODE_NOTES.md](docs/CODE_NOTES.md) | Detailed implementation and storage rationale |
-| [docs/TESTING.md](docs/TESTING.md) | Test commands, fixtures, coverage and manual checks |
-| [docs/LION_KING_QA.md](docs/LION_KING_QA.md) | Historical test evidence and current validation limits |
-| [docs/LION_KING_SOURCE_NOTES.md](docs/LION_KING_SOURCE_NOTES.md) | Source contracts and evidence boundaries |
-| [docs/LION_KING_NEXT_STAGE.md](docs/LION_KING_NEXT_STAGE.md) | Follow-up work and physical rack registry |
-| `tests/`, `scripts/`, `package.json` | Development-only tests and helpers |
+| [EVE_SLT_TRACKER.user.js](<EVE_SLT_TRACKER.user.js>) | The script (one file) |
+| [CHANGELOG-3.1.2.md](<CHANGELOG-3.1.2.md>) | What changed in 3.1.2 |
+| [AGENTS.md](AGENTS.md) | Contributor notes for the legacy 2.0.2 script and the repo |
+| [docs/TESTING.md](docs/TESTING.md) | Test commands |
+| [docs/LEGACY_2.0.2.md](docs/LEGACY_2.0.2.md) | Old full guide (Lion King, Ramses, JBOG) |
 
-`main` supplies the userscript install/update URL. A merge is not a release
-tag or evidence that live internal pages have been tested. Fixture-suite
-results for the current version are recorded in
-[docs/LION_KING_QA.md](docs/LION_KING_QA.md).
+- Screenshots come from a mock board. The real sites have not been tested for this release yet.
+- Merging to `main` publishes the update link.
 
 MIT. See [LICENSE](LICENSE).
