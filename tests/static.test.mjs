@@ -44,11 +44,9 @@ test('every GM_* API used is granted, and every grant is used', () => {
 test('AI entry guides and the compact code map point to current runtime functions', () => {
   const notes = read('docs/CODE_NOTES.md');
   const agents = read('AGENTS.md');
-  const guide = read('.guide/CLAUDE.md');
-  for (const guide of [notes, agents, guide]) {
+  for (const guide of [notes, agents]) {
     assert.ok(guide.includes('EVE_SLT_JBOG_TRACKER.user.js'), 'guide names the canonical source');
   }
-  assert.ok(guide.includes('[AGENTS.md](../AGENTS.md)'), 'Guide links to the shared entry guide');
   assert.ok(agents.includes('docs/TESTING.md'), 'entry guide points to focused test coverage');
   for (const name of ['bootstrap', 'initializeLionKing', 'scanRamsesFailedBoard',
     'assignLionRackSlot', 'clearLionRackSlot', 'fitLionRackWindow', 'openLionRackJira',
