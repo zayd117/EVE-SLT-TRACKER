@@ -176,11 +176,11 @@ Found a bug? [Open an issue](https://github.com/zayd117/EVE-SLT-TRACKER/issues) 
 |---|---|
 | [EVE_SLT_TRACKER.user.js](<EVE_SLT_TRACKER.user.js>) | The script (one file) |
 | [CHANGELOG-3.1.2.md](<CHANGELOG-3.1.2.md>) | What changed in 3.1.2 |
-| [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) | Handoff notes for the legacy 2.0.2 script and the repo |
+| [AGENTS.md](AGENTS.md) | Contributor notes for the legacy 2.0.2 script and the repo |
 | [docs/TESTING.md](docs/TESTING.md) | Test commands |
 | [docs/LEGACY_2.0.2.md](docs/LEGACY_2.0.2.md) | Old full guide (Lion King, Ramses, JBOG) |
 
-- Screenshots come from a mock board. The real sites have not been tested by Claude.
+- Screenshots come from a mock board. The real sites have not been tested for this release yet.
 - Merging to `main` publishes the update link.
 
 MIT. See [LICENSE](LICENSE).

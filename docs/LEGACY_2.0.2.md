@@ -215,7 +215,7 @@ is stored in it.
 
 ## Development and AI handoff
 
-Start with [AGENTS.md](../AGENTS.md) or [CLAUDE.md](../CLAUDE.md) for the current
+Start with [AGENTS.md](../AGENTS.md) for the current
 architecture, editing constraints and a targeted source map. Read only the
 relevant source section and deeper notes for the requested change.
 
